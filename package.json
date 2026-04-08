@@ -1,0 +1,27 @@
+{
+  "name": "pm-bot",
+  "version": "1.0.0",
+  "description": "Polymarket trading little bot:)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "node --experimental-strip-types src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "@chainlink/data-streams-sdk": "^1.2.1",
+    "@polymarket/clob-client": "^5.8.1",
+    "@types/ws": "^8.18.1",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.4.7",
+    "ethers": "^5.8.0",
+    "ws": "^8.20.0"
+  }
+}

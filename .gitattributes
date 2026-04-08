@@ -1,0 +1,63 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Source code
+*.ts text diff=typescript
+*.tsx text diff=typescript
+*.js text
+*.jsx text
+*.json text
+*.jsonc text
+*.yaml text
+*.yml text
+
+# Build artifacts – treat as binary to avoid conflicts
+dist/** binary
+build/** binary
+lib/** binary
+*.tsbuildinfo binary
+
+# Lock files – ensure consistent line endings
+package-lock.json text eol=lf
+yarn.lock text eol=lf
+pnpm-lock.yaml text eol=lf
+
+# Environment files
+.env text
+.env.* text
+
+# Config files
+.gitignore text
+.gitattributes text
+.gitmodules text
+.npmrc text
+.nvmrc text
+.prettierrc text
+.eslintrc.* text
+tsconfig.json text
+
+# Documentation
+*.md text diff=markdown
+LICENSE text
+README.md text
+
+# Logs – usually generated, but treat as text
+*.log text
+
+# Scripts – ensure LF line endings for executables
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows batch files – keep CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Images & binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary

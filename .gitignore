@@ -1,0 +1,72 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+lib/
+out/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+.nyc_output/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional: keep only the compiled JS in dist, but ignore source maps in some cases
+# *.js.map
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Temporary files
+.tmp/
+.temp/
+
+# Secrets / keys
+*.pem
+*.key
+*.crt
+.secrets/
+
+# PM2 / process manager logs
+.pm2/
+
+# Optional: if you use webpack or other bundlers
+.cache/
+.parcel-cache/
+
+# Optional: if you use Jest
+jest.config.js
+.coverage/
+
+# Other
+TYPO
+TODO.md
