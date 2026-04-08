@@ -1,4 +1,4 @@
-import { retry, getISOTimestamp, safeToNum } from "../utils.js";
+import { retry, getISOTimestamp, safeToNum, error_str } from "../utils.js";
 import {REST_DEFAULT_HOST_GAMMA} from "./hosts.js"
 
 // Type definitions for the Gamma API response (fully parsed, no JSON strings)
@@ -45,7 +45,7 @@ export async function fetchEventBySlug(slug: string): Promise<GammaEvent> {
   );
 
   if (rawData.slug !== slug) {
-    console.warn(`[${getISOTimestamp()}] Returned slug (${rawData.slug}) does not match requested (${slug})`);
+    throw new Error(`[${getISOTimestamp()}] Returned slug (${rawData.slug}) does not match requested (${slug})`);
   }
 
   // Parse markets if present, with safe handling of clobTokenIds
@@ -57,7 +57,6 @@ export async function fetchEventBySlug(slug: string): Promise<GammaEvent> {
         ? market.clobTokenIds
         : JSON.parse(market.clobTokenIds ?? '[]');
     } catch {
-      console.error(`Failed to parse clobTokenIds for market ${market.id}`);
       clobTokenIds = [];
     }
 
@@ -68,7 +67,7 @@ export async function fetchEventBySlug(slug: string): Promise<GammaEvent> {
       outcomes = JSON.parse(market.outcomes);
       outcomePrices = JSON.parse(market.outcomePrices).map(safeToNum);
     } catch (error) {
-      console.error(`Failed to parse outcomes/prices for market ${market.id}:`, error);
+      throw new Error(`Failed to parse outcomes/prices for market ${market.id}: ${error_str(error)}`);
     }
 
     return {
@@ -105,7 +104,6 @@ export async function fetchMarketById(marketId: string): Promise<GammaMarket> {
     try {
       clobTokenIds = JSON.parse(rawData.clobTokenIds);
     } catch {
-      console.error(`Failed to parse clobTokenIds for market ${marketId}`);
       clobTokenIds = [];
     }
   } else if (Array.isArray(rawData.clobTokenIds)) {
@@ -121,8 +119,7 @@ export async function fetchMarketById(marketId: string): Promise<GammaMarket> {
     outcomes = JSON.parse(rawData.outcomes);
     outcomePrices = JSON.parse(rawData.outcomePrices).map(safeToNum);
   } catch (error) {
-    console.error(`[${getISOTimestamp()}] Failed to parse market ${marketId}:`, error);
-    throw error;
+    throw new Error(`[${getISOTimestamp()}] Failed to parse market ${marketId}: ${error_str(error)}`);
   }
 
   const market: GammaMarket = {

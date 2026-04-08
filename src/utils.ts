@@ -114,3 +114,22 @@ export function isoToMs(isoString: string): number {
 export function isoToSeconds(isoString: string): number {
     return Math.floor(isoToMs(isoString) / 1000);
 }
+
+/**
+ * Converts an unknown error value to a string for safe logging.
+ * Handles Error objects, strings, numbers, and other types.
+ */
+export function error_str(error: unknown): string {
+    if (error instanceof Error) {
+        // Include stack trace if available, otherwise just message
+        return error.stack || error.message;
+    }
+    if (typeof error === 'string') {
+        return error;
+    }
+    try {
+        return JSON.stringify(error);
+    } catch {
+        return String(error);
+    }
+}
