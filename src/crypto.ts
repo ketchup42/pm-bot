@@ -1,0 +1,1 @@
+export type Coin = 'btc' | 'doge' | 'eth' | 'sol' | 'xrp';

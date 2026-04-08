@@ -1,0 +1,116 @@
+/**
+ * Delay (sleep)
+ * @param ms - milliseconds
+ * @returns Promise that resolves after specified time
+ */
+export const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Retry an async function with exponential backoff
+ * @param fn - async function to retry
+ * @param maxAttempts - maximum number of attempts (default 3)
+ * @param baseDelayMs - base delay between attempts in ms (default 100)
+ * @returns result of fn
+ * @throws last error after all attempts fail
+ */
+export async function retry<T>(
+  fn: () => Promise<T>,
+  maxAttempts: number = 3,
+  baseDelayMs: number = 100
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt === maxAttempts) break;
+      const waitTime = baseDelayMs * Math.pow(2, attempt - 1);
+      console.warn(`Attempt ${attempt} failed. Retrying in ${waitTime}ms...`);
+      await delay(waitTime);
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Format number with fixed decimal places
+ * @param value - number
+ * @param decimals - number of decimal places (default 2)
+ * @returns formatted string
+ */
+export const formatNumber = (value: number, decimals: number = 2): string =>
+  value.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+
+/**
+ * Convert Polymarket price (probability) to percentage
+ * @param price - price in range [0, 1]
+ * @returns percentage string (e.g., "65.00%")
+ */
+export const priceToPercent = (price: number): string =>
+  `${(price * 100).toFixed(2)}%`;
+
+/**
+ * Round number to specified decimal places (avoid floating point issues)
+ * @param value - number
+ * @param decimals - decimal places (default 6)
+ * @returns rounded number
+ */
+export const roundTo = (value: number, decimals: number = 6): number => {
+  const factor = Math.pow(10, decimals);
+  return Math.round(value * factor) / factor;
+};
+
+/**
+ * Validate Ethereum address (simple check: starts with 0x and length 42)
+ * @param address - potential address
+ * @returns true if address is valid
+ */
+export const isValidEthereumAddress = (address: string): boolean =>
+  /^0x[a-fA-F0-9]{40}$/.test(address);
+
+/**
+ * Safely converts a value to number with fallback.
+ * @param value - string, number, or undefined
+ * @param fallback - default 0
+ * @returns number or fallback if conversion fails
+ */
+export function safeToNum(value: string | number | undefined | null, fallback: number = 0): number {
+    if (value === undefined || value === null) return fallback;
+    if (typeof value === 'number') return isNaN(value) ? fallback : value;
+    const converted = Number(value); // Stricter than parseFloat
+    return isNaN(converted) ? fallback : converted;
+}
+
+/**
+ * Get current timestamp in ISO format (UTC)
+ * @returns string like "2025-04-04T12:34:56.789Z"
+ */
+export const getISOTimestamp = (): string => new Date().toISOString();
+
+/**
+ * Converts an ISO 8601 timestamp string to milliseconds since Unix epoch.
+ * @param isoString - ISO timestamp (e.g., "2025-04-05T12:34:56.789Z")
+ * @returns Milliseconds since 1970-01-01T00:00:00.000Z
+ * @throws Error if the input string is invalid.
+ */
+export function isoToMs(isoString: string): number {
+    const ms = Date.parse(isoString);
+    if (isNaN(ms)) {
+        throw new Error(`Invalid ISO timestamp: ${isoString}`);
+    }
+    return ms;
+}
+
+/**
+ * Converts an ISO 8601 timestamp string to seconds since Unix epoch (floored).
+ * @param isoString - ISO timestamp
+ * @returns Seconds since 1970-01-01T00:00:00.000Z (integer)
+ */
+export function isoToSeconds(isoString: string): number {
+    return Math.floor(isoToMs(isoString) / 1000);
+}
