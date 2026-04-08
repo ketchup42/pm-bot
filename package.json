@@ -17,7 +17,9 @@
   },
   "dependencies": {
     "@chainlink/data-streams-sdk": "^1.2.1",
+    "@nevuamarkets/poly-websockets": "^1.0.2",
     "@polymarket/clob-client": "^5.8.1",
+    "@polymarket/real-time-data-client": "^1.4.0",
     "@types/ws": "^8.18.1",
     "date-fns": "^4.1.0",
     "dotenv": "^16.4.7",

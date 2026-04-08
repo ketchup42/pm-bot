@@ -3,7 +3,7 @@ import { Wallet } from "ethers";
 import "dotenv/config";
 
 import { safeToNum } from "../utils.js";
-import {REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID} from "./hosts.js"
+import { REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID } from "./hosts.js"
 
 /**
  * Returns a public (unauthenticated) CLOB client.
@@ -28,17 +28,18 @@ export function initGetTradingClientRest(): ClobClient {
         throw new Error('PRIVATE_KEY environment variable is not set');
     }
 
+    /////////////////////////////////////////////////////////////////////
     const apiKey = process.env.API_KEY;
     const apiSecret = process.env.API_SECRET;
     const apiPassphrase = process.env.API_PASSPHRASE;
+    const signatureType = safeToNum(process.env.SIGNATURE_TYPE) || 2;
+    const funderAddress = process.env.FUNDER_ADDRESS;
+    /////////////////////////////////////////////////////////////////////
 
     if (!apiKey || !apiSecret || !apiPassphrase) {
         throw new Error('API_KEY, API_SECRET, and API_PASSPHRASE must be set');
     }
 
-    const signatureType = safeToNum(process.env.SIGNATURE_TYPE) || 2;
-    const funderAddress = process.env.FUNDER_ADDRESS;
-    
     if (!funderAddress) {
         throw new Error('FUNDER_ADDRESS environment variable is not set');
     }
