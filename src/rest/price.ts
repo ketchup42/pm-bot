@@ -1,5 +1,6 @@
 import { GammaMarket } from "./scan.js";
 import { getISOTimestamp, retry, safeToNum } from "../utils.js";
+
 import { REST_DEFAULT_HOST_CLOB } from "./hosts.js";
 
 
@@ -13,7 +14,7 @@ export interface OrderBook {
   tick_size: string;      // Minimum price increment for this market
   min_order_size: string; // Minimum order size (in shares) for this market
   last_trade_price: string; // Price of the most recent trade
-  timestamp: string;          // ISO timestamp of the snapshot
+  timestamp: string;        // ISO timestamp of the snapshot
 }
 
 /**
@@ -72,7 +73,7 @@ export async function getPriceByTokenId(
     }
     // Find highest bid price
     const bestBid = orderBook.bids.reduce((best, current) =>
-      Number(current.price) > Number(best.price) ? current : best
+      safeToNum(current.price) > safeToNum(best.price) ? current : best
     );
     return {
       price: safeToNum(String(bestBid.price)),
@@ -84,7 +85,7 @@ export async function getPriceByTokenId(
     }
     // Find lowest ask price
     const bestAsk = orderBook.asks.reduce((best, current) =>
-      Number(current.price) < Number(best.price) ? current : best
+      safeToNum(current.price) < safeToNum(best.price) ? current : best
     );
     return {
       price: safeToNum(String(bestAsk.price)),

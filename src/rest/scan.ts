@@ -1,4 +1,4 @@
-import { retry, getISOTimestamp } from "../utils.js";
+import { retry, getISOTimestamp, safeToNum } from "../utils.js";
 import {REST_DEFAULT_HOST_GAMMA} from "./hosts.js"
 
 // Type definitions for the Gamma API response (fully parsed, no JSON strings)
@@ -66,7 +66,7 @@ export async function fetchEventBySlug(slug: string): Promise<GammaEvent> {
     let outcomePrices: number[] = [];
     try {
       outcomes = JSON.parse(market.outcomes);
-      outcomePrices = JSON.parse(market.outcomePrices).map(Number);
+      outcomePrices = JSON.parse(market.outcomePrices).map(safeToNum);
     } catch (error) {
       console.error(`Failed to parse outcomes/prices for market ${market.id}:`, error);
     }
@@ -119,7 +119,7 @@ export async function fetchMarketById(marketId: string): Promise<GammaMarket> {
   let outcomePrices: number[] = [];
   try {
     outcomes = JSON.parse(rawData.outcomes);
-    outcomePrices = JSON.parse(rawData.outcomePrices).map(Number);
+    outcomePrices = JSON.parse(rawData.outcomePrices).map(safeToNum);
   } catch (error) {
     console.error(`[${getISOTimestamp()}] Failed to parse market ${marketId}:`, error);
     throw error;
