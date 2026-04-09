@@ -29,4 +29,3 @@ export function calculateTakerFee(sharesCount: number, price: number, feeRateBps
     const fee = sharesCount * price * feeRateDecimal * Math.pow(price * (1 - price), exponent);
     return fee;
 }
-

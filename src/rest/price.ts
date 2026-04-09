@@ -1,4 +1,4 @@
-import { GammaMarket } from "./scan.js";
+import { Market } from "./scan.js";
 import { getISOTimestamp, retry, safeToNum } from "../utils.js";
 
 import { REST_DEFAULT_HOST_CLOB } from "./hosts.js";
@@ -25,7 +25,7 @@ export interface OrderBook {
  */
 export async function getOrderBookByTokenId(
   tokenId: string,
-  market: GammaMarket
+  market: Market
 ): Promise<OrderBook> {
   if (!market.enableOrderBook) {
     throw new Error(`Order book is disabled for token ${tokenId} (market ${market.id})`);
@@ -63,7 +63,7 @@ export async function getOrderBookByTokenId(
 export async function getPriceByTokenId(
   tokenId: string,
   side: 'buy' | 'sell',
-  market: GammaMarket
+  market: Market
 ): Promise<{ price: number; size: number }> {
   const orderBook = await getOrderBookByTokenId(tokenId, market);
 

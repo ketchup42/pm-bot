@@ -27,7 +27,6 @@ export async function retry<T>(
       lastError = err;
       if (attempt === maxAttempts) break;
       const waitTime = baseDelayMs * Math.pow(2, attempt - 1);
-      console.warn(`Attempt ${attempt} failed. Retrying in ${waitTime}ms...`);
       await delay(waitTime);
     }
   }

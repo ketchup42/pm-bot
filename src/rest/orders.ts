@@ -1,5 +1,5 @@
 import { ClobClient, Side, OrderType } from "@polymarket/clob-client"
-import { delay, safeToNum } from "../utils.js";
+import { delay, error_str, safeToNum } from "../utils.js";
 
 /**
  * Places a maker order on Polymarket. This order will never be charged a fee.
@@ -34,8 +34,7 @@ export async function placeMakerOrder(
         );
         return { orderId: response.orderId };
     } catch (error) {
-        console.error("Failed to place maker order:", error);
-        throw error;
+        throw new Error(`Failed to place maker order: ${error_str(error)}`);
     }
 }
 
@@ -49,8 +48,7 @@ export async function cancelOrder(clobClient: ClobClient, orderId: string): Prom
     try {
         await clobClient.cancelOrder({orderID: orderId});
     } catch (error) {
-        console.error(`Failed to cancel order ${orderId}:`, error);
-        throw error;
+        throw new Error(`Failed to cancel order ${orderId}: ${error_str(error)}`);
     }
 }
 
@@ -66,8 +64,7 @@ export async function cancelAllOrdersForToken(clobClient: ClobClient, tokenId: s
         const orderIds = openOrders.map(order => order.id);
         await clobClient.cancelOrders(orderIds);
     } catch (error) {
-        console.error(`Failed to cancel orders for token ${tokenId}:`, error);
-        throw error;
+        throw new Error(`Failed to cancel orders for token ${tokenId}: ${error_str(error)}`);
     }
 }
 
@@ -82,10 +79,11 @@ export async function cancelAllOrders(clobClient: ClobClient): Promise<void> {
         const cancelPromises = allOrders.map(order => cancelOrder(clobClient, order.id));
         await Promise.all(cancelPromises);
     } catch (error) {
-        console.error("Failed to cancel all orders:", error);
-        throw error;
+        throw new Error(`Failed to cancel all orders: ${error_str(error)}`);
     }
 }
+
+export const GTC_TAKER_ORDER_CANCEL_TIME = 500;
 
 /**
  * Places a GTC taker order with aggressive price.
@@ -97,7 +95,7 @@ export async function placeGtcTakerOrder(
     side: Side,
     price: number,
     size: number,
-    autoCancelAfterMs: number = 1000
+    autoCancelAfterMs: number = GTC_TAKER_ORDER_CANCEL_TIME
 ): Promise<{ orderId: string; filledSize: number }> {
     const order = await clobClient.createOrder({
         tokenID: tokenId,
@@ -118,10 +116,8 @@ export async function placeGtcTakerOrder(
 
         try {
             await clobClient.cancelOrder(orderId);
-            console.warn(`Partial fill: ${filledSize}/${size}. Cancelling remainder.`);
-        } catch (cancelErr) {
-            console.error(`Failed to cancel partial order ${orderId}:`, cancelErr);
-            throw cancelErr;
+        } catch (error) {
+            throw new Error(`Failed to cancel partial order ${orderId}: ${error_str(error)}`);
         }
     }
     return { orderId, filledSize };
@@ -204,7 +200,6 @@ export async function placeFokMarketOrderBuy(
 
         return { orderId: response.orderId };
     } catch (error) {
-        console.error("FOK order failed:", error);
-        throw error;
+        throw new Error(`"FOK order failed:": ${error_str(error)}`);
     }
 }
