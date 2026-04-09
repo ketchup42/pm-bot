@@ -1,4 +1,4 @@
-import { Coin } from "./crypto.js";
+import { Coin } from "./ws/coins.js";
 
 /**
  * Generates the deterministic slug for any coin's 5-minute market.

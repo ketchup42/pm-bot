@@ -1,4 +1,4 @@
-import { PriceWatcherRTDC } from "./PriceWatcherRTDC.js";
+import { CoinPriceWatcherRTDS } from "./CoinPriceWatcherRTDS.js";
 
 /**
  * Waits for the start of the next 5-minute interval and captures the starting price.
@@ -17,7 +17,7 @@ import { PriceWatcherRTDC } from "./PriceWatcherRTDC.js";
  * @returns Promise<number> - Resolves with the numeric starting price (e.g., BTC price in USDT).
  *
  */
-export async function waitForStartPrice(priceWatcher: PriceWatcherRTDC): Promise<number> {
+export async function waitForStartPrice(priceWatcher: CoinPriceWatcherRTDS): Promise<number> {
   return new Promise((resolve) => {
     const now = Math.floor(Date.now() / 1000);
     const secondsUntilNext = 300 - (now % 300);
