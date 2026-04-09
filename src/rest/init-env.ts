@@ -3,52 +3,134 @@ import { Wallet } from "ethers";
 import "dotenv/config";
 
 import { safeToNum } from "../utils.js";
-import { REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID } from "./hosts.js"
+import { REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID } from "./hosts.js";
 
 /**
+ *  Environment Variables Configuration Block
+ */
+interface TradingEnvConfig {
+    privateKey: string;
+    apiKey: string;
+    apiSecret: string;
+    apiPassphrase: string;
+    signatureType: number;
+    funderAddress: string;
+}
+
+/**
+ * Normalizes a private key: ensures it has a 0x prefix and is valid hex.
+ * @param key - Raw private key (with or without 0x)
+ * @returns Normalized private key with 0x prefix
+ * @throws Error if key is not a valid 64-character hex string
+ */
+function normalizePrivateKey(key: string): string {
+    const trimmed = key.trim();
+    const withPrefix = trimmed.startsWith('0x') ? trimmed : `0x${trimmed}`;
+    const hexPattern = /^0x[0-9a-fA-F]{64}$/;
+    if (!hexPattern.test(withPrefix)) {
+        throw new Error('PRIVATE_KEY must be a 64-character hex string (with or without 0x prefix)');
+    }
+    return withPrefix;
+}
+
+/**
+ * Basic validation for an Ethereum address.
+ * @param address - Address to validate
+ * @returns True if address matches pattern 0x + 40 hex chars
+ */
+function isValidEthereumAddress(address: string): boolean {
+    return /^0x[0-9a-fA-F]{40}$/.test(address);
+}
+
+/**
+ * Reads and validates all required environment variables for trading.
+ * Throws clear errors if any required variable is missing or invalid.
+ */
+function getTradingEnvConfig(): TradingEnvConfig {
+    // Read raw values
+
+    /////////////////////////////////////////////////////////////////
+    const rawPrivateKey = process.env.PRIVATE_KEY;
+    const apiKey = process.env.API_KEY;
+    const apiSecret = process.env.API_SECRET;
+    const apiPassphrase = process.env.API_PASSPHRASE;
+    const rawFunderAddress = process.env.FUNDER_ADDRESS;
+    /////////////////////////////////////////////////////////////////
+
+    // Collect validation errors
+    const errors: string[] = [];
+
+    if (!rawPrivateKey) errors.push('PRIVATE_KEY is not set');
+    if (!apiKey) errors.push('API_KEY is not set');
+    if (!apiSecret) errors.push('API_SECRET is not set');
+    if (!apiPassphrase) errors.push('API_PASSPHRASE is not set');
+    if (!rawFunderAddress) errors.push('FUNDER_ADDRESS is not set');
+
+    if (errors.length > 0) {
+        throw new Error(`Missing environment variables:\n${errors.join('\n')}`);
+    }
+
+    // Normalize and validate private key
+    let privateKey: string;
+    try {
+        privateKey = normalizePrivateKey(rawPrivateKey!);
+    } catch (err) {
+        throw new Error(`Invalid PRIVATE_KEY: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Validate funder address format
+    const funderAddress = rawFunderAddress!;
+    if (!isValidEthereumAddress(funderAddress)) {
+        throw new Error('FUNDER_ADDRESS must be a valid Ethereum address (0x followed by 40 hex chars)');
+    }
+
+    // Parse signature type (optional, default = 2)
+    const signatureTypeRaw = safeToNum(process.env.SIGNATURE_TYPE);
+    let signatureType = 2;
+    if (!isNaN(signatureTypeRaw) && Number.isInteger(signatureTypeRaw) && signatureTypeRaw >= 0) {
+        signatureType = signatureTypeRaw;
+    }
+
+    if (signatureType !== 2) {
+        console.warn(`SIGNATURE_TYPE is set to ${signatureType}, expected 2 (EIP-712). Trading may fail.`);
+    }
+
+    return {
+        privateKey,
+        apiKey: apiKey!,
+        apiSecret: apiSecret!,
+        apiPassphrase: apiPassphrase!,
+        signatureType,
+        funderAddress,
+    };
+}
+
+/**
+ * Public Client (Unauthenticated)
  * Returns a public (unauthenticated) CLOB client.
  * Use this for read‑only operations like fetching order books or market data.
  */
 export function initGetPublicClientRest(): ClobClient {
+    if (!REST_DEFAULT_HOST_CLOB || !REST_CHAIN_ID) {
+        throw new Error('Missing REST_DEFAULT_HOST_CLOB or REST_CHAIN_ID configuration');
+    }
     return new ClobClient(REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID);
 }
 
 /**
+ * Trading Client (Authenticated)
  * Returns an authenticated CLOB client for trading.
- * Requires environment variables:
- * - PRIVATE_KEY
- * - API_KEY, API_SECRET, API_PASSPHRASE (derived once and stored)
- * - SIGNATURE_TYPE (optional, defaults to 2)
- * - FUNDER_ADDRESS
+ * Requires environment variables to be set (see .env.example).
  */
 export function initGetTradingClientRest(): ClobClient {
-    const privateKey = process.env.PRIVATE_KEY;
+    // Read and validate all env vars in one place
+    const config = getTradingEnvConfig();
 
-    if (!privateKey) {
-        throw new Error('PRIVATE_KEY environment variable is not set');
-    }
-
-    /////////////////////////////////////////////////////////////////////
-    const apiKey = process.env.API_KEY;
-    const apiSecret = process.env.API_SECRET;
-    const apiPassphrase = process.env.API_PASSPHRASE;
-    const signatureType = safeToNum(process.env.SIGNATURE_TYPE) || 2;
-    const funderAddress = process.env.FUNDER_ADDRESS;
-    /////////////////////////////////////////////////////////////////////
-
-    if (!apiKey || !apiSecret || !apiPassphrase) {
-        throw new Error('API_KEY, API_SECRET, and API_PASSPHRASE must be set');
-    }
-
-    if (!funderAddress) {
-        throw new Error('FUNDER_ADDRESS environment variable is not set');
-    }
-
-    const signer = new Wallet(privateKey);
+    const signer = new Wallet(config.privateKey);
     const apiCreds = {
-        key: apiKey,
-        secret: apiSecret,
-        passphrase: apiPassphrase,
+        key: config.apiKey,
+        secret: config.apiSecret,
+        passphrase: config.apiPassphrase,
     };
 
     return new ClobClient(
@@ -56,8 +138,8 @@ export function initGetTradingClientRest(): ClobClient {
         REST_CHAIN_ID,
         signer,
         apiCreds,
-        signatureType,
-        funderAddress,
+        config.signatureType,
+        config.funderAddress,
         undefined, // additionalConfig
         undefined, // orderConfig
         undefined, // orderbookConfig
@@ -69,9 +151,12 @@ export function initGetTradingClientRest(): ClobClient {
 }
 
 /**
- * Helper function to derive API credentials from a wallet private key.
- * Run this once and store the resulting key, secret, and passphrase in your .env file.
- * @param privateKey - Wallet private key (starts with 0x)
+ * Helper: Derive API Credentials from Private Key
+ *
+ * Derives API credentials (key, secret, passphrase) from a wallet private key.
+ * Run this once and store the output in your .env file.
+ *
+ * @param privateKey - Wallet private key (with or without 0x prefix)
  * @returns Object containing apiKey, secret, and passphrase
  */
 export async function fstInitDeriveApiCredentials(privateKey: string): Promise<{
@@ -79,12 +164,28 @@ export async function fstInitDeriveApiCredentials(privateKey: string): Promise<{
     secret: string;
     passphrase: string;
 }> {
-    const signer = new Wallet(privateKey);
-    const tempClient = new ClobClient(REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID, signer);
-    const creds = await tempClient.createOrDeriveApiKey();
-    return {
-        apiKey: creds.key,
-        secret: creds.secret,
-        passphrase: creds.passphrase,
-    };
+    if (!privateKey) {
+        throw new Error('Private key is required');
+    }
+
+    // Normalize and validate private key
+    const normalizedKey = normalizePrivateKey(privateKey);
+
+    try {
+        const signer = new Wallet(normalizedKey);
+        const tempClient = new ClobClient(REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID, signer);
+        const creds = await tempClient.createOrDeriveApiKey();
+
+        if (!creds.key || !creds.secret || !creds.passphrase) {
+            throw new Error('Derived credentials are incomplete');
+        }
+
+        return {
+            apiKey: creds.key,
+            secret: creds.secret,
+            passphrase: creds.passphrase,
+        };
+    } catch (error) {
+        throw new Error(`Failed to derive API credentials: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
