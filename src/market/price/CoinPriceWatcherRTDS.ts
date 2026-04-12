@@ -1,6 +1,6 @@
 import { Message, RealTimeDataClient } from "@polymarket/real-time-data-client";
 
-import { IPriceWatcher } from "./IPriceWatcher.js";
+import { PriceWatcher } from "./PriceWatcher.js";
 import { safeToNum } from "../../utils.js";
 
 export const RTDS_PRICE_NODATA = -1;
@@ -26,7 +26,7 @@ type CoinTopic = { source: PriceSource, name: "crypto_prices" | "crypto_prices_c
  * Watches real‑time symbol prices using Polymarket's RTDS WebSocket.
  * Uses the official @polymarket/real-time-data-client SDK.
  */
-export class CoinPriceWatcherRTDS implements IPriceWatcher {
+export class CoinPriceWatcherRTDS implements PriceWatcher {
     private _rtdcClient: RealTimeDataClient;
 
     private _priceTopic: CoinTopic;
@@ -112,7 +112,7 @@ export class CoinPriceWatcherRTDS implements IPriceWatcher {
      * Returns current price data.
      * @returns Readonly copy of RtdsSymbolPriceData
      */
-    getTimeStamp(): number {
+    public getTimeStamp(): number {
         return this._priceCoinData.data.timestamp;
     }
 
@@ -120,14 +120,14 @@ export class CoinPriceWatcherRTDS implements IPriceWatcher {
      * Returns the most recent price received from the WebSocket.
      * @returns The latest price, or RTDS_PRICE_NODATA (-1) if not yet received or disconnected.
      */
-    getCurrentPrice(): number {
+    public getCurrentPrice(): number {
         return this._priceCoinData.data.value;
     }
     /**
      * Returns the price source (Binance or Chainlink) based on the subscribed topic.
      * @returns 'binance' for crypto_prices, 'chainlink' for crypto_prices_chainlink
      */
-    getPriceSource(): PriceSource {
+    public getPriceSource(): PriceSource {
         return (this._priceTopic.name === "crypto_prices") ? "binance" : "chainlink";
     }
 
@@ -137,7 +137,7 @@ export class CoinPriceWatcherRTDS implements IPriceWatcher {
      * For Chainlink source, this is in slash-separated format (e.g., 'btc/usd').
      * @returns The normalized symbol string (e.g., 'btcusdt' or 'btc/usd')
      */
-    getSymbol(): string {
+    public getSymbol(): string {
         return this._priceCoinData.data.symbol;
     }
 
@@ -146,7 +146,7 @@ export class CoinPriceWatcherRTDS implements IPriceWatcher {
      * This represents the cryptocurrency type regardless of the price source.
      * @returns The coin enum value (e.g., Coin.BTC, Coin.ETH)
      */
-    getCoin(): Coin {
+    public getCoin(): Coin {
         return this._priceCoinData.coin;
     }
 

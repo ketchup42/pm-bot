@@ -1,4 +1,4 @@
-import { IPriceWatcher } from "./IPriceWatcher";
+import { PriceWatcher } from "./PriceWatcher";
 
 /**
  * Waits for the start of the next fixed‑time interval (e.g., every 300 seconds) and captures the starting price.
@@ -23,7 +23,7 @@ import { IPriceWatcher } from "./IPriceWatcher";
  * const hourlyStart = await waitForStartPrice(priceWatcher, 3600);
  */
 export async function waitForStartPrice(
-    priceWatcher: IPriceWatcher,
+    priceWatcher: PriceWatcher,
     intervalSeconds: number = 300
 ): Promise<number> {
     const nowSeconds = Math.floor(Date.now() / 1000);

@@ -1,7 +1,7 @@
 /**
  * Defines the public contract for a cryptocurrency price watcher using Polymarket RTDS.
  */
-export interface IPriceWatcher {
+export interface PriceWatcher {
 
     /**
      * Returns the exchange‑specific symbol string used for subscriptions.
