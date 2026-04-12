@@ -1,6 +1,5 @@
-import { Coin } from "./market/coins.js";
-import { safeToNum } from "./utils.js";
-
+import { safeToNum } from "../utils.js";
+import { Coin } from "./coins.js";
 
 /**
  * Generates the deterministic slug for any coin's 5-minute market.
@@ -15,7 +14,7 @@ export function getCoin5mSlug(coin: Coin): string {
 
 // Optional: Add validation or a function to get the window's close time
 export function get5mFrameCloseTimebySlug(slug: string): number {
-    const timestamp = parseInt(slug.split('-').pop() || '0', 10);
+    const timestamp = safeToNum(slug.split('-').pop() || '0', 10);
     return timestamp + 300; // Window closes 5 minutes later
 }
 
@@ -45,7 +44,7 @@ export function getCoin15mSlug(coin: Coin): string {
  * @returns The UTC timestamp when the window closes (start + 900 seconds)
  */
 export function get15mFrameCloseTimebySlug(slug: string): number {
-    const timestamp = parseInt(slug.split('-').pop() || '0', 10);
+    const timestamp = safeToNum(slug.split('-').pop() || '0', 10);
     return timestamp + 900;
 }
 

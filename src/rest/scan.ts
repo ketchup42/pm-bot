@@ -2,7 +2,7 @@ import { retry, getISOTimestamp, safeToNum, error_str } from "../utils.js";
 import {REST_DEFAULT_HOST_GAMMA} from "./hosts.js"
 
 // Type definitions for the Gamma API response (fully parsed, no JSON strings)
-export interface Market {
+export interface MarketRaw {
   id: string;
   conditionId: string;
   clobTokenIds: string[];
@@ -16,7 +16,7 @@ export interface Market {
   outcomePrices: number[];
 }
 
-export interface Event {
+export interface EventRaw {
   id: string;
   slug: string;
   //Start and end time of events
@@ -24,14 +24,14 @@ export interface Event {
   endDate: string;
 
   conditionId: string;
-  markets: Market[];
+  markets: MarketRaw[];
 }
 
 /**
  * Fetch event data from Polymarket Gamma API by slug.
  * Parses `outcomes`, `outcomePrices`, and `clobTokenIds` from JSON strings into proper types.
  */
-export async function fetchEventBySlug(slug: string): Promise<Event> {
+export async function fetchEventBySlug(slug: string): Promise<EventRaw> {
   const url = `${REST_DEFAULT_HOST_GAMMA}/events/slug/${slug}`;
 
   const rawData = await retry(
@@ -85,7 +85,7 @@ export async function fetchEventBySlug(slug: string): Promise<Event> {
  * Fetch a single market by its ID from the Gamma API.
  * Parses `outcomes`, `outcomePrices`, and `clobTokenIds` into fully typed arrays.
  */
-export async function fetchMarketById(marketId: string): Promise<Market> {
+export async function fetchMarketById(marketId: string): Promise<MarketRaw> {
   const url = `${REST_DEFAULT_HOST_GAMMA}/markets?id=${marketId}`;
 
   const rawData = await retry(
@@ -122,7 +122,7 @@ export async function fetchMarketById(marketId: string): Promise<Market> {
     throw new Error(`[${getISOTimestamp()}] Failed to parse market ${marketId}: ${error_str(error)}`);
   }
 
-  const market: Market = {
+  const market: MarketRaw = {
     id: rawData.id,
     conditionId: rawData.conditionId,
     clobTokenIds,

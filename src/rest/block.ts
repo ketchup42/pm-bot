@@ -1,11 +1,11 @@
-import { REST_DEFAULT_HOST_GEO } from "./rest/hosts";
+import { REST_DEFAULT_HOST_GEO } from "./hosts";
 
 /**
  * Response structure from Polymarket's geoblocking endpoint.
  * The API returns information about the requesting IP address
  * and whether access is blocked from its country.
  */
-interface GeoblockResponse {
+interface GeoblockResponseRaw {
     blocked: boolean;   // true if the IP is in a restricted region (e.g., Russia, Belarus)
     ip: string;         // The public IP address of the requester
     country: string;    // Two‑letter country code (e.g., 'RU', 'US')
@@ -18,7 +18,7 @@ interface GeoblockResponse {
  * @returns Promise resolving to the raw geoblock response object.
  * @throws Network errors or if the response is not valid JSON.
  */
-async function checkGeoblock(): Promise<GeoblockResponse> {
+async function checkGeoblock(): Promise<GeoblockResponseRaw> {
   const response = await fetch(REST_DEFAULT_HOST_GEO);
   return response.json();
 }

@@ -78,11 +78,27 @@ export const isValidEthereumAddress = (address: string): boolean =>
  * @param fallback - default 0
  * @returns number or fallback if conversion fails
  */
-export function safeToNum(value: string | number | undefined | null, fallback: number = 0): number {
+export function safeToNum(value: unknown, fallback: number = 0): number {
     if (value === undefined || value === null) return fallback;
-    if (typeof value === 'number') return isNaN(value) ? fallback : value;
+    if (typeof value === 'number') return isNaN(value) || !isFinite(value) ? fallback : value;
+    if (typeof value === 'string' && value.trim() === '') return fallback;
+    if (typeof value === 'object') return fallback;
+    if (typeof value === 'symbol') return fallback;
     const converted = Number(value); // Stricter than parseFloat
     return isNaN(converted) ? fallback : converted;
+}
+
+/**
+ * Checks if a value is valid (not null, not undefined, and not NaN if a number).
+ * Works with any type: numbers, strings, objects, arrays, etc.
+ *
+ * @param value - The value to check.
+ * @returns `true` if the value is valid, otherwise `false`.
+ */
+export function isValid(value: unknown): boolean {
+    if (value === null || value === undefined) return false;
+    if (typeof value === 'number') return !isNaN(value) && isFinite(value);
+    return true;
 }
 
 /**

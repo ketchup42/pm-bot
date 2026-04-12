@@ -1,16 +1,15 @@
-import { Market } from "./scan.js";
+import { MarketRaw } from "./scan.js";
 import { getISOTimestamp, retry, safeToNum } from "../utils.js";
 
 import { REST_DEFAULT_HOST_CLOB } from "./hosts.js";
-
 
 /**
  * Raw order book response from the CLOB /book endpoint.
  * Includes market metadata and order book depth.
  */
-export interface OrderBook {
-  bids: Array<{ price: string; size: string }>; // Buy orders
-  asks: Array<{ price: string; size: string }>; // Sell orders
+export interface OrderBookRaw {
+  bids: { price: string; size: string }[]; // Buy orders
+  asks: { price: string; size: string }[]; // Sell orders
   tick_size: string;      // Minimum price increment for this market
   min_order_size: string; // Minimum order size (in shares) for this market
   last_trade_price: string; // Price of the most recent trade
@@ -25,8 +24,8 @@ export interface OrderBook {
  */
 export async function getOrderBookByTokenId(
   tokenId: string,
-  market: Market
-): Promise<OrderBook> {
+  market: MarketRaw
+): Promise<OrderBookRaw> {
   if (!market.enableOrderBook) {
     throw new Error(`Order book is disabled for token ${tokenId} (market ${market.id})`);
   }
@@ -63,7 +62,7 @@ export async function getOrderBookByTokenId(
 export async function getPriceByTokenId(
   tokenId: string,
   side: 'buy' | 'sell',
-  market: Market
+  market: MarketRaw
 ): Promise<{ price: number; size: number }> {
   const orderBook = await getOrderBookByTokenId(tokenId, market);
 
