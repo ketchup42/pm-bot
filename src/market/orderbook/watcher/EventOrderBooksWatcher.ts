@@ -6,7 +6,7 @@ export type OrderBookLevel = {
 
 /** Parsed market data for one outcome (Up or Down) */
 export interface MarketTokenData {
-  outcome: string;     // 'Up' or 'Down'
+  outcome: string;     // 'up' or 'down'
   tokenId: string;
   marketId: string;    // id from REST Raw
   eventId: string;
@@ -14,23 +14,23 @@ export interface MarketTokenData {
 
 export interface EventOrderBooksWatcher {
 
-  /** Returns sorted bid levels for the Up token (descending price) */
+  /** Returns sorted COPY bid levels for the Up token (descending price) */
   getBidsUp(): OrderBookLevel[];
 
-  /** Returns sorted ask levels for the Up token (ascending price) */
+  /** Returns sorted COPY ask levels for the Up token (ascending price) */
   getAsksUp(): OrderBookLevel[];
 
-  /** Returns sorted bid levels for the Down token (descending price) */
+  /** Returns sorted COPY bid levels for the Down token (descending price) */
   getBidsDown(): OrderBookLevel[];
 
-  /** Returns sorted ask levels for the Down token (ascending price) */
+  /** Returns sorted COPY ask levels for the Down token (ascending price) */
   getAsksDown(): OrderBookLevel[];
 
   /** Best bid (highest price) for the specified token */
-  getBestBid(token: 'up' | 'down'): number | undefined;
+  getBestBid(token: MarketSide): number | undefined;
 
   /** Best ask (lowest price) for the specified token */
-  getBestAsk(token: 'up' | 'down'): number | undefined;
+  getBestAsk(token: MarketSide): number | undefined;
 
   getUpPrice(): number | undefined;
   getDownPrice(): number | undefined;
@@ -45,8 +45,22 @@ export interface EventOrderBooksWatcher {
   getUpMarketData(): MarketTokenData;
   getDownMarketData(): MarketTokenData;
 
+  /**
+   * Returns the timestamp of the last received book update.
+   */
+  getTimeStamp(token: MarketSide): number | undefined;
+
+  hasBidsUp(): boolean;
+
+  hasAsksUp(): boolean
+
+  hasBidsDown(): boolean;
+
+  hasAsksDown(): boolean;
+
   isActive(): boolean;
   isWatching(): boolean;
+  isFinished(): boolean;
 
   isUpBooked(): boolean;
   isDownBooked(): boolean;

@@ -25,6 +25,11 @@ import { OrderBookCache, BookEntry } from './modules/OrderBookCache.js';
 import { logger } from '../../../log.js';
 import _ from 'lodash';
 
+/**
+ * Type alias for an additional wrapper layer
+ */
+export type WSSubscriptionManagerHandlers = WebSocketHandlers;
+
 
 // Note: We intentionally use a static reconnection interval rather than exponential backoff.
 // Perhaps change this to exponential backoff in the future.
