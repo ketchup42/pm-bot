@@ -1,3 +1,6 @@
+import fs from 'fs/promises';
+import path from 'path';
+
 /**
  * Delay (sleep)
  * @param ms - milliseconds
@@ -55,11 +58,12 @@ export const priceToPercent = (price: number): string =>
 
 /**
  * Round number to specified decimal places (avoid floating point issues)
- * @param value - number
+ * @param value - number or undefined
  * @param decimals - decimal places (default 6)
  * @returns rounded number
  */
-export const roundTo = (value: number, decimals: number = 6): number => {
+export const roundTo = (value: number | undefined, decimals: number = 6): number | undefined => {
+  if (!value) return undefined;
   const factor = Math.pow(10, decimals);
   return Math.round(value * factor) / factor;
 };
@@ -146,5 +150,26 @@ export function error_str(error: unknown): string {
         return JSON.stringify(error);
     } catch {
         return String(error);
+    }
+}
+
+/**
+ * Writes a string to a file, creating parent directories if they don't exist.
+ * @param filePath - Path to the destination file.
+ * @param content - String content to write.
+ * @param options - Optional write options (encoding, flag, mode).
+ * @throws If directory creation or file writing fails.
+ */
+export async function fileWrite(
+    filePath: string,
+    content: string,
+    options?: { encoding?: BufferEncoding; flag?: string; mode?: number }
+): Promise<void> {
+    try {
+        const dir = path.dirname(filePath);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(filePath, content, options);
+    } catch (error) {
+        throw new Error(`Failed to write to ${filePath}: ${error}`);
     }
 }

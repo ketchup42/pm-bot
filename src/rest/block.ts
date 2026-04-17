@@ -5,7 +5,7 @@ import { REST_DEFAULT_HOST_GEO } from "./hosts";
  * The API returns information about the requesting IP address
  * and whether access is blocked from its country.
  */
-interface GeoblockResponseRaw {
+export interface GeoblockResponseRaw {
     blocked: boolean;   // true if the IP is in a restricted region (e.g., Russia, Belarus)
     ip: string;         // The public IP address of the requester
     country: string;    // Two‑letter country code (e.g., 'RU', 'US')

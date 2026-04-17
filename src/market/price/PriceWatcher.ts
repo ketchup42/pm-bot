@@ -11,15 +11,15 @@ export interface PriceWatcher {
 
     /**
      * Returns the most recent price received from the WebSocket.
-     * @returns The latest price, or `RTDS_PRICE_NODATA` (-1) if not yet received.
+     * @returns The latest price, or undefined if not yet received.
      */
-    getCurrentPrice(): number;
+    getCurrentPrice(): number | undefined;
 
     /**
      * Returns the timestamp (milliseconds since epoch) of the last received price update.
-     * @returns Timestamp in milliseconds, or `RTDS_PRICE_NODATA` (-1) if no update yet.
+     * @returns Timestamp in milliseconds, or undefined if no update yet.
      */
-    getTimeStamp(): number;
+    getTimeStamp(): number | undefined;
 
     /**
      * Gracefully closes the WebSocket connection and cleans up resources.

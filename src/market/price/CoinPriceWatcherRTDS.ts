@@ -3,19 +3,19 @@ import { Message, RealTimeDataClient } from "@polymarket/real-time-data-client";
 import { PriceWatcher } from "./PriceWatcher.js";
 import { safeToNum } from "../../utils.js";
 
-export const RTDS_PRICE_NODATA = -1;
+const RTDS_PRICE_NODATA = undefined;
 
 /** Interface for a single crypto price update received from RTDS */
 interface RtdsSymbolPriceData {
-    symbol: string;      // e.g., 'btcusdt' or btc/usdt
-    value: number;       // latest price
-    timestamp: number;   // milliseconds since epoch
+    symbol: string;                  // e.g., 'btcusdt' or btc/usdt
+    value: number | undefined;       // latest price or undefined if not received yet
+    timestamp: number | undefined;   // milliseconds since epoch or undefined if not received yet
 }
 
 import { Coin } from "../coins.js";
 
 interface CoinPriceData {
-    coin: Coin;          // e.g., 'btc' or btc
+    coin: Coin;          // e.g., 'btc'
     data: RtdsSymbolPriceData
 }
 
@@ -112,15 +112,15 @@ export class CoinPriceWatcherRTDS implements PriceWatcher {
      * Returns current price data.
      * @returns Readonly copy of RtdsSymbolPriceData
      */
-    public getTimeStamp(): number {
+    public getTimeStamp(): number | undefined {
         return this._priceCoinData.data.timestamp;
     }
 
     /**
      * Returns the most recent price received from the WebSocket.
-     * @returns The latest price, or RTDS_PRICE_NODATA (-1) if not yet received or disconnected.
+     * @returns The latest price, or undefined if not yet received or disconnected.
      */
-    public getCurrentPrice(): number {
+    public getCurrentPrice(): number | undefined {
         return this._priceCoinData.data.value;
     }
     /**

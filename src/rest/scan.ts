@@ -7,7 +7,7 @@ export interface MarketRaw {
   conditionId: string;
   clobTokenIds: string[];
   liquidity: string;
-  fee: string; //TODO: check if needed
+  fee: string; //TODO: check, mb not need
   volume: string;
   active: boolean;
   closed: boolean;
@@ -36,20 +36,24 @@ export async function fetchEventBySlug(slug: string): Promise<EventRaw> {
 
   const rawData = await retry(
     async () => {
+      // TODO: Add net TypeError try-catch and logger exec
+      // https://developer.mozilla.org/ru/docs/Web/API/Window/fetch
       const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      if (!response.ok) throw new Error(`[${getISOTimestamp()}] HTTP ${response.status}: ${response.statusText}`);
       const json = await response.json();
       if (!json || typeof json !== 'object') throw new Error('Invalid JSON response');
       return json;
     }
   );
-
+  if (!rawData || typeof rawData !== 'object') throw new Error(`[${getISOTimestamp()}] Invalid event by slug response!`);
   if (rawData.slug !== slug) {
     throw new Error(`[${getISOTimestamp()}] Returned slug (${rawData.slug}) does not match requested (${slug})`);
   }
-
+  if (!Array.isArray(rawData.markets)) {
+      throw new Error(`Invalid response to event by slug data: markets is not an array!`);
+  }
   // Parse markets if present, with safe handling of clobTokenIds
-  const markets = rawData.markets.map((market: any) => {
+    const markets = rawData.markets.map((market: any) => {
     // Safely parse clobTokenIds (might be JSON string or already array)
     let clobTokenIds: string[];
     try {

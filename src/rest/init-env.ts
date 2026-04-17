@@ -2,7 +2,7 @@ import { ClobClient } from "@polymarket/clob-client";
 import { Wallet } from "ethers";
 import "dotenv/config";
 
-import { safeToNum } from "../utils.js";
+import { error_str, safeToNum } from "../utils.js";
 import { REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID } from "./hosts.js";
 
 /**
@@ -74,8 +74,8 @@ function getTradingEnvConfig(): TradingEnvConfig {
     let privateKey: string;
     try {
         privateKey = normalizePrivateKey(rawPrivateKey!);
-    } catch (err) {
-        throw new Error(`Invalid PRIVATE_KEY: ${err instanceof Error ? err.message : String(err)}`);
+    } catch (error) {
+        throw new Error(`Invalid PRIVATE_KEY: ${error_str(error)}`);
     }
 
     // Validate funder address format
@@ -85,12 +85,19 @@ function getTradingEnvConfig(): TradingEnvConfig {
     }
 
     // Parse signature type (optional, default = 2)
-    const signatureTypeRaw = safeToNum(process.env.SIGNATURE_TYPE);
+    const signatureTypeRaw = safeToNum(process.env.SIGNATURE_TYPE, 2);
     let signatureType = 2;
-    if (!isNaN(signatureTypeRaw) && Number.isInteger(signatureTypeRaw) && signatureTypeRaw >= 0) {
+    if (signatureTypeRaw >= 0) {
         signatureType = signatureTypeRaw;
     }
 
+    // Enforce integer
+    if (!Number.isInteger(signatureType)) {
+        throw new Error(`SIGNATURE_TYPE must be an integer (0-2). Got: ${signatureType}`);
+    }
+    if (signatureType > 2) {
+        throw new Error(`SIGNATURE_TYPE is set to ${signatureType}, expected 0-2.`);
+    }
     if (signatureType !== 2) {
         console.warn(`SIGNATURE_TYPE is set to ${signatureType}, expected 2 (EIP-712). Trading may fail.`);
     }
@@ -186,6 +193,6 @@ export async function fstInitDeriveApiCredentials(privateKey: string): Promise<{
             passphrase: creds.passphrase,
         };
     } catch (error) {
-        throw new Error(`Failed to derive API credentials: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Failed to derive API credentials: ${error_str(error)}`);
     }
 }
