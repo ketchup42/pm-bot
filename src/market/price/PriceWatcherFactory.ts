@@ -1,0 +1,123 @@
+import { CoinPriceWatcherRTDS } from './CoinPriceWatcherRTDS.js';
+import { Coin } from '../coins.js';
+import { PriceSource } from './CoinPriceWatcherRTDS.js';
+import { PriceWatcher } from './PriceWatcher.js';
+import { logger } from '../../log.js';
+import { error_str } from '../../utils.js';
+
+/**
+ * Factory that creates and manages PriceWatchers instances.
+ * Uses a singleton pattern per (coin, source) combination, for CoinPriceWatchers.
+ * Add more for other types of watchers.
+ */
+export class PriceWatcherFactory {
+
+    private static _instances: Map<string, PriceWatcher> = new Map();
+
+    private static getCoinKey(coin: Coin, source: PriceSource): string {
+        return `${coin}|${source}`;
+    }
+
+    /**
+     * Returns a price watcher instance for the given coin and source.
+     * Reuses an existing instance if one already exists for this (coin, source) pair.
+     *
+     * @param coin - The coin type (e.g., 'btc', 'eth').
+     * @param source - The price source: 'binance' or 'chainlink' (default 'binance').
+     * @returns The price watcher instance.
+     *
+     * TODO NOTE: This method is not safe for concurrent async calls.
+     * For parallel initialization, use external synchronization.
+     * 
+     */
+    static getCoinWatcher(coin: Coin, source: PriceSource = 'binance'): PriceWatcher {
+        const key = this.getCoinKey(coin, source);
+        const existing = this._instances.get(key);
+        if (existing) {
+            return existing;
+        }
+        const watcher = new CoinPriceWatcherRTDS(coin, source);
+        this._instances.set(key, watcher);
+        return watcher;
+    }
+
+    // ========== Asynchronous version with locking (commented out) ==========
+    // private static _pending: Map<string, Promise<PriceWatcher>> = new Map();
+    //
+    // static async getCoinWatcherAsync(coin: Coin, source: PriceSource = 'binance'): Promise<PriceWatcher> {
+    //     const key = this.getCoinKey(coin, source);
+    //     const pending = this._pending.get(key);
+    //     if (pending) return pending;
+    //
+    //     const creationPromise = (async () => {
+    //         const existing = this._instances.get(key);
+    //         if (existing) return existing;
+    //         const watcher = new CoinPriceWatcherRTDS(coin, source);
+    //         this._instances.set(key, watcher);
+    //         return watcher;
+    //     })();
+    //
+    //     this._pending.set(key, creationPromise);
+    //     try {
+    //         return await creationPromise;
+    //     } finally {
+    //         this._pending.delete(key);
+    //     }
+    // }
+
+    /**
+     * Creates a **new** price watcher instance without reusing any existing one.
+     * Useful when you need multiple independent connections to the same (coin, source).
+     *
+     * @param coin - The coin type.
+     * @param source - The price source (default 'binance').
+     * @returns A fresh price watcher instance.
+     */
+    static createNewCoinWatcher(coin: Coin, source: PriceSource = 'binance'): PriceWatcher {
+        return new CoinPriceWatcherRTDS(coin, source);
+    }
+
+   /**
+     * Disconnects and removes the cached instance for a specific (coin, source).
+     * @param coin - The coin type.
+     * @param source - The price source (default 'binance').
+     */
+    static destroyCoinWatcher(coin: Coin, source: PriceSource = 'binance'): void {
+        const key = this.getCoinKey(coin, source);
+        const watcher = this._instances.get(key);
+        if (watcher) {
+            try {
+                watcher.disconnect();
+            } catch (error) {
+                logger.error(`Error disconnecting watcher for ${key}: ${error_str(error)}`);
+            }
+            this._instances.delete(key);
+        }
+    }
+
+    /**
+     * Disconnects and clears all cached instances.
+     */
+    static destroyAll(): void {
+        for (const [key, watcher] of this._instances.entries()) {
+            try {
+                watcher.disconnect();
+            } catch (error) {
+                logger.error(`Error disconnecting watcher for ${key}: ${error_str(error)}`);
+            }
+        }
+        this._instances.clear();
+    }
+}
+
+/**
+ * Simple factory function – creates a new price watcher for the given coin and source.
+ * Does NOT cache instances.
+ *
+ * @param coin - The coin type.
+ * @param source - The price source (default 'binance').
+ * @returns A new price watcher instance.
+ */
+export function createCoinPriceWatcher(coin: Coin, source: PriceSource = 'binance'): PriceWatcher {
+    return new CoinPriceWatcherRTDS(coin, source);
+}
