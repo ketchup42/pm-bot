@@ -68,6 +68,5 @@ jest.config.js
 .coverage/
 
 # Other
-TYPO
-TODO.md
 /trash
+/history
