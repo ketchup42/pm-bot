@@ -15,7 +15,7 @@ export class LogCoinStrategy implements EventStrategy<CoinFrameEventMarketData> 
      * @param watchers - Array of event watchers (ignored)
      * @returns Always `false`
      */
-    public check(watchers: readonly EventWatcher<CoinFrameEventMarketData>[]): boolean {
+    public async check(watchers: readonly EventWatcher<CoinFrameEventMarketData>[]): Promise<boolean> {
         logger.info("INFO: LogCoinStrategy check..");
         return false;
     }

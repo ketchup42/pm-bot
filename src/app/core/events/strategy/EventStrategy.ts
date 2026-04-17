@@ -12,7 +12,7 @@ export interface EventStrategy<EventDataType> {
      * @param watchers – Read-only list of event watchers.
      * @returns True if execution should proceed.
      */
-    check(watchers: readonly EventWatcher<EventDataType>[]): boolean;
+    check(watchers: readonly EventWatcher<EventDataType>[]): Promise<boolean>;
 
     /**
      * Executes the strategy (e.g., places orders on Polymarket). Execute is async because of order requests.
