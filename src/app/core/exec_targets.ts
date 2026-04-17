@@ -1,4 +1,4 @@
-import { CoinFrameEventMarketData } from "./history/coin_frame";
+import { CoinFrameEventMarketData } from "./history/coin_frame.js";
 
 /**
  * Set of types that can be used by exec system master class.

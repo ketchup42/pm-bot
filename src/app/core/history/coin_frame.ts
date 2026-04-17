@@ -1,5 +1,6 @@
 import { Coin } from "../../../market/coins.js";
 import { OrderBookLevel } from "../../../market/orderbook/watcher/EventOrderBooksWatcher.js";
+import { MarketSide } from "../../../market/side.js";
 
 export interface CoinFrameEventMarketData
 {

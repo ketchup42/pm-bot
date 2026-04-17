@@ -1,7 +1,7 @@
+import { ClobClient } from "@polymarket/clob-client";
 import { EventStrategy } from "./EventStrategy.js";
 import { CoinFrameEventMarketData } from "../../history/coin_frame.js";
 import { EventWatcher } from "../EventWatcher.js";
-import { ClobClient } from "@polymarket/clob-client";
 import { logger } from "../../../../log.js";
 
 /**

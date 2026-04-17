@@ -1,6 +1,6 @@
 import { ClobClient } from "@polymarket/clob-client";
-import { EventWatcher } from "./events/EventWatcher";
-import { EventStrategy } from "./events/strategy/EventStrategy";
+import { EventWatcher } from "./events/EventWatcher.js";
+import { EventStrategy } from "./events/strategy/EventStrategy.js";
 import { ExecTarget } from "./exec_targets.js"
 import { logger } from "../../log.js";
 import { delay, error_str, getISOTimestamp } from "../../utils.js";

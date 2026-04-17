@@ -1,4 +1,4 @@
-import { REST_DEFAULT_HOST_GEO } from "./hosts";
+import { REST_DEFAULT_HOST_GEO } from "./hosts.js";
 
 /**
  * Response structure from Polymarket's geoblocking endpoint.
