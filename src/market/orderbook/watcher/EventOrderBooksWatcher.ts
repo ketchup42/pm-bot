@@ -1,3 +1,5 @@
+import { MarketSide } from "../../side.js";
+
 /** Intermediate layer after manager's internal book cache. */
 export type OrderBookLevel = {
     price: string;

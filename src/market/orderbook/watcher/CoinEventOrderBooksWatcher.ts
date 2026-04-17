@@ -1,4 +1,5 @@
 import { logger } from "../../../log.js";
+import { MarketSide } from "../../side.js";
 import { EventRaw, fetchEventBySlug } from "../../../rest/scan.js";
 import { error_str, isValid, isoToMs, safeToNum } from "../../../utils.js";
 import { WSSubscriptionManager, WSSubscriptionManagerHandlers } from "../manager/WSSubscriptionManager.js";
