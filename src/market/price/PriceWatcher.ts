@@ -22,6 +22,14 @@ export interface PriceWatcher {
     getTimeStamp(): number | undefined;
 
     /**
+     * This function guarantees that the watcher will establish the first connection 
+     * and receive the first price updates after a delay.
+     * @param tick Force delay during warming up.
+     * @returns Returns itself to chain-call.
+     */
+    warmUp(tick: number): Promise<this>;
+
+    /**
      * Gracefully closes the WebSocket connection and cleans up resources.
      */
     disconnect(): void;

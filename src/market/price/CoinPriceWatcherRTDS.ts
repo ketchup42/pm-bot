@@ -1,7 +1,7 @@
 import { Message, RealTimeDataClient } from "@polymarket/real-time-data-client";
 
 import { PriceWatcher } from "./PriceWatcher.js";
-import { safeToNum } from "../../utils.js";
+import { delay, safeToNum } from "../../utils.js";
 
 const RTDS_PRICE_NODATA = undefined;
 
@@ -53,9 +53,9 @@ export class CoinPriceWatcherRTDS implements PriceWatcher {
     /**
      * Creates a new price watcher and immediately connects to the RTDS WebSocket.
      * @param coin - Crypto coin, e.g., 'btc', 'eth'
-     * @param source - Price source: 'binance' or 'chainlink' (default 'binance')
+     * @param source - Price source: 'binance' or 'chainlink'
      */
-    constructor(coin: Coin, source: PriceSource = "binance") {
+    constructor(coin: Coin, source: PriceSource) {
         // Map coin to symbol string based on source
         const getSymbol = (coin: Coin, source: PriceSource): string => {
             if (source === 'binance') {
@@ -123,6 +123,18 @@ export class CoinPriceWatcherRTDS implements PriceWatcher {
     public getCurrentPrice(): number | undefined {
         return this._priceCoinData.data.value;
     }
+
+    /**
+     * This function guarantees that the watcher will establish the first connection 
+     * and receive the first price updates after a delay.
+     * @param tick Force delay during warming up.
+     * @returns Returns itself to chain-call.
+     */
+    public async warmUp(tick: number = 25): Promise<this> {
+        while(!this.getCurrentPrice()) await delay(tick);
+        return this;
+    }
+
     /**
      * Returns the price source (Binance or Chainlink) based on the subscribed topic.
      * @returns 'binance' for crypto_prices, 'chainlink' for crypto_prices_chainlink
