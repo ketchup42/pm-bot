@@ -30,7 +30,7 @@ export class PriceWatcherFactory {
      * For parallel initialization, use external synchronization.
      * 
      */
-    static getCoinWatcher(coin: Coin, source: PriceSource = 'binance'): PriceWatcher {
+    static getCoinWatcher(coin: Coin, source: PriceSource): PriceWatcher {
         const key = this.getCoinKey(coin, source);
         const existing = this._instances.get(key);
         if (existing) {
@@ -70,19 +70,19 @@ export class PriceWatcherFactory {
      * Useful when you need multiple independent connections to the same (coin, source).
      *
      * @param coin - The coin type.
-     * @param source - The price source (default 'binance').
+     * @param source - The price source.
      * @returns A fresh price watcher instance.
      */
-    static createNewCoinWatcher(coin: Coin, source: PriceSource = 'binance'): PriceWatcher {
+    static createNewCoinWatcher(coin: Coin, source: PriceSource): CoinPriceWatcherRTDS {
         return new CoinPriceWatcherRTDS(coin, source);
     }
 
    /**
      * Disconnects and removes the cached instance for a specific (coin, source).
      * @param coin - The coin type.
-     * @param source - The price source (default 'binance').
+     * @param source - The price source.
      */
-    static destroyCoinWatcher(coin: Coin, source: PriceSource = 'binance'): void {
+    static destroyCoinWatcher(coin: Coin, source: PriceSource): void {
         const key = this.getCoinKey(coin, source);
         const watcher = this._instances.get(key);
         if (watcher) {
@@ -115,9 +115,9 @@ export class PriceWatcherFactory {
  * Does NOT cache instances.
  *
  * @param coin - The coin type.
- * @param source - The price source (default 'binance').
+ * @param source - The price source.
  * @returns A new price watcher instance.
  */
-export function createCoinPriceWatcher(coin: Coin, source: PriceSource = 'binance'): PriceWatcher {
+export function createCoinPriceWatcher(coin: Coin, source: PriceSource): CoinPriceWatcherRTDS {
     return new CoinPriceWatcherRTDS(coin, source);
 }

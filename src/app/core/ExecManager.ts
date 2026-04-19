@@ -10,7 +10,6 @@ import { delay, error_str, getISOTimestamp } from "../../utils.js";
  * Coordinates event checking and order execution.
  */
 export class ExecManager {
-
     private _client: ClobClient;
     private _watchers: EventWatcher<ExecTarget>[];
     private _strategies: EventStrategy<ExecTarget>[];
@@ -28,7 +27,7 @@ export class ExecManager {
     /**
      * Starts the main execution loop.
      * Runs until all watchers are finished or shutdown is called.
-     * @param tick - Delay (in milliseconds) between loop iterations. Minimum 1 ms.
+     * @param tick - Delay (in milliseconds) between loop iterations of strategies executions. Minimum 1 ms.
      */
     public async start(tick: number): Promise<void> {
         try {
@@ -36,7 +35,7 @@ export class ExecManager {
 
             tick = Math.max(1, tick);
             if (this._watchers.length === 0) {
-                logger.warn(`EXEC MANAGER WARN: No watchers provided!`);
+                logger.warn(`EXEC MANAGER WARN: NO WATCHERS PROVIDED!`);
                 return;
             }
             this._isStopped = false;
@@ -66,6 +65,8 @@ export class ExecManager {
             } catch (dieError) {
                 logger.error(`RED ALERT! SYSTEM IN INCONSISTENT STATE! ERROR DURING DIE: ${error_str(dieError)}`);
             }
+        } finally {
+            logger.info(`[${getISOTimestamp()}] EXEC MANAGER INFO: STOP`);
         }
     }
 
@@ -76,6 +77,7 @@ export class ExecManager {
      */
     public shutdown(): void {
         this._isStopped = true;
+        logger.warn(`EXEC MANAGER WARN: SHUTDOWN SIGNAL!`);
     }
 
     /**

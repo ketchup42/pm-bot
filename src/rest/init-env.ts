@@ -117,7 +117,7 @@ function getTradingEnvConfig(): TradingEnvConfig {
  * Returns a public (unauthenticated) CLOB client.
  * Use this for read‑only operations like fetching order books or market data.
  */
-export function initGetPublicClientRest(): ClobClient {
+export function initPublicClientRest(): ClobClient {
     if (!REST_DEFAULT_HOST_CLOB || !REST_CHAIN_ID) {
         throw new Error('Missing REST_DEFAULT_HOST_CLOB or REST_CHAIN_ID configuration');
     }
@@ -129,7 +129,7 @@ export function initGetPublicClientRest(): ClobClient {
  * Returns an authenticated CLOB client for trading.
  * Requires environment variables to be set (see .env.example).
  */
-export function initGetTradingClientRest(): ClobClient {
+export function initTradingClientRest(): ClobClient {
     // Read and validate all env vars in one place
     const config = getTradingEnvConfig();
 
