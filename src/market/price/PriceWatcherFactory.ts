@@ -1,9 +1,9 @@
 import { CoinPriceWatcherRTDS } from './CoinPriceWatcherRTDS.js';
 import { Coin } from '../coins.js';
 import { PriceSource } from './CoinPriceWatcherRTDS.js';
-import { PriceWatcher } from './PriceWatcher.js';
 import { logger } from '../../log.js';
 import { error_str } from '../../utils.js';
+import { CoinPriceWatcher } from './CoinPriceWatcher.js';
 
 /**
  * Factory that creates and manages PriceWatchers instances.
@@ -12,7 +12,7 @@ import { error_str } from '../../utils.js';
  */
 export class PriceWatcherFactory {
 
-    private static _instances: Map<string, PriceWatcher> = new Map();
+    private static _instances: Map<string, CoinPriceWatcher> = new Map();
 
     private static getCoinKey(coin: Coin, source: PriceSource): string {
         return `${coin}|${source}`;
@@ -30,7 +30,7 @@ export class PriceWatcherFactory {
      * For parallel initialization, use external synchronization.
      * 
      */
-    static getCoinWatcher(coin: Coin, source: PriceSource): PriceWatcher {
+    static getCoinWatcher(coin: Coin, source: PriceSource): CoinPriceWatcher {
         const key = this.getCoinKey(coin, source);
         const existing = this._instances.get(key);
         if (existing) {
@@ -73,7 +73,7 @@ export class PriceWatcherFactory {
      * @param source - The price source.
      * @returns A fresh price watcher instance.
      */
-    static createNewCoinWatcher(coin: Coin, source: PriceSource): CoinPriceWatcherRTDS {
+    static createNewCoinWatcher(coin: Coin, source: PriceSource): CoinPriceWatcher {
         return new CoinPriceWatcherRTDS(coin, source);
     }
 
@@ -118,6 +118,6 @@ export class PriceWatcherFactory {
  * @param source - The price source.
  * @returns A new price watcher instance.
  */
-export function createCoinPriceWatcher(coin: Coin, source: PriceSource): CoinPriceWatcherRTDS {
+export function createCoinPriceWatcher(coin: Coin, source: PriceSource): CoinPriceWatcher {
     return new CoinPriceWatcherRTDS(coin, source);
 }

@@ -1,6 +1,5 @@
 import { Message, RealTimeDataClient } from "@polymarket/real-time-data-client";
 
-import { PriceWatcher } from "./PriceWatcher.js";
 import { delay, safeToNum } from "../../utils.js";
 
 const RTDS_PRICE_NODATA = undefined;
@@ -13,6 +12,7 @@ interface RtdsSymbolPriceData {
 }
 
 import { Coin } from "../coins.js";
+import { CoinPriceWatcher } from "./CoinPriceWatcher.js";
 
 interface CoinPriceData {
     coin: Coin;          // e.g., 'btc'
@@ -26,7 +26,7 @@ type CoinTopic = { source: PriceSource, name: "crypto_prices" | "crypto_prices_c
  * Watches real‑time symbol prices using Polymarket's RTDS WebSocket.
  * Uses the official @polymarket/real-time-data-client SDK.
  */
-export class CoinPriceWatcherRTDS implements PriceWatcher {
+export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
     private _rtdcClient: RealTimeDataClient;
 
     private _priceTopic: CoinTopic;
