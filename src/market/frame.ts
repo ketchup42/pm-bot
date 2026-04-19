@@ -52,6 +52,15 @@ export function getFrameDuration(frame: EventFrame): number {
 }
 
 /**
+ * Returns the duration of the given frame type in ms.
+ * @param frame - The frame type ('5m' or '15m')
+ * @returns Duration in ms (300_000 for '5m', 900_000 for '15m')
+ */
+export function getFrameDurationMs(frame: EventFrame): number {
+    return frame === '5m' ? 300_000 : 900_000;
+}
+
+/**
  * Generates the deterministic slug for any coin's 5-minute market.
  * @param coin - The coin identifier (e.g., 'btc', 'doge', 'eth', 'sol')
  * @returns Market slug like "doge-updown-5m-1742227200"

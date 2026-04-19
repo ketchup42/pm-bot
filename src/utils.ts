@@ -173,3 +173,25 @@ export async function fileWrite(
         throw new Error(`Failed to write to ${filePath}: ${error}`);
     }
 }
+
+/**
+ * Registers an async callback to be executed on SIGINT or SIGTERM signals.
+ * The process will exit with code 0 after the callback completes.
+ * 
+ * @param callback - Async function to run when a shutdown signal is received.
+ * 
+ * @example
+ * regSignals(async () => {
+ *     await manager.shutdown();
+ * });
+ */
+export function killSignalsHook(callback: () => Promise<void>): void {
+    process.on('SIGINT', async () => {
+        await callback();
+        process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+        await callback();
+        process.exit(0);
+    });
+}
