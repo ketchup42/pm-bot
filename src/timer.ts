@@ -1,5 +1,9 @@
 type TickHandler = () => void;
 
+export const TIMER_SLOW = 100;
+export const TIMER_NORM = 50;
+export const TIMER_FAST = 25;
+
 /**
  * Wrapper for a timer that executes a handler periodically.
  * - If tickMs > 0: handler runs every `tickMs` milliseconds (setInterval).

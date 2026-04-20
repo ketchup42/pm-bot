@@ -3,7 +3,12 @@ import { EventWatcher } from "./events/EventWatcher.js";
 import { EventStrategy } from "./events/strategy/EventStrategy.js";
 import { ExecTarget } from "./exec_targets.js"
 import { logger } from "../../log.js";
-import { delay, error_str, getISOTimestamp } from "../../utils.js";
+import { delay, error_str} from "../../utils.js";
+import { TIMER_FAST, TIMER_NORM, TIMER_SLOW } from "../../timer.js";
+
+export const EXEC_STRAT_SLOW = TIMER_SLOW;
+export const EXEC_STRAT_NORM = TIMER_NORM;
+export const EXEC_STRAT_FAST = TIMER_FAST;
 
 /*
  * Manages the execution loop of watchers and strategies.
@@ -13,6 +18,7 @@ export class ExecManager {
     private _client: ClobClient;
     private _watchers: EventWatcher<ExecTarget>[];
     private _strategies: EventStrategy<ExecTarget>[];
+    private _diePromise: Promise<void> | null = null;
 
     private _isStopped = false;
     private _disposed = false;
@@ -29,7 +35,7 @@ export class ExecManager {
      * Runs until all watchers are finished or shutdown is called.
      * @param tick - Delay (in milliseconds) between loop iterations of strategies executions. Minimum 1 ms.
      */
-    public async start(tick: number): Promise<void> {
+    public async start(tick: number = EXEC_STRAT_NORM): Promise<void> {
         try {
             if (this._disposed) return;
 
@@ -44,11 +50,8 @@ export class ExecManager {
                 await Promise.allSettled(
                     this._strategies.map(async strategy => {
                         try {
-                            const checkResult = await strategy.check(this._watchers);
-                            if (checkResult) {
-                                const execResult = !this._isStopped && await strategy.execute(this._client, this._watchers);
-                                if (execResult) logger.info(`[${getISOTimestamp()}] EXEC MANAGER INFO: STRATEGY EXECUTE SUCCESS!`);
-                            }
+                            const execResult = !this._isStopped && await strategy.execute(this._client, this._watchers);
+                            if (execResult) logger.info(`EXEC MANAGER INFO: STRATEGY EXECUTE SUCCESS!`);
                         } catch (error) {
                             logger.error(`STRATEGY ERROR: ${error_str(error)}`);
                         }
@@ -57,7 +60,9 @@ export class ExecManager {
                 // Global tick delay
                 if (!this._isStopped) await delay(tick);
             }
-            await this.die();
+            if (!this._disposed) 
+                await this.die();
+
         } catch (error) {
             logger.error(`SYSTEM ERROR: ${error_str(error)}`);
             try {
@@ -66,7 +71,7 @@ export class ExecManager {
                 logger.error(`RED ALERT! SYSTEM IN INCONSISTENT STATE! ERROR DURING DIE: ${error_str(dieError)}`);
             }
         } finally {
-            logger.info(`[${getISOTimestamp()}] EXEC MANAGER INFO: STOP`);
+            logger.info(`EXEC MANAGER INFO: STOPED`);
         }
     }
 
@@ -75,9 +80,10 @@ export class ExecManager {
      * Signals the main loop to stop and triggers cleanup of strategies and watchers.
      * Designed to be called from SIGINT/SIGTERM handlers.
      */
-    public shutdown(): void {
-        this._isStopped = true;
-        logger.warn(`EXEC MANAGER WARN: SHUTDOWN SIGNAL!`);
+    public async shutdown(): Promise<void> {
+        this._isStopped = true; // For master manager loop exit
+        logger.info(`EXEC MANAGER INFO: SHUTDOWN SIGNAL!`);
+        await this.die();
     }
 
     /**
@@ -86,10 +92,14 @@ export class ExecManager {
      * @private
      */
     private async die(): Promise<void> {
-        if (this._disposed) return;
-        this._disposed = true;
-
-        await Promise.all(this._strategies.map(strategy => strategy.cancel(this._client, this._watchers)));
-        await Promise.all(this._watchers.map(async watcher => watcher.dispose()));
+        if (this._diePromise) return this._diePromise;
+        this._diePromise = (async () => {
+            if (this._disposed) return;
+            this._disposed = true;
+            await Promise.all(this._strategies.map(s => s.cancel(this._client, this._watchers)));
+            await Promise.all(this._watchers.map(w => w.dispose()));
+            logger.info(`EXEC MANAGER INFO: CLEANUP FINISHED`);
+        })();
+        return this._diePromise;
     }
 }

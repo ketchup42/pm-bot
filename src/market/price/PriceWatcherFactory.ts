@@ -1,6 +1,6 @@
 import { CoinPriceWatcherRTDS } from './CoinPriceWatcherRTDS.js';
+import { PriceSource } from './price_source.js';
 import { Coin } from '../coins.js';
-import { PriceSource } from './CoinPriceWatcherRTDS.js';
 import { logger } from '../../log.js';
 import { error_str } from '../../utils.js';
 import { CoinPriceWatcher } from './CoinPriceWatcher.js';

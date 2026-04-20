@@ -1,3 +1,9 @@
+import { TIMER_FAST, TIMER_SLOW, TIMER_NORM } from "../../timer.js";
+
+export const WARM_UP_SLOW = TIMER_SLOW;
+export const WARM_UP_NORM = TIMER_NORM;
+export const WARM_UP_FAST = TIMER_FAST;
+
 /**
  * Defines the public contract for a cryptocurrency price watcher using Polymarket RTDS.
  */
