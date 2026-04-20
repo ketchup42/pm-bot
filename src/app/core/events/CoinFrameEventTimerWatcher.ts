@@ -8,6 +8,9 @@ import { EventWatcher } from "./EventWatcher.js";
 import { roundTo } from "../../../utils.js";
 import { TickTimer } from "../../../timer.js";
 import { logger } from "../../../log.js";
+import { WARM_UP_FAST } from "../../../market/price/PriceWatcher.js";
+import { PriceWatcherFactory } from "../../../market/price/PriceWatcherFactory.js";
+import { PriceSource } from "../../../market/price/price_source.js";
 
 /**
  * Watches a coin's order book and price at a fixed interval (timer mode).
@@ -41,6 +44,8 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
      */
     const coinCurrentPrice = this._coinPriceWatcher.getCurrentPrice();
     
+    // TODO FIX: Add 500-650 ms timeout to start price fetch, mb start price error if there are no updates of price for 600+ms
+
     if (this.___coinFrameStartPriceReal && !this.___isCoinFrameStartPriceRealWritten && this.___coinFrameStartPriceReal !== coinCurrentPrice) {
       const startPrice = roundTo(coinCurrentPrice, coin_precis(this._coin));
 
@@ -116,7 +121,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
     const coinCurrentPrice = this.getCoinPrice();
 
     // If we have some problems with price mb connection errors than wait until next call
-    if (!coinCurrentPrice) { logger.warn(`WARN: Coin price watcher current price return error for ${this._coinPriceWatcher.getSymbol()}.`); return; }
+    if (!coinCurrentPrice) { logger.warn(`WARN: Coin price watcher current price return error for ${this._coinPriceWatcher.getCoin().toString()}.`); return; }
 
     const coinFrameUpEventDTO: MarketTokenSnapshot =
     {
@@ -149,7 +154,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
   }
 
 
-  private constructor(coin: Coin, tick: number, watcher: CoinPriceWatcher, frame: EventFrame = '5m')
+  private constructor(coin: Coin, frame: EventFrame, tick: number, watcher: CoinPriceWatcher)
   {
     if (tick <= 0) throw Error("Error: Ticks can not be less than zero!");
     
@@ -215,16 +220,31 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
   }
 
   /**
-   * Creates a new timer‑driven watcher for the given coin and frame.
+   * Creates a new timer‑driven watcher for the given coin and frame and other.
    * @param coin - The coin to watch.
+   * @param frame - Time frame for the watcher.
    * @param tick - Snapshot interval in milliseconds (must be > 0).
    * @param watcher - Price watcher for the coin.
-   * @param frame - Time frame for the watcher (default '5m').
    * @returns A promise that resolves to the initialized watcher (timer already enabled).
    */
-  public static async create(coin: Coin, tick: number, watcher: CoinPriceWatcher, frame: EventFrame = '5m'): Promise<CoinFrameEventTimerWatcher> {
+  public static async create(coin: Coin, frame: EventFrame, tick: number, watcher: CoinPriceWatcher): Promise<CoinFrameEventTimerWatcher> {
     if (watcher.getCoin() !== coin) throw new Error("Error: Given CoinPriceWatcher has a different target coin!");
-    const instance = new CoinFrameEventTimerWatcher(coin, tick, watcher, frame);
+    const instance = new CoinFrameEventTimerWatcher(coin, frame, tick, watcher);
+    await instance.init();
+    return instance;
+  }
+
+  /**
+   * Creates a new timer‑driven watcher for the given coin and frame and other, delay to warm up the coin price watcher.
+   * @param coin - The coin to watch.
+   * @param frame - Time frame for the watcher.
+   * @param tick - Snapshot interval in milliseconds (must be > 0).
+   * @param source - Price source for coin price watcher.
+   * @returns A promise that resolves to the initialized watcher (timer already enabled).
+   */
+  public static async create_me(coin: Coin, frame: EventFrame, tick: number, source: PriceSource): Promise<CoinFrameEventTimerWatcher> {
+    const watcher = await PriceWatcherFactory.getCoinWatcher(coin, source).warmUp(WARM_UP_FAST);
+    const instance = new CoinFrameEventTimerWatcher(coin, frame, tick, watcher);
     await instance.init();
     return instance;
   }
