@@ -13,19 +13,23 @@ export async function getTakerFeeBps(client: ClobClient, tokenId: string): Promi
 }
 
 /**
- * Calculates the taker fee for a Polymarket order.
- * @param shares - Number of shares being traded.
- * @param price - The price per share (e.g., 0.65 for 65 cents).
- * @param feeRateBps - Fee rate in basis points.
- * @returns The fee amount in USDC.
+ * Calculates the taker fee for a trade on Polymarket.
+ *
+ * @param shares - Number of shares being traded
+ * @param price - Price per share (in USDC, typically between 0.01 and 0.99)
+ * @param feeRateDecimal - Taker fee rate as a decimal (e.g., 0.072 for Crypto markets)
+ * @returns The fee amount in USDC
+ *
+ * @see https://docs.polymarket.com/trading/fees
  */
-export function calculateTakerFee(shares: number, price: number, feeRateBps: number): number {
-    // The official documentation states the formula is:
-    // fee = C × p × feeRate × (p × (1 - p))^exponent
-    // Where feeRate is the taker fee rate.
-    const feeRateDecimal = feeRateBps / 10000; // Convert basis points (e.g., 30 -> 0.0030)
-    // Using an exponent of 1 for now, as it's the most common.
-    const exponent = 1;
-    const fee = shares * price * feeRateDecimal * Math.pow(price * (1 - price), exponent);
-    return fee;
+export function calculateTakerFee(shares: number, price: number, feeRateDecimal: number): number {
+    // Formula: fee = C × feeRate × p × (1 - p)
+    // where C = shares, feeRate = taker fee rate (decimal), p = price
+    const fee = shares * feeRateDecimal * price * (1 - price);
+    
+    // Round to 5 decimal places as per Polymarket's fee precision
+    const roundedFee = Math.round(fee * 1e5) / 1e5;
+    
+    // Minimum fee is 0.00001 USDC; anything smaller rounds to zero
+    return roundedFee < 0.00001 ? 0 : roundedFee;
 }

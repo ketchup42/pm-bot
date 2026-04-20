@@ -4,6 +4,7 @@
   "description": "Polymarket trading little bot:)",
   "main": "dist/app/index.js",
   "scripts": {
+    "start": "node ./dist/app/index.js",
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "node --experimental-strip-types src/app/index.ts",
