@@ -8,14 +8,7 @@ import { EventWatcher } from "../EventWatcher.js";
 export interface EventStrategy<EventDataType> {
 
     /**
-     * Checks if the strategy conditions are met.
-     * @param watchers – Read-only list of event watchers.
-     * @returns True if execution should proceed.
-     */
-    check(watchers: readonly EventWatcher<EventDataType>[]): Promise<boolean>;
-
-    /**
-     * Executes the strategy (e.g., places orders on Polymarket). Execute is async because of order requests.
+     * Checks if the strategy conditions are met and executes the strategy (e.g., places orders on Polymarket). Execute is async because of order requests.
      * @param client – Polymarket CLOB client.
      * @param watchers – Read-only list of event watchers.
      * @returns True if execution succeeded.

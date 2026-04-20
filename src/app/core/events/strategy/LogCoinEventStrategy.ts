@@ -11,16 +11,6 @@ import { logger } from "../../../../log.js";
 export class LogCoinStrategy implements EventStrategy<CoinFrameEventMarketData> {
 
     /**
-     * Logs that the check phase was called and always returns `false`.
-     * @param watchers - Array of event watchers (ignored)
-     * @returns Always `false`
-     */
-    public async check(watchers: readonly EventWatcher<CoinFrameEventMarketData>[]): Promise<boolean> {
-        logger.info("INFO: LogCoinStrategy check..");
-        return false;
-    }
-
-    /**
      * Logs that the execute phase was called and always returns `false`.
      * @param client - Polymarket CLOB client (ignored)
      * @param watchers - Array of event watchers (ignored)
