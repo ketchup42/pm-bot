@@ -4,6 +4,8 @@ import "dotenv/config";
 
 import { error_str, safeToNum } from "../utils.js";
 import { REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID } from "./hosts.js";
+import { isMeBlocked } from "./block.js";
+import { ClobApiKeyCreds } from "@polymarket/real-time-data-client";
 
 /**
  *  Environment Variables Configuration Block
@@ -112,6 +114,15 @@ function getTradingEnvConfig(): TradingEnvConfig {
     };
 }
 
+export function getEnvApiKeyCreds(): ClobApiKeyCreds {
+    const config = getTradingEnvConfig();
+    return {
+        key: config.apiKey,
+        secret: config.apiSecret,
+        passphrase: config.apiPassphrase
+    };
+}
+
 /**
  * Public Client (Unauthenticated)
  * Returns a public (unauthenticated) CLOB client.
@@ -129,7 +140,9 @@ export function initPublicClientRest(): ClobClient {
  * Returns an authenticated CLOB client for trading.
  * Requires environment variables to be set (see .env.example).
  */
-export function initTradingClientRest(): ClobClient {
+export async function initTradingClientRest(): Promise<ClobClient> {
+    const block = await isMeBlocked();
+    if (block) throw new Error("TRADING CLIENT INIT FAILED: IP GEO BLOCKED!")
     // Read and validate all env vars in one place
     const config = getTradingEnvConfig();
 
@@ -172,7 +185,7 @@ export async function fstInitDeriveApiCredentials(privateKey: string): Promise<{
     passphrase: string;
 }> {
     if (!privateKey) {
-        throw new Error('Private key is required');
+        throw new Error('Private key is required!');
     }
 
     // Normalize and validate private key

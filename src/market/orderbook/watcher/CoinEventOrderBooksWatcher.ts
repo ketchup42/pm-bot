@@ -3,7 +3,7 @@ import { MarketSide } from "../../side.js";
 import { EventRaw, fetchEventBySlug } from "../../../rest/scan.js";
 import { error_str, isValid, isoToMs, safeToNum } from "../../../utils.js";
 import { WSSubscriptionManager, WSSubscriptionManagerHandlers } from "../manager/WSSubscriptionManager.js";
-import { EventOrderBooksWatcher, MarketTokenData, OrderBookLevel } from "./EventOrderBooksWatcher.js";
+import { EventOrderBooksWatcher, EventTokenMarketData, OrderBookLevel } from "./EventOrderBooksWatcher.js";
 
 /**
  * Manages real‑time order book data for a Polymarket event (Up/Down tokens).
@@ -13,8 +13,8 @@ import { EventOrderBooksWatcher, MarketTokenData, OrderBookLevel } from "./Event
 export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
     private _slug: string;
     private _eventData: EventRaw | undefined = undefined;
-    private _upMarket: MarketTokenData | undefined = undefined;
-    private _downMarket: MarketTokenData | undefined = undefined;
+    private _upMarket: EventTokenMarketData | undefined = undefined;
+    private _downMarket: EventTokenMarketData | undefined = undefined;
 
     private _timestampUp: number | undefined = undefined;
     private _timestampDown: number | undefined = undefined;
@@ -57,13 +57,20 @@ export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
             throw new Error(`OrderBook manager error: expected 2 outcomes/tokenIds, got outcomes=${outcomes.length}, tokenIds=${tokenIds.length}`);
         }
 
+        if (!market.enableOrderBook) 
+            throw new Error(`OrderBook manager error: order book not enabled!`);
+
         /**
          * Polymarket’s API does not guarantee that the first outcome is always "up" and the second "down".
          */
         const eventId = this._eventData.id;
         const marketId = market.id;
-        let upMarket: MarketTokenData | undefined = undefined;
-        let downMarket: MarketTokenData | undefined = undefined;
+        const conditionId = market.conditionId;
+        const tick_size = market.orderPriceMinTickSize;
+        const min_order_size = market.orderMinSize;
+
+        let upMarket: EventTokenMarketData | undefined = undefined;
+        let downMarket: EventTokenMarketData | undefined = undefined;
 
         for (let i = 0; i < outcomes.length; i++) {
             const rawOutcome = outcomes[i];
@@ -72,23 +79,23 @@ export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
             const outcome = rawOutcome.toLowerCase();
 
             if (outcome === 'up') {
-                upMarket = { outcome, tokenId, marketId, eventId };
+                upMarket = { outcome, tokenId, marketId, conditionId, eventId, tick_size, min_order_size };
                 if (downMarket) break;
             } else if (outcome === 'down') {
-                downMarket = { outcome, tokenId, marketId, eventId };
+                downMarket = { outcome, tokenId, marketId, conditionId, eventId, tick_size, min_order_size };
                 if (upMarket) break;
             }
         }
 
         if (!upMarket || !downMarket) {
-            throw new Error(`OrderBook manager error: up/down outcomes not found for slug ${this._slug}`);
+            throw new Error(`OrderBook manager error: up/down outcomes not found for slug: ${this._slug}`);
         }
         this._upMarket = upMarket;
         this._downMarket = downMarket;
 
         
         const options = {
-            reconnectAndCleanupIntervalMs: 750,
+            reconnectAndCleanupIntervalMs: 500,
             pendingFlushIntervalMs: 50,
         };
 
@@ -149,7 +156,18 @@ export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
             },
 
             onTickSizeChange: async (events) => {
-                //...
+                events.forEach((event) => {
+
+                    const newTickSize = safeToNum(event.new_tick_size);
+                    if (newTickSize <= 0) return;
+                    if (this._upMarket && event.market === this._upMarket.marketId) {
+                        this._upMarket.tick_size = newTickSize;
+                    }
+                    if (this._downMarket && event.market === this._downMarket.marketId) {
+                        this._downMarket.tick_size = newTickSize;
+                    }
+               });
+
                 await this.callHandler('onTickSizeChange', events);
             },
             onPolymarketPriceUpdate: async (events) => {
@@ -181,6 +199,7 @@ export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
         await instance.init();
         return instance;
     }
+
     /**
      * Helper functions for user handlers calling
      * @param name The name of event handler like onBook
@@ -345,24 +364,30 @@ export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
     }
 
     /** @returns A shallow copy of the Up token metadata. */
-    public getUpMarketData(): MarketTokenData {
+    public getUpMarketData(): EventTokenMarketData {
         this.ensureInitialized();
         return {
             outcome: this._upMarket!.outcome,
             tokenId: this._upMarket!.tokenId,
             marketId: this._upMarket!.marketId,
+            conditionId: this._upMarket!.conditionId,
             eventId: this._upMarket!.eventId,
+            tick_size: this._upMarket!.tick_size,
+            min_order_size: this._upMarket!.min_order_size
         };
     }
 
     /** @returns A shallow copy of the Down token metadata. */
-    public getDownMarketData(): MarketTokenData {
+    public getDownMarketData(): EventTokenMarketData {
         this.ensureInitialized();
         return {
             outcome: this._downMarket!.outcome,
             tokenId: this._downMarket!.tokenId,
             marketId: this._downMarket!.marketId,
+            conditionId: this._downMarket!.conditionId,
             eventId: this._downMarket!.eventId,
+            tick_size: this._downMarket!.tick_size,
+            min_order_size: this._downMarket!.min_order_size
         };
     }
 

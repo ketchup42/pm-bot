@@ -95,9 +95,9 @@ if (LOG_LEVEL !== undefined) {
     }
 }
 
-// ----------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------
 // File transport – enabled only if LOG_FILE_LEVEL is explicitly set and LOG_FILE is provided
-// ----------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------
 if (LOG_FILE && LOG_FILE_LEVEL !== undefined) {
     if (!validLevels.includes(LOG_FILE_LEVEL)) {
         console.warn(`Invalid LOG_FILE_LEVEL "${LOG_FILE_LEVEL}", file logging disabled`);

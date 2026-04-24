@@ -1,4 +1,4 @@
-import { ClobClient, Side, OrderType } from "@polymarket/clob-client"
+import { ClobClient, Side, OrderType, AssetType } from "@polymarket/clob-client"
 import { delay, error_str, safeToNum } from "../utils.js";
 
 
@@ -217,4 +217,17 @@ export async function placeFokMarketOrderBuy(
     } catch (error) {
         throw new Error(`FOK order failed: ${error_str(error)}`);
     }
+}
+
+/**
+ * Retrieves the USDC balance (collateral) for the authenticated CLOB client.
+ * @param client - Authenticated ClobClient instance
+ * @returns Promise resolving to the balance as a number (may be 0 on conversion failure)
+ * @throws If the API call fails (network, auth, etc.)
+ */
+export async function getUSDCBalance(client: ClobClient): Promise<number> {
+        const balanceInfo = await client.getBalanceAllowance({ 
+        asset_type: AssetType.COLLATERAL 
+    });
+    return safeToNum(balanceInfo.balance);
 }

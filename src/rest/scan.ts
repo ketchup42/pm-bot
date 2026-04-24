@@ -12,6 +12,8 @@ export interface MarketRaw {
   active: boolean;
   closed: boolean;
   enableOrderBook: boolean;
+  orderMinSize: number,
+  orderPriceMinTickSize: number,
   outcomes: string[];
   outcomePrices: number[];
 }
@@ -136,6 +138,8 @@ export async function fetchMarketById(marketId: string): Promise<MarketRaw> {
     active: rawData.active,
     closed: rawData.closed,
     enableOrderBook: rawData.enableOrderBook,
+    orderMinSize: rawData.orderMinSize,
+    orderPriceMinTickSize: rawData.orderPriceMinTickSize,
     outcomes,
     outcomePrices,
   };

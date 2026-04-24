@@ -51,7 +51,7 @@ export class ExecManager {
                     this._strategies.map(async strategy => {
                         try {
                             const execResult = !this._isStopped && await strategy.execute(this._client, this._watchers);
-                            if (execResult) logger.info(`EXEC MANAGER INFO: STRATEGY EXECUTE SUCCESS!`);
+                            if (execResult) logger.info(`EXEC MANAGER INFO: STRATEGY EXECUTED!`);
                         } catch (error) {
                             logger.error(`STRATEGY ERROR: ${error_str(error)}`);
                         }

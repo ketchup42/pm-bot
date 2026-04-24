@@ -43,9 +43,9 @@ export async function getOrderBookByTokenId(
   return {
     bids: raw.bids ?? [],
     asks: raw.asks ?? [],
-    tick_size: raw.tick_size ?? "0.01",
-    min_order_size: raw.min_order_size ?? "1",
-    last_trade_price: raw.last_trade_price ?? "0",
+    tick_size: raw.tick_size,
+    min_order_size: raw.min_order_size,
+    last_trade_price: raw.last_trade_price,
     timestamp: raw.timestamp ?? getISOTimestamp()
   };
 }

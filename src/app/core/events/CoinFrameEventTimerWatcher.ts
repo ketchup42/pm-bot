@@ -44,7 +44,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
      */
     const coinCurrentPrice = this._coinPriceWatcher.getCurrentPrice();
     
-    // TODO FIX: Add 500-650 ms timeout to start price fetch, mb start price error if there are no updates of price for 600+ms
+    // TODO FIX: Add 500-650 ms timeout to start price fetch, mb start price error if there are no updates of price for 600+ms after start
 
     if (this.___coinFrameStartPriceReal && !this.___isCoinFrameStartPriceRealWritten && this.___coinFrameStartPriceReal !== coinCurrentPrice) {
       const startPrice = roundTo(coinCurrentPrice, coin_precis(this._coin));
