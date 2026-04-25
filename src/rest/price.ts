@@ -1,5 +1,5 @@
 import { MarketRaw } from "./scan.js";
-import { getISOTimestamp, retry, safeToNum } from "../utils.js";
+import { retry, safeToNum } from "../utils.js";
 
 import { REST_DEFAULT_HOST_CLOB } from "./hosts.js";
 
@@ -46,7 +46,7 @@ export async function getOrderBookByTokenId(
     tick_size: raw.tick_size,
     min_order_size: raw.min_order_size,
     last_trade_price: raw.last_trade_price,
-    timestamp: raw.timestamp ?? getISOTimestamp()
+    timestamp: raw.timestamp
   };
 }
 

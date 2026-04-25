@@ -128,7 +128,7 @@ export function getEnvApiKeyCreds(): ClobApiKeyCreds {
  * Returns a public (unauthenticated) CLOB client.
  * Use this for read‑only operations like fetching order books or market data.
  */
-export function initPublicClientRest(): ClobClient {
+export function getPublicClient(): ClobClient {
     if (!REST_DEFAULT_HOST_CLOB || !REST_CHAIN_ID) {
         throw new Error('Missing REST_DEFAULT_HOST_CLOB or REST_CHAIN_ID configuration');
     }
@@ -140,7 +140,7 @@ export function initPublicClientRest(): ClobClient {
  * Returns an authenticated CLOB client for trading.
  * Requires environment variables to be set (see .env.example).
  */
-export async function initTradingClientRest(): Promise<ClobClient> {
+export async function getTradingClient(): Promise<ClobClient> {
     const block = await isMeBlocked();
     if (block) throw new Error("TRADING CLIENT INIT FAILED: IP GEO BLOCKED!")
     // Read and validate all env vars in one place
@@ -179,11 +179,7 @@ export async function initTradingClientRest(): Promise<ClobClient> {
  * @param privateKey - Wallet private key (with or without 0x prefix)
  * @returns Object containing apiKey, secret, and passphrase
  */
-export async function fstInitDeriveApiCredentials(privateKey: string): Promise<{
-    apiKey: string;
-    secret: string;
-    passphrase: string;
-}> {
+export async function fstInitDeriveApiCredentials(privateKey: string): Promise<ClobApiKeyCreds> {
     if (!privateKey) {
         throw new Error('Private key is required!');
     }
@@ -200,11 +196,7 @@ export async function fstInitDeriveApiCredentials(privateKey: string): Promise<{
             throw new Error('Derived credentials are incomplete');
         }
 
-        return {
-            apiKey: creds.key,
-            secret: creds.secret,
-            passphrase: creds.passphrase,
-        };
+        return creds;
     } catch (error) {
         throw new Error(`Failed to derive API credentials: ${error_str(error)}`);
     }

@@ -5,6 +5,7 @@ import { ExecTarget } from "./exec_targets.js"
 import { logger } from "../../log.js";
 import { delay, error_str} from "../../utils.js";
 import { TIMER_FAST, TIMER_NORM, TIMER_SLOW } from "../../timer.js";
+import { dumper } from "../../dump.js";
 
 export const EXEC_STRAT_SLOW = TIMER_SLOW;
 export const EXEC_STRAT_NORM = TIMER_NORM;
@@ -20,14 +21,16 @@ export class ExecManager {
     private _strategies: EventStrategy<ExecTarget>[];
     private _diePromise: Promise<void> | null = null;
 
+    private _inDebugMode = false;
     private _isStopped = false;
     private _disposed = false;
 
-    constructor(client: ClobClient, watchers: EventWatcher<ExecTarget>[], strategies: EventStrategy<ExecTarget>[])
+    constructor(client: ClobClient, watchers: EventWatcher<ExecTarget>[], strategies: EventStrategy<ExecTarget>[], debug?: boolean)
     {
         this._client = client;
         this._watchers = watchers;
         this._strategies = strategies;
+        this._inDebugMode = debug ?? false;
     }
 
     /**
@@ -97,6 +100,14 @@ export class ExecManager {
             if (this._disposed) return;
             this._disposed = true;
             await Promise.all(this._strategies.map(s => s.cancel(this._client, this._watchers)));
+
+            if (this._inDebugMode) {
+                this._watchers.forEach((watcher) => {
+                    dumper.dump(watcher.getWatcherHistoryUp(), watcher.getEventId());
+                    dumper.dump(watcher.getWatcherHistoryDown(), watcher.getEventId());
+                });
+                logger.info(`EXEC MANAGER INFO: HISTORY DUMPS CREATED`);
+            } 
             await Promise.all(this._watchers.map(w => w.dispose()));
             logger.info(`EXEC MANAGER INFO: CLEANUP FINISHED`);
         })();

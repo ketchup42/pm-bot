@@ -70,3 +70,4 @@ jest.config.js
 # Other
 /trash
 /history
+/secret

@@ -58,3 +58,9 @@ LOG_FILE_MAX_FILES=3
 
 # Output color option (0 = enable colors, 1 = disable)
 NO_COLOR=0
+
+# Dumps directory, disabled if not set
+DUMPS_DIR=history
+
+# Number of rotated dump files to keep
+DUMP_MAX_FILES=20
