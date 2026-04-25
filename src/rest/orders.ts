@@ -229,5 +229,5 @@ export async function getUSDCBalance(client: ClobClient): Promise<number> {
         const balanceInfo = await client.getBalanceAllowance({ 
         asset_type: AssetType.COLLATERAL 
     });
-    return safeToNum(balanceInfo.balance);
+    return safeToNum(balanceInfo.balance) / 1e6;
 }
