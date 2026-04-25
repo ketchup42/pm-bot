@@ -1,9 +1,13 @@
 import { Coin } from "../../../market/coins.js";
-import { OrderBookLevel } from "../../../market/orderbook/watcher/EventOrderBooksWatcher.js";
+import { OrderBookLevel } from "../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
 import { MarketSide } from "../../../market/side.js";
 
 export interface CoinFrameEventMarketData
 {
+  event_slug: string;
+  eventId: string;
+  marketId: string,
+
   coin: Coin;
   side: MarketSide;
   start_time: number;
@@ -21,6 +25,9 @@ export interface MarketTokenSnapshot
 {
   coin_price: number | undefined; // Real time crypto coin price
   timestamp: number;
+
+  // System use parameter (like history dumps), for another coin price info
+  opt_price?: number | undefined;
 
   // Token market info
   asks?: OrderBookLevel[];

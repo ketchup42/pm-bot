@@ -1,4 +1,4 @@
-import { EventOrderBooksWatcher } from "../../../market/orderbook/watcher/EventOrderBooksWatcher.js";
+import { MarketOrderBooksWatcher } from "../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
 
 /**
  * Watches market data for a specific coin and frame, collecting snapshots for both up and down sides.
@@ -10,13 +10,13 @@ export interface EventWatcher<EventDataType> {
   getEventId(): string;
 
   /** Returns the underlying order book watcher instance. */
-  getEventOrderBooksWatcher(): EventOrderBooksWatcher;
+  getEventMarketOrderBooksWatcher(): MarketOrderBooksWatcher[];
 
   /** Returns the collected data for the 'up' side (read‑only). */
-  getWatcherHistoryUp(): Readonly<EventDataType>;
+  getWatcherHistoryUp(): Readonly<EventDataType>[];
 
   /** Returns the collected data for the 'down' side (read‑only). */
-  getWatcherHistoryDown(): Readonly<EventDataType>;
+  getWatcherHistoryDown(): Readonly<EventDataType>[];
 
   /** Whether the watcher is currently active (still collecting data). */
   isActive(): boolean;

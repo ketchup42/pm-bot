@@ -1,7 +1,7 @@
 import { Coin, coin_precis } from "../../../market/coins.js";
 import { EventFrame, getCoinSlug, getCurrentFrameStart, getFrameDuration } from "../../../market/frame.js";
-import { EventOrderBooksWatcherFactory } from "../../../market/orderbook/watcher/EventOrderBooksWatcherFactory.js";
-import { EventOrderBooksWatcher } from "../../../market/orderbook/watcher/EventOrderBooksWatcher.js";
+import { MarketOrderBooksWatcherFactory } from "../../../market/orderbook/watcher/MarketOrderBooksWatcherFactory.js";
+import { MarketOrderBooksWatcher } from "../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
 import { CoinFrameEventMarketData, MarketTokenSnapshot } from "../history/coin_frame.js";
 import { CoinPriceWatcher } from "../../../market/price/CoinPriceWatcher.js";
 import { EventWatcher } from "./EventWatcher.js";
@@ -24,8 +24,9 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
   private _watcherHistoryUp: CoinFrameEventMarketData;
   private _watcherHistoryDown: CoinFrameEventMarketData;
   
-  private _orderBookWatcher: EventOrderBooksWatcher | undefined;
+  private _orderBookWatcher: MarketOrderBooksWatcher | undefined;
   private _coinPriceWatcher: CoinPriceWatcher;
+
   private _isFinished: boolean = false;
   private _isDisposed: boolean = false;
 
@@ -169,6 +170,9 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
     const frameStartTime = getCurrentFrameStart(frame);
 
     this._watcherHistoryUp = {
+      event_slug: this._slug,
+      eventId: '',
+      marketId: '',
       coin: coin,
       side: 'up',
       start_time: frameStartTime,
@@ -181,6 +185,9 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
     };
 
     this._watcherHistoryDown = {
+      event_slug: this._slug,
+      eventId: '',
+      marketId: '',
       coin: coin,
       side: 'down',
       start_time: frameStartTime,
@@ -195,7 +202,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
 
   private async init(): Promise<void>
   {
-    this._orderBookWatcher = await EventOrderBooksWatcherFactory.createNewCoinWatcher(this._slug,
+    this._orderBookWatcher = await MarketOrderBooksWatcherFactory.createNewCoinMarketWatcher(this._slug,
     {onBook: async (events) => {
         this._startPriceBookEventHandler();
         this._priceChangeEventStartPriceHandler();
@@ -216,6 +223,12 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
       //}
     });
     
+    this._watcherHistoryUp.eventId = this.getEventId();
+    this._watcherHistoryDown.eventId =  this.getEventId();
+
+    this._watcherHistoryUp.marketId = this._orderBookWatcher.getUpMarketData().marketId;
+    this._watcherHistoryDown.marketId =  this._orderBookWatcher.getDownMarketData().marketId;
+
     this._tickTimer.enable();
   }
 
@@ -260,24 +273,24 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
   /**
    * Returns the underlying order book watcher instance.
    */
-  public getEventOrderBooksWatcher(): EventOrderBooksWatcher {
-    return this._orderBookWatcher!;
+  public getEventMarketOrderBooksWatcher(): MarketOrderBooksWatcher[] {
+    return [this._orderBookWatcher!];
   }
 
   /**
    * Returns the collected market snapshots for the 'up' side.
    * Note: The returned object is mutable for performance reasons; avoid modifying it.
    */
-  public getWatcherHistoryUp(): Readonly<CoinFrameEventMarketData> {
-    return this._watcherHistoryUp;
+  public getWatcherHistoryUp(): Readonly<CoinFrameEventMarketData>[] {
+    return [this._watcherHistoryUp];
   }
 
   /**
    * Returns the collected market snapshots for the 'down' side.
    * Note: The returned object is mutable for performance reasons; avoid modifying it.
    */
-  public getWatcherHistoryDown(): Readonly<CoinFrameEventMarketData> {
-    return this._watcherHistoryDown;
+  public getWatcherHistoryDown(): Readonly<CoinFrameEventMarketData>[] {
+    return [this._watcherHistoryDown];
   }
 
   /**

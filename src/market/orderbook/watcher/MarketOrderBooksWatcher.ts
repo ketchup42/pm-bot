@@ -17,7 +17,7 @@ export interface EventTokenMarketData {
   min_order_size: number
 }
 
-export interface EventOrderBooksWatcher {
+export interface MarketOrderBooksWatcher {
 
   /** Returns sorted COPY bid levels for the Up token (descending price) */
   getBidsUp(): OrderBookLevel[];
@@ -56,11 +56,9 @@ export interface EventOrderBooksWatcher {
   getTimeStamp(token: MarketSide): number | undefined;
 
   hasBidsUp(): boolean;
-
   hasAsksUp(): boolean
 
   hasBidsDown(): boolean;
-
   hasAsksDown(): boolean;
 
   isActive(): boolean;

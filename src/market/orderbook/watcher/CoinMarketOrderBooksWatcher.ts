@@ -3,14 +3,14 @@ import { MarketSide } from "../../side.js";
 import { EventRaw, fetchEventBySlug } from "../../../rest/scan.js";
 import { error_str, isValid, isoToMs, safeToNum } from "../../../utils.js";
 import { WSSubscriptionManager, WSSubscriptionManagerHandlers } from "../manager/WSSubscriptionManager.js";
-import { EventOrderBooksWatcher, EventTokenMarketData, OrderBookLevel } from "./EventOrderBooksWatcher.js";
+import { MarketOrderBooksWatcher, EventTokenMarketData, OrderBookLevel } from "./MarketOrderBooksWatcher.js";
 
 /**
  * Manages real‑time order book data for a Polymarket event (Up/Down tokens).
  * Uses WebSocket subscriptions to receive snapshots and incremental updates.
  * Must be initialised with `init()` before calling any other methods.
  */
-export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
+export class CoinMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
     private _slug: string;
     private _eventData: EventRaw | undefined = undefined;
     private _upMarket: EventTokenMarketData | undefined = undefined;
@@ -194,8 +194,8 @@ export class CoinEventOrderBooksWatcher implements EventOrderBooksWatcher {
      * @param handlers - Event handlers for it.
      * @returns A promise that resolves to the initialized watcher.
      */
-    public static async create(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<CoinEventOrderBooksWatcher> {
-        const instance = new CoinEventOrderBooksWatcher(slug, handlers);
+    public static async create(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<CoinMarketOrderBooksWatcher> {
+        const instance = new CoinMarketOrderBooksWatcher(slug, handlers);
         await instance.init();
         return instance;
     }

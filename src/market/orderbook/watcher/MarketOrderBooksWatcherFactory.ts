@@ -1,13 +1,13 @@
 import { logger } from '../../../log.js';
 import { error_str } from '../../../utils.js';
 import { WSSubscriptionManagerHandlers } from '../manager/WSSubscriptionManager.js';
-import { CoinEventOrderBooksWatcher } from './CoinEventOrderBooksWatcher.js';
-import { EventOrderBooksWatcher } from './EventOrderBooksWatcher.js';
+import { CoinMarketOrderBooksWatcher } from './CoinMarketOrderBooksWatcher.js';
+import { MarketOrderBooksWatcher } from './MarketOrderBooksWatcher.js';
 
-export class EventOrderBooksWatcherFactory {
-    private static _instances: Map<string, EventOrderBooksWatcher> = new Map();
+export class MarketOrderBooksWatcherFactory {
+    private static _instances: Map<string, MarketOrderBooksWatcher> = new Map();
 
-    private static _pending: Map<string, Promise<EventOrderBooksWatcher>> = new Map();
+    private static _pending: Map<string, Promise<MarketOrderBooksWatcher>> = new Map();
     private static _cancelled: Map<string, boolean> = new Map();
 
     private static getCoinKey(slug: string): string {
@@ -21,7 +21,7 @@ export class EventOrderBooksWatcherFactory {
      * If destroy() was called for this slug before the promise resolved,
      * the resulting watcher will be disposed and not cached.
      */
-    static async getCoinWatcher(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<EventOrderBooksWatcher> {
+    static async getCoinMarketWatcher(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<MarketOrderBooksWatcher> {
         const key = this.getCoinKey(slug);
         
         // Already initialised and not destroyed?
@@ -35,7 +35,7 @@ export class EventOrderBooksWatcherFactory {
         // Start new initialisation
         const promise = (async () => {
             try {
-                const watcher = await CoinEventOrderBooksWatcher.create(slug, handlers);
+                const watcher = await CoinMarketOrderBooksWatcher.create(slug, handlers);
                 
                 // If destroy() was called for this key while we were creating, do not cache
                 if (this._cancelled.get(key)) {
@@ -59,8 +59,8 @@ export class EventOrderBooksWatcherFactory {
      * Creates a **new** order book watcher instance without reusing any existing one.
      * Does not cache the instance and always initialises a fresh watcher.
      */
-    static async createNewCoinWatcher(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<EventOrderBooksWatcher> {
-        return await CoinEventOrderBooksWatcher.create(slug, handlers);
+    static async createNewCoinMarketWatcher(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<MarketOrderBooksWatcher> {
+        return await CoinMarketOrderBooksWatcher.create(slug, handlers);
     }
 
     /**
@@ -122,6 +122,6 @@ export class EventOrderBooksWatcherFactory {
  * Simple factory function – creates a new order book watcher for the given slug.
  * Does NOT cache instances.
  */
-export async function createCoinOrderBookWatcher(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<EventOrderBooksWatcher> {
-    return await CoinEventOrderBooksWatcher.create(slug, handlers);
+export async function createCoinMarketOrderBookWatcher(slug: string, handlers?: WSSubscriptionManagerHandlers): Promise<MarketOrderBooksWatcher> {
+    return await CoinMarketOrderBooksWatcher.create(slug, handlers);
 }
