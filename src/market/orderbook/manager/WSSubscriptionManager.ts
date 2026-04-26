@@ -138,7 +138,16 @@ class WSSubscriptionManager {
         // Close WebSocket
         if (this.wsClient) {
             this.wsClient.removeAllListeners();
-            this.wsClient.close();
+            const state = this.wsClient.readyState;
+            if (state === WebSocket.OPEN || state === WebSocket.CLOSING) {
+                try {
+                    this.wsClient.close();
+                } catch (error) {
+                    logger.warn(`[WSSubscriptionManager] Error closing socket: ${error}`);
+                }
+            } else if (state === WebSocket.CONNECTING) {
+                logger.warn('[WSSubscriptionManager] Socket was connecting; dropping reference without close.');
+            }
             this.wsClient = null;
         }
 
