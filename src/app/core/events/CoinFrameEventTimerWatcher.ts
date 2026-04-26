@@ -1,6 +1,5 @@
 import { Coin, coin_precis } from "../../../market/coins.js";
 import { EventFrame, getCoinSlug, getCurrentFrameStart, getFrameDuration } from "../../../market/frame.js";
-import { MarketOrderBooksWatcherFactory } from "../../../market/orderbook/watcher/MarketOrderBooksWatcherFactory.js";
 import { MarketOrderBooksWatcher } from "../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
 import { CoinFrameEventMarketData, MarketTokenSnapshot } from "../history/coin_frame.js";
 import { CoinPriceWatcher } from "../../../market/price/CoinPriceWatcher.js";
@@ -11,6 +10,7 @@ import { logger } from "../../../log.js";
 import { WARM_UP_FAST } from "../../../market/price/PriceWatcher.js";
 import { PriceWatcherFactory } from "../../../market/price/PriceWatcherFactory.js";
 import { PriceSource } from "../../../market/price/price_source.js";
+import { CoinMarketOrderBooksWatcher } from "../../../market/orderbook/watcher/CoinMarketOrderBooksWatcher.js";
 
 /**
  * Watches a coin's order book and price at a fixed interval (timer mode).
@@ -202,7 +202,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
 
   private async init(): Promise<void>
   {
-    this._orderBookWatcher = await MarketOrderBooksWatcherFactory.createNewCoinMarketWatcher(this._slug,
+    this._orderBookWatcher = await CoinMarketOrderBooksWatcher.create(this._slug,
     {onBook: async (events) => {
         this._startPriceBookEventHandler();
         this._priceChangeEventStartPriceHandler();
@@ -226,8 +226,8 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
     this._watcherHistoryUp.eventId = this.getEventId();
     this._watcherHistoryDown.eventId =  this.getEventId();
 
-    this._watcherHistoryUp.marketId = this._orderBookWatcher.getUpMarketData().marketId;
-    this._watcherHistoryDown.marketId =  this._orderBookWatcher.getDownMarketData().marketId;
+    this._watcherHistoryUp.marketId = this._orderBookWatcher.getMarketData().marketId;
+    this._watcherHistoryDown.marketId =  this._orderBookWatcher.getMarketData().marketId;
 
     this._tickTimer.enable();
   }
@@ -324,7 +324,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
   public dispose(): void {
     if (!this._isDisposed) {
       this._tickTimer.dispose();
-      this._orderBookWatcher!.dispose();
+      this._orderBookWatcher!.disconnect();
       this._isDisposed = true;
     }
   }

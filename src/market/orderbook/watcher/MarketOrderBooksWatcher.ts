@@ -6,15 +6,22 @@ export type OrderBookLevel = {
     size: string;
 };
 
-/** Parsed market data for one outcome (Up or Down) */
-export interface EventTokenMarketData {
-  outcome: string;     // 'up' or 'down'
-  tokenId: string;
-  marketId: string;    // id from REST Raw
-  conditionId: string;
+export interface EventMarketData
+{
   eventId: string;
+  marketId: string;
+  conditionId: string;
   tick_size: number;
   min_order_size: number
+
+  up: TokenMarketData;
+  down: TokenMarketData;
+}
+
+/** Parsed market data for one outcome (Up or Down) */
+export interface TokenMarketData {
+  outcome: string;     // 'up' or 'down'
+  tokenId: string;
 }
 
 export interface MarketOrderBooksWatcher {
@@ -47,8 +54,10 @@ export interface MarketOrderBooksWatcher {
   getDownSpread(): number | undefined;
 
   getEventId(): string;
-  getUpMarketData(): EventTokenMarketData;
-  getDownMarketData(): EventTokenMarketData;
+  getMarketId(): string;
+  getMarketData(): EventMarketData;
+  getUpMarketData(): TokenMarketData;
+  getDownMarketData(): TokenMarketData;
 
   /**
    * Returns the timestamp of the last received book update.
@@ -68,5 +77,5 @@ export interface MarketOrderBooksWatcher {
   isUpBooked(): boolean;
   isDownBooked(): boolean;
 
-  dispose(): void;
+  disconnect(): void;
 }
