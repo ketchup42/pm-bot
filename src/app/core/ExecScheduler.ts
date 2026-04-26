@@ -1,12 +1,17 @@
-import { UnsubscribeHook, error_str, killSignalsHook } from "../../utils.js";
+import { UnsubscribeHook, delay, error_str, killSignalsHook } from "../../utils.js";
 import { ExecManager } from "./ExecManager";
-import { logger } from "../../log.js";
+import { logger, logger_shutdown } from "../../log.js";
 import { waitFrameStartMs } from "../../market/frame.js";
 
 /**
  * Type of functions that create ExecManager instances for each cycle.
  */
 export type SchedulerTickInitType = () => Promise<ExecManager>;
+
+/**
+ * When scheduler receives kill signal it needs to delay some time to stops correctly.
+ */
+const EXEC_SCHEDULER_SHUTDOWN_SIGNAL_DELAY = 3500;
 
 export class ExecScheduler {
 
@@ -23,6 +28,8 @@ export class ExecScheduler {
     private _currentManagers: ExecManager[] = [];
     private _cycleStartHandlers: SchedulerTickInitType[];
     private _unsubscribeHook: UnsubscribeHook = () => {};
+    private _shutdownHandler: Promise<void> | undefined = undefined;
+    private _runningManagers: Promise<void>[] = [];
 
     constructor(handlers: SchedulerTickInitType[]) {
         this._cycleStartHandlers = handlers;
@@ -44,19 +51,22 @@ export class ExecScheduler {
         this._isStarted =  true;
         // Align to the next time frame boundary
         await waitFrameStartMs(alignMs);
-        
+
         // Single global shutdown hook
         this._unsubscribeHook = killSignalsHook(async () => {
             await this.shutdown();
+            process.stdout.write(`Die...\n`);
+
+            await logger_shutdown();
+            await delay(EXEC_SCHEDULER_SHUTDOWN_SIGNAL_DELAY);
+            process.exit(0);
         });
 
         try {
             while (!this._isStopped) {
-
                 const results = await Promise.allSettled(
                     this._cycleStartHandlers.map(handler => handler())
                 );
-
                 {
                     const errors: unknown[] = [];
                     this._currentManagers = [];
@@ -73,7 +83,9 @@ export class ExecScheduler {
                 // Run all managers concurrently
                 if (!this._isStopped) {
                     logger.info(`EXECUTE MANAGERS IN SCHEDULER: ${this._currentManagers.length}`);
-                    await Promise.all(this._currentManagers.map(manager => manager.start(execTickMs)))
+                    this._runningManagers = this._currentManagers.map(manager => manager.start(execTickMs));
+                    await Promise.all(this._runningManagers);
+                    this._runningManagers = [];
                     logger.info(`FINISHED EXECUTING MANAGERS IN SCHEDULER: ${this._currentManagers.length}`);
                 }
             }
@@ -105,27 +117,47 @@ export class ExecScheduler {
      * Gracefully shuts down the scheduler and all currently running managers.
      */
     private async shutdown(): Promise<void> {
-        if (this._isShuttingDown) return;
-        this._isShuttingDown = true;
+        if (this._shutdownHandler) 
+            return this._shutdownHandler;
+
+        this._shutdownHandler = (async () => {
+            if (this._isShuttingDown) return;
+            this._isShuttingDown = true;
+
+            try {
+                if (this._isStopped && this._currentManagers.length === 0) return;
+                this._isStopped = true;
+                
+                logger.info(`SCHEDULER INFO: SHUTTING DOWN MANAGERS...`);
+                {
+                    const results = await Promise.allSettled(
+                        this._currentManagers.map(manager => manager.shutdown())
+                    );
+                    results.forEach(value => {
+                        if (value.status === 'rejected') {
+                            logger.error(`SCHEDULER ERROR: Manager shutdown failed: ${error_str(value.reason)}`);
+                        }});
+
+                    if (this._runningManagers.length > 0) {
+                        await Promise.allSettled(this._runningManagers);
+                        this._runningManagers = [];
+                    }
+                }
+                this._currentManagers = [];
+                logger.info(`SCHEDULER INFO: SHUTTING DOWN MANAGERS FINISHED!`);
+            }
+            catch(error) {
+                logger.error(`SCHEDULER SHUTDOWN ERROR: ${error_str(error)}`);
+            } 
+            finally {
+                this._isShuttingDown = false;
+            }
+        })();
 
         try {
-            if (this._isStopped && this._currentManagers.length === 0) return;
-            this._isStopped = true;
-            
-            logger.info(`SCHEDULER INFO: SHUTTING DOWN MANAGERS...`);
-            {
-                const results = await Promise.allSettled(
-                    this._currentManagers.map(manager => manager.shutdown())
-                );
-                results.forEach((value => {
-                    if (value.status === 'rejected') {
-                        logger.error(`SCHEDULER ERROR: Manager shutdown failed: ${error_str(value.reason)}`);
-                }}))
-            }
-            this._currentManagers = [];
-            logger.info(`SCHEDULER INFO: SHUTTING DOWN MANAGERS FINISHED!`);
+            await this._shutdownHandler;
         } finally {
-            this._isShuttingDown = false;
+            this._shutdownHandler = undefined;
         }
     }
 }

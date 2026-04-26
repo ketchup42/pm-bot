@@ -19,7 +19,7 @@ export class ExecManager {
     private _client: ClobClient;
     private _watchers: EventWatcher<ExecTarget>[];
     private _strategies: EventStrategy<ExecTarget>[];
-    private _diePromise: Promise<void> | null = null;
+    private _diePromise: Promise<void> | undefined = undefined;
 
     private _inDebugMode = false;
     private _isStopped = false;
@@ -63,7 +63,7 @@ export class ExecManager {
                 // Global tick delay
                 if (!this._isStopped) await delay(tick);
             }
-            if (!this._disposed) 
+            if (!this._disposed)
                 await this.die();
 
         } catch (error) {
@@ -101,14 +101,15 @@ export class ExecManager {
             this._disposed = true;
             await Promise.all(this._strategies.map(s => s.cancel(this._client, this._watchers)));
 
+            const dumpPromises: Promise<void>[] = [];
             if (this._inDebugMode) {
-                this._watchers.forEach((watcher) => {
-                    dumper.dump(watcher.getWatcherHistoryUp(), watcher.getEventId());
-                    dumper.dump(watcher.getWatcherHistoryDown(), watcher.getEventId());
+                this._watchers.forEach(w => {
+                    dumpPromises.push(dumper.dump(w.getWatcherHistoryUp(), w.getEventId()));
+                    dumpPromises.push(dumper.dump(w.getWatcherHistoryDown(), w.getEventId()));
                 });
                 logger.info(`EXEC MANAGER INFO: HISTORY DUMPS CREATED`);
-            } 
-            await Promise.all(this._watchers.map(w => w.dispose()));
+            }
+            await Promise.all([...dumpPromises, ...this._watchers.map(w => w.dispose())]);
             logger.info(`EXEC MANAGER INFO: CLEANUP FINISHED`);
         })();
         return this._diePromise;

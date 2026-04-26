@@ -236,7 +236,7 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
     }
 
     /**
-     * Best bid (highest price) for the specified token.
+     * Best bid for the specified token.
      * @param token - 'up' or 'down'
      * @returns Price as number, or undefined if no bids exist.
      */
@@ -248,7 +248,7 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
     }
 
     /**
-     * Best ask (lowest price) for the specified token.
+     * Best ask for the specified token.
      * @param token - 'up' or 'down'
      * @returns Price as number, or undefined if no asks exist.
      */

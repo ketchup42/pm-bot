@@ -154,7 +154,6 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
     this._watcherHistoryDown.side_token_market_snapshots.push(coinFrameDownEventDTO);
   }
 
-
   private constructor(coin: Coin, frame: EventFrame, tick: number, watcher: CoinPriceWatcher)
   {
     if (tick <= 0) throw Error("Error: Ticks can not be less than zero!");

@@ -137,3 +137,23 @@ export const logger = winston.createLogger({
     exceptionHandlers: transports.length ? transports : undefined,
     rejectionHandlers: transports.length ? transports : undefined
 });
+
+/**
+ * Gracefully shuts down the Winston logger, flushing all pending logs.
+ * Resolves after all transports have been closed or after a 3‑second timeout.
+ */
+export const logger_shutdown = async (): Promise<void> => {
+    const promises = logger.transports.map((transport) => {
+        return new Promise<void>((resolve) => {
+            if (typeof (transport as any).close === 'function') {
+                transport.once('finish', resolve);
+                (transport as any).close();
+                setTimeout(resolve, 500);
+            } else {
+                resolve();
+            }
+        });
+    });
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
+    await Promise.race([Promise.all(promises), timeout]);
+};
