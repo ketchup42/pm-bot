@@ -1,8 +1,8 @@
 import { ClobApiKeyCreds } from "@polymarket/real-time-data-client";
 import { OrderStatus, OrdersWatcher } from "./OrdersWatcher.js";
-import { error_str, safeToNum } from "../../utils.js";
+import { error_str, safeToNum } from "../../../utils.js";
 import { ClobClient } from "@polymarket/clob-client";
-import { logger } from "../../log.js";
+import { logger } from "../../../log.js";
 import { ClobOrderEvent, ClobUserClient } from "polymarket-websocket-client";
 
 /**

@@ -1,9 +1,5 @@
-import { logger } from "../../../log.js";
-import { MarketSide } from "../../side.js";
 import { EventRaw, MarketRaw, fetchEventBySlug } from "../../../rest/scan.js";
-import { error_str, isValid, isoToMs, safeToNum } from "../../../utils.js";
-import { WSSubscriptionManager, WSSubscriptionManagerHandlers } from "../manager/WSSubscriptionManager.js";
-import { MarketOrderBooksWatcher, OrderBookLevel, EventMarketData, TokenMarketData } from "./MarketOrderBooksWatcher.js";
+import { WSSubscriptionManagerHandlers } from "../manager/WSSubscriptionManager.js";
 import { LiveMarketOrderBooksWatcher } from "./LiveMarketOrderBooksWatcher.js";
 
 /**
