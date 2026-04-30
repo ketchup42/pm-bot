@@ -1,27 +1,81 @@
-import { ClobClient, Side, OrderType, AssetType } from "@polymarket/clob-client"
+import { ClobClient, Side, OrderType, AssetType, Trade } from "@polymarket/clob-client-v2"
 import { delay, error_str, safeToNum } from "../utils.js";
 
+/**
+ * The most common values by public api.
+ */
+export const DEFAULT_ORDER_MIN_SIZE = 5.0;
+export const DEFAULT_BUY_ORDER_MIN_VALUE = 1.0;
+export const DEFAULT_TOKEN_MAX_PRICE = 1.0
 
-export interface OrderStatus {
+export interface OrderStatusRaw {
+    success: boolean;
     /** Unique identifier of the placed order */
-    id?: string;
+    orderID: string;
+    status?: "live" | "matched" | "delayed" | "unmatched";
+
+    /** For taker orders: total shares executed immediately. */
+    executed_size?: number;
+
+    /** For taker order: average price per share of the executed fills, exists if maker order had "matched" status. */
+    average_price?: number;
+
     /** For GTC taker orders: amount of shares that were filled before cancellation. */
-    filledSize?: number;
-    /** For FAK orders: total shares executed immediately. */
-    execSize?: number;
-    /** For FAK orders: average price per share of the executed fills. */
-    averagePrice?: number;
+    filled_size?: number;
 }
 
 /**
- * Places a maker order on Polymarket. This order will never be charged a fee.
- * 
- * @param clobClient - An initialized and authenticated CLOB client.
- * @param tokenId - The token ID for the specific outcome (e.g., "Yes" token).
- * @param side - Side.BUY or Side.SELL.
- * @param price - The limit price per share (e.g., 0.65).
- * @param size - The number of shares to buy or sell.
- * @returns Promise that resolves when order is placed (no value), rejects on error.
+ * Fetches multiple trades by their IDs.
+ * @param client - CLOB client
+ * @param tradeIds - Array of trade IDs
+ * @returns Flat array of trade objects
+ */
+async function fetchTradesByIds(client: ClobClient, tradeIds: string[]): Promise<Trade[]> {
+    if (!tradeIds.length) return [];
+    const tradePromises = tradeIds.map(id => client.getTrades({ id }));
+    const results = await Promise.all(tradePromises);
+    return results.flat();
+}
+
+/**
+ * Computes the total executed size and volume‑weighted average price from a list of trades.
+ */
+function computeAveragePrice(trades: Trade[]): { exec_size: number; average_price: number } {
+    let totalSize = 0;
+    let totalCost = 0;
+    for (const trade of trades) {
+        const size = safeToNum(trade.size);
+        const price = safeToNum(trade.price);
+        totalSize += size;
+        totalCost += size * price;
+    }
+    const averagePrice = totalSize > 0 ? totalCost / totalSize : 0;
+    return { exec_size: totalSize, average_price: averagePrice };
+}
+
+/**
+ * Places a maker (limit) order on Polymarket.
+ *
+ * If the order is instantly filled (`status === "matched"`), the function fetches
+ * the actual trades associated with the execution and returns the **real** filled
+ * size (`exec_size`) and volume‑weighted average price (`average_price`). This
+ * allows the wallet to correctly update the virtual balance even when the
+ * execution price differs from the requested limit price.
+ *
+ * @param clobClient - Initialized and authenticated CLOB client.
+ * @param tokenId    - The ERC‑1155 token ID (asset_id) of the outcome.
+ * @param side       - {@link Side.BUY} or {@link Side.SELL}.
+ * @param price      - Desired limit price per token (will be honoured if the
+ *                     order rests in the book; may be bettered if it crosses
+ *                     the spread).
+ * @param size       - Number of tokens to buy/sell.
+ *
+ * @returns An {@link OrderStatusRaw} object. For `matched` orders the fields
+ *          `exec_size` and `average_price` are populated from real trades;
+ *          otherwise they are left `undefined`.
+ *
+ * @throws If the request fails, the exchange returns an error, or the response
+ *         does not contain an `orderID`.
  */
 export async function placeMakerOrder(
     clobClient: ClobClient,
@@ -29,22 +83,42 @@ export async function placeMakerOrder(
     side: Side,
     price: number,
     size: number
-): Promise<OrderStatus> {
+): Promise<OrderStatusRaw> {
     try {
         const order = await clobClient.createOrder({
             tokenID: tokenId,
-            price: price,
-            size: size,
-            side: side,
+            price,
+            size,
+            side,
         });
 
-        const response = await clobClient.postOrder(
-            order,
-            OrderType.GTC,
-            false,
-            true
-        );
-        return { id: response.orderId };
+        const response = await clobClient.postOrder(order, OrderType.GTC, false, true);
+        if (!response.success) throw new Error(response.errorMsg);
+        if (response.error) throw new Error(response.error);
+        if (!response.orderID) throw new Error('OrderID missing!');
+
+        if (response.status === "matched") {
+            const tradeIds: string[] = response.tradeIDs ?? [];
+            let execSize = size;      // fallback
+            let avgPrice = price;     // fallback
+
+            if (tradeIds.length > 0) {
+                const trades = await fetchTradesByIds(clobClient, tradeIds);
+                const result = computeAveragePrice(trades);
+                execSize = result.exec_size;
+                avgPrice = result.average_price;
+            }
+
+            return {
+                success: true,
+                orderID: response.orderID,
+                status: "matched",
+                executed_size: execSize,
+                average_price: avgPrice,
+            };
+        }
+
+        return { success: true, orderID: response.orderID, status: response.status };
     } catch (error) {
         throw new Error(`Failed to place maker order: ${error_str(error)}`);
     }
@@ -58,7 +132,9 @@ export async function placeMakerOrder(
  */
 export async function cancelOrder(clobClient: ClobClient, orderId: string): Promise<void> {
     try {
-        await clobClient.cancelOrder({orderID: orderId});
+        const response = await clobClient.cancelOrder({orderID: orderId});
+        // Code do not checks "not_canceled": {} in response to multiple cancel strategy
+        if (response.error) throw new Error(response.error);
     } catch (error) {
         throw new Error(`Failed to cancel order ${orderId}: ${error_str(error)}`);
     }
@@ -74,7 +150,19 @@ export async function cancelAllOrdersForToken(clobClient: ClobClient, tokenId: s
         const openOrders = await clobClient.getOpenOrders({asset_id: tokenId});
         // If the client supports batch cancellation
         const orderIds = openOrders.map(order => order.id);
-        await clobClient.cancelOrders(orderIds);
+       
+        const cancelPromises = orderIds.map(orderid => cancelOrder(clobClient, orderid));
+        const results = await Promise.allSettled(cancelPromises);
+        let isError = false;
+        let errorMsg = ''
+
+        results.forEach(value => {
+            if (value.status === 'rejected') {
+                isError = true;
+                errorMsg += `${error_str(value.reason)}: `
+            }});
+        if (isError) throw new Error(errorMsg);
+
     } catch (error) {
         throw new Error(`Failed to cancel orders for token ${tokenId}: ${error_str(error)}`);
     }
@@ -89,13 +177,23 @@ export async function cancelAllOrders(clobClient: ClobClient): Promise<void> {
     try {
         const allOrders = await clobClient.getOpenOrders();
         const cancelPromises = allOrders.map(order => cancelOrder(clobClient, order.id));
-        await Promise.all(cancelPromises);
+
+        const results = await Promise.allSettled(cancelPromises);
+        let isError = false;
+        let errorMsg = ''
+
+        results.forEach(value => {
+            if (value.status === 'rejected') {
+                isError = true;
+                errorMsg += `${error_str(value.reason)}: `
+            }});
+        if (isError) throw new Error(errorMsg);
     } catch (error) {
         throw new Error(`Failed to cancel all orders: ${error_str(error)}`);
     }
 }
 
-export const GTC_TAKER_ORDER_CANCEL_TIME = 500;
+export const GTC_TAKER_ORDER_CANCEL_TIME = 200;
 
 /**
  * Places a GTC taker order with aggressive price.
@@ -108,7 +206,8 @@ export async function placeGtcTakerOrder(
     price: number,
     size: number,
     autoCancelAfterMs: number = GTC_TAKER_ORDER_CANCEL_TIME
-): Promise<OrderStatus> {
+): Promise<OrderStatusRaw> {
+
     const order = await clobClient.createOrder({
         tokenID: tokenId,
         price,
@@ -117,65 +216,29 @@ export async function placeGtcTakerOrder(
     });
 
     const response = await clobClient.postOrder(order, OrderType.GTC, false, false);
-    const orderId = response.orderId;
+            
+    if (!response.orderID) {
+        throw new Error('Order placed but orderID is missing in response!');
+    }
+
+    const orderId = response.orderID;
 
     await delay(autoCancelAfterMs);
 
     const orderStatus = await clobClient.getOrder(orderId);
     const filledSize = safeToNum(orderStatus.size_matched);
 
+    let successStatus = true;    
     if (filledSize < size) {
 
         try {
-            await clobClient.cancelOrder(orderId);
+            successStatus = false;
+            await cancelOrder(clobClient, orderId);
         } catch (error) {
             throw new Error(`Failed to cancel partial order ${orderId}: ${error_str(error)}`);
         }
     }
-    return { id: orderId, filledSize: filledSize };
-}
-
-/**
- * Places an FAK (Fill-And-Kill) order.
- * Executes as many shares as available immediately, cancels the rest.
- * 
- * @param clobClient - Initialized CLOB client
- * @param tokenId - Token ID for the outcome
- * @param side - Side.BUY or Side.SELL
- * @param amount - For BUY: USDC amount to spend; For SELL: number of shares to sell
- * @param maxPrice - For BUY: worst price per share (slippage protection); For SELL: minimum price per share
- * @returns Executed size (in shares) and average price
- */
-export async function placeFakTakerOrder(
-    clobClient: ClobClient,
-    tokenId: string,
-    side: Side,
-    amount: number,      // BUY = USDC, SELL = shares
-    maxPrice?: number    // BUY = max price per share, SELL = min price per share
-): Promise<OrderStatus> {
-    const tickSize = await clobClient.getTickSize(tokenId);
-    
-    const order = await clobClient.createMarketOrder(
-        {
-            tokenID: tokenId,
-            side,
-            amount: amount,  // BUY = USDC, SELL = shares
-            price: maxPrice ?? (side === Side.BUY ? Infinity : 0),
-        },
-        { tickSize: tickSize, negRisk: false }
-    );
-    
-    const response = await clobClient.postOrder(order, OrderType.FAK);
-    const fills = response.fills ?? response.result?.fills ?? [];
-    
-    const executedSize = fills.reduce((sum: number, f: { size: number }) => sum + f.size, 0);
-    const totalCost = fills.reduce((sum: number, f: { size: number; price: number; }) => sum + f.size * f.price, 0);
-    const avgPrice = executedSize > 0 ? totalCost / executedSize : 0;
-    
-    return {
-        execSize: executedSize,
-        averagePrice: avgPrice,
-    };
+    return { success: successStatus, orderID: orderId, filled_size: filledSize };
 }
 
 /**
@@ -193,7 +256,7 @@ export async function placeFokMarketOrderBuy(
     tokenId: string,
     amount: number,
     maxPrice: number
-): Promise<OrderStatus> {
+): Promise<OrderStatusRaw> {
     try {
         const tickSize = await clobClient.getTickSize(tokenId);
 
@@ -209,23 +272,26 @@ export async function placeFokMarketOrderBuy(
 
         const response = await clobClient.postOrder(order, OrderType.FOK);
 
-        if (!response.orderId) {
-            throw new Error('Order posted but no orderId returned');
+        if (!response.success) throw new Error(response.errorMsg);
+        if (response.error) throw new Error(response.error);
+        
+        if (!response.orderID) {
+            throw new Error('Order placed but orderID is missing in response!');
         }
+        return { success: response.success, orderID: response.orderID, status: response.status };
 
-        return { id: response.orderId };
     } catch (error) {
         throw new Error(`FOK order failed: ${error_str(error)}`);
     }
 }
 
 /**
- * Retrieves the USDC balance (collateral) for the authenticated CLOB client.
+ * Retrieves the USD balance (collateral) for the authenticated CLOB client.
  * @param client - Authenticated ClobClient instance
  * @returns Promise resolving to the balance as a number (may be 0 on conversion failure)
  * @throws If the API call fails (network, auth, etc.)
  */
-export async function getUSDCBalance(client: ClobClient): Promise<number> {
+export async function getUSDBalance(client: ClobClient): Promise<number> {
         const balanceInfo = await client.getBalanceAllowance({ 
         asset_type: AssetType.COLLATERAL 
     });

@@ -2,6 +2,7 @@ import { MarketRaw } from "./scan.js";
 import { retry, safeToNum } from "../utils.js";
 
 import { REST_DEFAULT_HOST_CLOB } from "./hosts.js";
+import { ClobClient } from "@polymarket/clob-client-v2";
 
 /**
  * Raw order book response from the CLOB /book endpoint.
@@ -48,6 +49,43 @@ export async function getOrderBookByTokenId(
     last_trade_price: raw.last_trade_price,
     timestamp: raw.timestamp
   };
+}
+
+/**
+ * Retrieves the current order book for a given token.
+ * This is a thin wrapper around the CLOB client's `getOrderBook` method.
+ *
+ * @param client - An authenticated CLOB client.
+ * @param tokenId - The ID of the token (asset_id).
+ * @returns The raw order book snapshot containing `bids` and `asks`.
+ */
+export async function getOrderBookSafe(client: ClobClient, tokenId: string): Promise<OrderBookRaw> {
+    const book: OrderBookRaw = await client.getOrderBook(tokenId);
+    return book;
+}
+
+/**
+ * Checks whether the bid (buy) side of the order book is empty for a given token.
+ *
+ * @param client - An authenticated CLOB client.
+ * @param tokenId - The ID of the token (asset_id).
+ * @returns `true` if there are no bids, `false` otherwise.
+ */
+export async function isBidsEmpty(client: ClobClient, tokenId: string): Promise<boolean> {
+    const { bids } = await getOrderBookSafe(client, tokenId);
+    return bids.length === 0;
+}
+
+/**
+ * Checks whether the ask (sell) side of the order book is empty for a given token.
+ *
+ * @param client - An authenticated CLOB client.
+ * @param tokenId - The ID of the token (asset_id).
+ * @returns `true` if there are no asks, `false` otherwise.
+ */
+export async function isAsksEmpty(client: ClobClient, tokenId: string): Promise<boolean> {
+    const { asks } = await getOrderBookSafe(client, tokenId);
+    return asks.length === 0;
 }
 
 /**

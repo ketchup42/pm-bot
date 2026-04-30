@@ -1,4 +1,4 @@
-import { ClobClient } from "@polymarket/clob-client";
+import { ClobClient } from "@polymarket/clob-client-v2";
 import { EventWatcher } from "./events/EventWatcher.js";
 import { EventStrategy } from "./events/strategy/EventStrategy.js";
 import { ExecTarget } from "./exec_targets.js"

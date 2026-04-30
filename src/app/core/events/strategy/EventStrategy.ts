@@ -1,4 +1,4 @@
-import { ClobClient } from "@polymarket/clob-client";
+import { ClobClient } from "@polymarket/clob-client-v2";
 import { EventWatcher } from "../EventWatcher.js";
 
 /**

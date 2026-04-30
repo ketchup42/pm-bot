@@ -1,4 +1,4 @@
-import { ClobClient } from "@polymarket/clob-client";
+import { ClobClient } from "@polymarket/clob-client-v2";
 import { Wallet } from "ethers";
 import "dotenv/config";
 
@@ -130,9 +130,12 @@ export function getEnvApiKeyCreds(): ClobApiKeyCreds {
  */
 export function getPublicClient(): ClobClient {
     if (!REST_DEFAULT_HOST_CLOB || !REST_CHAIN_ID) {
-        throw new Error('Missing REST_DEFAULT_HOST_CLOB or REST_CHAIN_ID configuration');
+        throw new Error('Missing REST_DEFAULT_HOST_CLOB or REST_CHAIN_ID configuration!');
     }
-    return new ClobClient(REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID);
+    return new ClobClient({
+        host: REST_DEFAULT_HOST_CLOB,
+        chain: REST_CHAIN_ID,
+    });
 }
 
 /**
@@ -142,32 +145,26 @@ export function getPublicClient(): ClobClient {
  */
 export async function getTradingClient(): Promise<ClobClient> {
     const block = await isMeBlocked();
-    if (block) throw new Error("TRADING CLIENT INIT FAILED: IP GEO BLOCKED!")
-    // Read and validate all env vars in one place
+    if (block) throw new Error("TRADING CLIENT INIT FAILED: IP GEO BLOCKED!");
+
     const config = getTradingEnvConfig();
 
     const signer = new Wallet(config.privateKey);
-    const apiCreds = {
+    const creds = {
         key: config.apiKey,
         secret: config.apiSecret,
         passphrase: config.apiPassphrase,
     };
 
-    return new ClobClient(
-        REST_DEFAULT_HOST_CLOB,
-        REST_CHAIN_ID,
+    return new ClobClient({
+        host: REST_DEFAULT_HOST_CLOB,
+        chain: REST_CHAIN_ID,
         signer,
-        apiCreds,
-        config.signatureType,
-        config.funderAddress,
-        undefined, // additionalConfig
-        undefined, // orderConfig
-        undefined, // orderbookConfig
-        undefined, // marketConfig
-        undefined, // metricsConfig
-        undefined, // loggingConfig
-        true       // throwOnError
-    );
+        creds,
+        signatureType: config.signatureType,
+        funderAddress: config.funderAddress,
+        throwOnError: true,
+    });
 }
 
 /**
@@ -184,16 +181,20 @@ export async function fstInitDeriveApiCredentials(privateKey: string): Promise<C
         throw new Error('Private key is required!');
     }
 
-    // Normalize and validate private key
     const normalizedKey = normalizePrivateKey(privateKey);
 
     try {
         const signer = new Wallet(normalizedKey);
-        const tempClient = new ClobClient(REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID, signer);
+
+        const tempClient = new ClobClient({
+            host: REST_DEFAULT_HOST_CLOB,
+            chain: REST_CHAIN_ID,
+            signer,
+        });
         const creds = await tempClient.createOrDeriveApiKey();
 
         if (!creds.key || !creds.secret || !creds.passphrase) {
-            throw new Error('Derived credentials are incomplete');
+            throw new Error('Derived credentials are incomplete!');
         }
 
         return creds;

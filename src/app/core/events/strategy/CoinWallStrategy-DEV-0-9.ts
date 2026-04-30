@@ -1,23 +1,24 @@
-import { ClobClient, Side } from "@polymarket/clob-client";
+import { ClobClient, Side } from "@polymarket/clob-client-v2";
 import { EventStrategy } from "./EventStrategy.js";
 import { CoinFrameEventMarketData } from "../../history/coin_frame.js";
 import { EventWatcher } from "../EventWatcher.js";
 import { logger } from "../../../../log.js";
 import { CoinPriceWatcher } from "../../../../market/price/CoinPriceWatcher.js";
-import { WARM_UP_FAST } from "../../../../market/price/PriceWatcher.js";
 import { PriceWatcherFactory } from "../../../../market/price/PriceWatcherFactory.js";
 import { error_str, safeToNum } from "../../../../utils.js";
 import {
     placeMakerOrder,
     cancelOrder,
     cancelAllOrdersForToken,
-    placeFakTakerOrder,
-    getUSDCBalance,
+    getUSDBalance,
+    DEFAULT_ORDER_MIN_SIZE,
 } from "../../../../rest/orders.js";
 import { MarketSide } from "../../../../market/side.js";
 import { MarketOrderBooksWatcher, OrderBookLevel } from "../../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
 import { OrdersWatcher } from "../../../../market/orders/watcher/OrdersWatcher.js";
-import { DEFAULT_ORDER_MIN_PRICE, DEFAULT_PRICE_TICK_SIZE, tick_price, valid_quantity_safe, valid_quantity_unsafe } from "../../../../market/orders/order-price.js";
+import { tick_price, valid_quantity_safe, valid_quantity_unsafe } from "../../../../rest/orders-price.js";
+import { TIMER_FAST } from "../../../../timer.js";
+import { DEFAULT_COIN_PRICE_TICK_SIZE } from "../../../../market/coins.js";
 
 // ====================== SIMPLE INTERFACES FOR PRICES ======================
 interface AskBidPrices {
@@ -66,22 +67,22 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
     private readonly _btcPriceWatcher: CoinPriceWatcher | undefined;
 
     // ====================== STRATEGY PARAMETERS ========================
-    private readonly _INITIAL_BALANCE: number = 5;      /** Initial balance in USDC (virtual, for internal tracking). */
+    private readonly _INITIAL_BALANCE: number = 5;      /** Initial balance in USD (virtual, for internal tracking). */
     private readonly _WALL_SIZE: number = 7;            /** Size threshold for wall detection in the order book. */
-    private readonly _MIN_BUY_VALUE_USDC = 3.5;         /** Target profit in USDC compared to initial balance. */
+    private readonly _MIN_BUY_VALUE_USDC = 3.5;         /** Target profit in USD compared to initial balance. */
     private readonly _TARGET_PROFIT: number = 2;        /** Desired profit above which sell may be triggered. */
     private readonly _MIN_SPREAD: number = 0.04;        /** Minimum acceptable spread between ask and buy order price. */
-    private readonly _MAX_POSITION_SIZE: number = DEFAULT_ORDER_MIN_PRICE * 1.4;  /** Maximum allowed position size (in tokens) before buying is blocked. */
+    private readonly _MAX_POSITION_SIZE: number = DEFAULT_ORDER_MIN_SIZE * 1.4;  /** Maximum allowed position size (in tokens) before buying is blocked. */
     private readonly _BTC_IMPULSE_THRESHOLD: number = 5;                          /** BTC price change (in USD) required to trigger order adjustment. */
     private readonly _MARKET_SELL_MARGIN: number = 0.02;                          /** Margin above which selling at market is considered favorable. */
-    private readonly _PRICE_TOLERANCE: number = DEFAULT_PRICE_TICK_SIZE;          /** Tolerance added/subtracted when placing orders near the wall price. */
+    private readonly _PRICE_TOLERANCE: number = DEFAULT_COIN_PRICE_TICK_SIZE;          /** Tolerance added/subtracted when placing orders near the wall price. */
     private readonly _END_INTERVAL_FACTOR: number = 0.8;                          /** Fraction of the frame duration at which we consider we are at the end. */
     // ===================================================================
 
 
     // ========================= TRADING STATE ===========================
     
-    /** Current USDC balance (tracked internally, not synced with exchange). */
+    /** Current USD balance (tracked internally, not synced with exchange). */
     private _balance: number;
     private readonly _initialBalance: number;     /** Initial balance at strategy start, used for profit calculation. */
 
@@ -117,9 +118,9 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
     private _frameEndTime: number | undefined = undefined;
 
     /** Current tick size of the market. Updated on each execute. */
-    private _tickSize: number = DEFAULT_PRICE_TICK_SIZE;
+    private _tickSize: number = DEFAULT_COIN_PRICE_TICK_SIZE;
     /** Current minimum order size. Updated on each execute. */
-    private _minOrderSize: number = DEFAULT_ORDER_MIN_PRICE;
+    private _minOrderSize: number = DEFAULT_ORDER_MIN_SIZE;
 
     // ================================================================
 
@@ -151,19 +152,19 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
         if (client) this.balanceCheck(client)
 
         await Promise.all([
-            this._btcPriceWatcher?.warmUp(WARM_UP_FAST)
+            this._btcPriceWatcher?.warmUp(TIMER_FAST)
         ]);
     }
 
     /**
-     * Verifies that the user's USDC balance meets the initial requirement.
+     * Verifies that the user's USD balance meets the initial requirement.
      *
      * @param client - Authenticated CLOB client.
      */
     private async balanceCheck(client: ClobClient): Promise<void> {
-       const balance = await getUSDCBalance(client);
+       const balance = await getUSDBalance(client);
         if (balance < this._balance) {
-            throw new Error(`Insufficient USDC balance: ${balance}, required ${this._balance}`);
+            throw new Error(`Insufficient USD balance: ${balance}, required ${this._balance}`);
         }
     }
 
@@ -206,7 +207,7 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
     private findMyMarketOrderBookWatcher(watchers: readonly EventWatcher<CoinFrameEventMarketData>[]): MarketOrderBooksWatcher | undefined {
         const watcher = this.findMyEventWatcher(watchers);
         if (!watcher) return undefined;
-        return watcher.getEventMarketOrderBooksWatcher()[0];
+        return watcher.getMarketOrderBooksWatchers()[0];
     }
 
     /**
@@ -600,17 +601,17 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
             await this.cancelBuyOrder(client);
             await this.cancelSellOrder(client);
 
-            const result = await placeFakTakerOrder(
-                client,
-                this._tokenId!,
-                Side.SELL,
-                this._positionSize, // CHECK TICK AND MIN ORDER SIZE
-                prices.bid
-            );
-            const soldSize = result.execSize ?? 0;
-            const avgPrice = result.averagePrice ?? prices.bid;
-            this._balance += avgPrice * soldSize;
-            logger.info(`[${this._eventId}] MARKET SELL: quantity=${soldSize} avg_price=${avgPrice}`);
+            //const result = await placeFakTakerOrder(
+            ///    client,
+            //    this._tokenId!,
+            //    Side.SELL,
+             //   this._positionSize, // CHECK TICK AND MIN ORDER SIZE
+            //    prices.bid
+            //);
+            //const soldSize = result.execSize ?? 0;
+            //const avgPrice = result.averagePrice ?? prices.bid;
+            //t//his._balance += avgPrice * soldSize;
+            //l//ogger.info(`[${this._eventId}] MARKET SELL: quantity=${soldSize} avg_price=${avgPrice}`);
 
             this._positionSize = 0;
             this._maxBuyPrice = 0;
@@ -739,17 +740,17 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
             }
 
             try {
-                const result = await placeFakTakerOrder(
-                    client,
-                    this._tokenId,
-                    Side.SELL,
-                    this._positionSize, // Position size will always be > min order size
-                    sellPrice
-                );
-                const soldSize = result.execSize ?? 0;
-                const avgPrice = result.averagePrice ?? sellPrice;
-                this._balance += avgPrice * soldSize;
-                logger.info(`[${this._eventId}] CANCEL: Sold remaining position. size=${soldSize} avgPrice=${avgPrice}`);
+                //const result = await placeFakTakerOrder(
+                //    client,
+                //    this._tokenId,
+                //    Side.SELL,
+                //    this._positionSize, // Position size will always be > min order size
+                //    sellPrice
+                //);
+                //const soldSize = result.execSize ?? 0;
+                //const avgPrice = result.averagePrice ?? sellPrice;
+                //this._balance += avgPrice * soldSize;
+                //logger.info(`[${this._eventId}] CANCEL: Sold remaining position. size=${soldSize} avgPrice=${avgPrice}`);
             } catch (e) {
                 logger.error(`[${this._eventId}] CANCEL: Failed to sell position: ${error_str(e)}`);
             }
@@ -796,8 +797,8 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
     private async placeBuyOrder(client: ClobClient, price: number, quantity: number): Promise<string | undefined> {
         if (quantity <= 0) return undefined;
         const result = await placeMakerOrder(client, this._tokenId!, Side.BUY, price, quantity);
-        logger.info(`[${this._eventId}] PLACED BUY LIMIT: price=${price} quantity=${quantity} id=${result.id}`);
-        return result.id;
+        logger.info(`[${this._eventId}] PLACED BUY LIMIT: price=${price} quantity=${quantity} id=${result.orderID}`);
+        return result.orderID;
     }
 
     /**
@@ -808,8 +809,8 @@ export class CoinWallStrategy implements EventStrategy<CoinFrameEventMarketData>
     private async placeSellOrder(client: ClobClient, price: number, quantity: number): Promise<string | undefined> {
         if (quantity <= 0) return undefined;
         const result = await placeMakerOrder(client, this._tokenId!, Side.SELL, price, quantity);
-        logger.info(`[${this._eventId}] PLACED SELL LIMIT: price=${price} quantity=${quantity} id=${result.id}`);
-        return result.id;
+        logger.info(`[${this._eventId}] PLACED SELL LIMIT: price=${price} quantity=${quantity} id=${result.orderID}`);
+        return result.orderID;
     }
 
     /**
