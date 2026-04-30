@@ -5,9 +5,8 @@ import { CoinFrameEventMarketData, MarketTokenSnapshot } from "../history/coin_f
 import { CoinPriceWatcher } from "../../../market/price/CoinPriceWatcher.js";
 import { EventWatcher } from "./EventWatcher.js";
 import { roundTo } from "../../../utils.js";
-import { TickTimer } from "../../../timer.js";
+import { TIMER_FAST, TickTimer } from "../../../timer.js";
 import { logger } from "../../../log.js";
-import { WARM_UP_FAST } from "../../../market/price/PriceWatcher.js";
 import { PriceWatcherFactory } from "../../../market/price/PriceWatcherFactory.js";
 import { PriceSource } from "../../../market/price/price_source.js";
 import { CoinMarketOrderBooksWatcher } from "../../../market/orderbook/watcher/CoinMarketOrderBooksWatcher.js";
@@ -255,7 +254,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
    * @returns A promise that resolves to the initialized watcher (timer already enabled).
    */
   public static async create_me(coin: Coin, frame: EventFrame, tick: number, source: PriceSource): Promise<CoinFrameEventTimerWatcher> {
-    const watcher = await PriceWatcherFactory.getCoinWatcher(coin, source).warmUp(WARM_UP_FAST);
+    const watcher = await PriceWatcherFactory.getCoinWatcher(coin, source).warmUp(TIMER_FAST);
     const instance = new CoinFrameEventTimerWatcher(coin, frame, tick, watcher);
     await instance.init();
     return instance;
@@ -272,7 +271,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
   /**
    * Returns the underlying order book watcher instance.
    */
-  public getEventMarketOrderBooksWatcher(): MarketOrderBooksWatcher[] {
+  public getMarketOrderBooksWatchers(): MarketOrderBooksWatcher[] {
     return [this._orderBookWatcher!];
   }
 

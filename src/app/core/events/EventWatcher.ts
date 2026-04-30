@@ -10,7 +10,7 @@ export interface EventWatcher<EventDataType> {
   getEventId(): string;
 
   /** Returns the underlying order book watcher instance. */
-  getEventMarketOrderBooksWatcher(): MarketOrderBooksWatcher[];
+  getMarketOrderBooksWatchers(): MarketOrderBooksWatcher[];
 
   /** Returns the collected data for the 'up' side (read‑only). */
   getWatcherHistoryUp(): Readonly<EventDataType>[];

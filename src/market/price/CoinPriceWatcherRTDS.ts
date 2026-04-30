@@ -13,8 +13,8 @@ interface RtdsSymbolPriceData {
 
 import { Coin } from "../coins.js";
 import { CoinPriceWatcher } from "./CoinPriceWatcher.js";
-import { WARM_UP_NORM } from "./PriceWatcher.js";
 import { PriceSource } from "./price_source.js";
+import { TIMER_NORM } from "../../timer.js";
 
 interface CoinPriceData {
     coin: Coin;          // e.g., 'btc'
@@ -130,7 +130,7 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
      * @param tick Force delay during warming up.
      * @returns Returns itself to chain-call.
      */
-    public async warmUp(tick: number = WARM_UP_NORM): Promise<this> {
+    public async warmUp(tick: number = TIMER_NORM): Promise<this> {
         while(!this.getCurrentPrice()) await delay(tick);
         return this;
     }

@@ -1,4 +1,3 @@
-
 export const PS_BINANCE = "binance";
 export const PS_CHAINLINK = "chainlink";
 

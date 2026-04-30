@@ -1,5 +1,7 @@
 export type Coin = 'btc' | 'doge' | 'eth' | 'sol' | 'xrp';
 
+export const DEFAULT_COIN_PRICE_TICK_SIZE = 0.01;
+
 /**
  * Returns the number of decimal places to use when rounding prices for a given coin.
  * Defaults to 6 if the coin is not explicitly defined.

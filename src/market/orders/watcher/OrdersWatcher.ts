@@ -27,6 +27,11 @@ export interface OrderStatus {
 }
 
 /**
+ * Type of option update handler for order watchers
+ */
+export type OrderUpdateHandler = (status: OrderStatus) => void;
+
+/**
  * Defines the public contract for a market orders watcher. Accumulates orders users's orders by conditional id.
  */
 export interface OrdersWatcher {
@@ -43,8 +48,16 @@ export interface OrdersWatcher {
      */
     isFullMatched(orderId: string): boolean;
 
+    /**
+     * Function check is order in live state in order book.
+     * @param orderId 
+     */
     isLive(orderId: string): boolean;
 
+    /**
+     * Function check is order in canceled state.
+     * @param orderId 
+     */
     hasCanceled(orderId: string): boolean;
 
     /**
@@ -55,11 +68,23 @@ export interface OrdersWatcher {
 
     isActive(): boolean;
     isWatching(): boolean;
-    
+
+    setUpdateHandler(orderId: string, handler: OrderUpdateHandler): void;
+    resetUpdateHandler(orderId: string): void;
+    resetAllUpdateHandlers(): void;
+
     /**
      * API provides trade events stream subscribe only by condition id. 
      */
     getConditionId(): string;
+
+    /**
+     * This function guarantees that the watcher will establish the first connection 
+     * and has sync orders after a delay.
+     * @param tick Force delay during warming up.
+     * @returns Returns itself to chain-call.
+     */
+    warmUp(tick: number): Promise<this>;
 
     /**
      * Gracefully closes the WebSocket connection and cleans up resources.

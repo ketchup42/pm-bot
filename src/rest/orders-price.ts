@@ -1,10 +1,4 @@
-import { Side } from "@polymarket/clob-client";
-
-/**
- * The most common values by public api.
- */
-export const DEFAULT_PRICE_TICK_SIZE = 0.01;
-export const DEFAULT_ORDER_MIN_PRICE = 5;
+import { Side } from "@polymarket/clob-client-v2";
 
 /**
  * Rounds the price according to the tick size and allowed range.

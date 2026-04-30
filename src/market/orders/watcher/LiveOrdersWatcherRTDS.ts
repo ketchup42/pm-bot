@@ -1,6 +1,6 @@
 import { ClobApiKeyCreds } from "@polymarket/real-time-data-client";
-import { OrderStatus, OrdersWatcher } from "./OrdersWatcher.js";
-import { error_str, safeToNum } from "../../../utils.js";
+import { OrderStatus, OrderUpdateHandler, OrdersWatcher } from "./OrdersWatcher.js";
+import { delay, error_str, safeToNum } from "../../../utils.js";
 import { ClobClient } from "@polymarket/clob-client";
 import { logger } from "../../../log.js";
 import { ClobOrderEvent, ClobUserClient } from "polymarket-websocket-client";
@@ -29,7 +29,6 @@ export interface OrderStatusRTDS {
   type: string          // PLACEMENT, UPDATE, CANCELLATION
 }
 
-
 /**
  * Watches our own maker orders on a single market.
  * Uses a WebSocket user client and keeps an in‑memory map of order statuses.
@@ -40,6 +39,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
 
     private _conditionId: string;
     private _watchingOrders = new Map<string, OrderStatus>();
+    private _handlers = new Map<string, OrderUpdateHandler>();
 
     private _isConnected: boolean = false;
 
@@ -72,12 +72,15 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
             price: payload.price,
             side: payload.side,
             raw_data: payload,
-            has_size_matched,
-            is_live,
-            has_canceled: is_canceled,
+            has_size_matched: has_size_matched,
+            is_live: is_live,
+            has_canceled: is_canceled
         };
 
         this._watchingOrders.set(map_id, status);
+
+        const handler = this._handlers.get(map_id);
+        handler?.(status);
     };
 
 
@@ -106,13 +109,32 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
 
         this._userClient.on('disconnected', ({ code, reason }) => {
             this._isConnected = false;
-            this._watchingOrders.clear();
+            // this._watchingOrders.clear(); // If watcher reconnecting we need its old history state
+            // this._handlers.clear();
         });
         
         this._userClient.on('error', (error) => {
             this._isConnected = false;
             this._watchingOrders.clear();
+            this._handlers.clear();
+            logger.error(`[LiveOrdersWatcherRTDS] Error: ${error_str(error)}`);
         });
+    }
+
+    public setUpdateHandler(orderId: string, handler: OrderUpdateHandler): void {
+        this._handlers.set(orderId, handler);
+        if (this._watchingOrders.has(orderId)) {
+            const handler = this._handlers.get(orderId)!;
+            handler(this._watchingOrders.get(orderId)!);
+        }
+    }
+    
+    public resetUpdateHandler(orderId: string): void {
+        this._handlers.delete(orderId);
+    }
+
+    public resetAllUpdateHandlers(): void {
+        this._handlers.clear();
     }
 
     private async init(): Promise<void> {
@@ -152,6 +174,9 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
                     has_canceled: is_canceled
                 };
                 this._watchingOrders.set(status.id, status);
+
+                const handler = this._handlers.get(status.id);
+                handler?.(status);
             }
         } catch (error) {
            throw new Error(`[LiveOrdersWatcherRTDS] Failed to sync open orders: ${error_str(error)}`);
@@ -186,10 +211,15 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
         return this._watchingOrders.size !== 0;
     }
     
-    getConditionId(): string {
+    public getConditionId(): string {
         return this._conditionId;
     }
-
+    
+    public async warmUp(tick: number): Promise<this> {
+        while(!this.isActive()) await delay(tick);
+        return this;
+    }
+    
     /**
      * Gracefully closes the WebSocket connection and cleans up resources.
      */
@@ -200,6 +230,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
             // Additional clear steps to full safe
             this._isConnected = false;
             this._watchingOrders.clear();
+            this._handlers.clear();
         }
     }
 }
