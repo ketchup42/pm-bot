@@ -1,5 +1,6 @@
 import { ClobClient, Side, OrderType, AssetType, Trade } from "@polymarket/clob-client-v2"
-import { delay, error_str, safeToNum } from "../utils.js";
+import { delay, error_str, safeFloat, safeToNum } from "../utils.js";
+import { getDecimalsFromTickString } from "./orders-price.js";
 
 /**
  * The most common values by public api.
@@ -7,6 +8,7 @@ import { delay, error_str, safeToNum } from "../utils.js";
 export const DEFAULT_ORDER_MIN_SIZE = 5.0;
 export const DEFAULT_BUY_ORDER_MIN_VALUE = 1.0;
 export const DEFAULT_TOKEN_MAX_PRICE = 1.0
+export const DEFAULT_ORDER_AMOUNT_FRACTION = 6;
 
 export interface OrderStatusRaw {
     success: boolean;
@@ -62,7 +64,7 @@ function computeAveragePrice(trades: Trade[]): { exec_size: number; average_pric
  * allows the wallet to correctly update the virtual balance even when the
  * execution price differs from the requested limit price.
  *
- * @param clobClient - Initialized and authenticated CLOB client.
+ * @param client - Initialized and authenticated CLOB client.
  * @param tokenId    - The ERC‑1155 token ID (asset_id) of the outcome.
  * @param side       - {@link Side.BUY} or {@link Side.SELL}.
  * @param price      - Desired limit price per token (will be honoured if the
@@ -78,21 +80,21 @@ function computeAveragePrice(trades: Trade[]): { exec_size: number; average_pric
  *         does not contain an `orderID`.
  */
 export async function placeMakerOrder(
-    clobClient: ClobClient,
+    client: ClobClient,
     tokenId: string,
     side: Side,
     price: number,
     size: number
 ): Promise<OrderStatusRaw> {
     try {
-        const order = await clobClient.createOrder({
+        const order = await client.createOrder({
             tokenID: tokenId,
             price,
             size,
             side,
         });
 
-        const response = await clobClient.postOrder(order, OrderType.GTC, false, true);
+        const response = await client.postOrder(order, OrderType.GTC, false, true);
         if (!response.success) throw new Error(response.errorMsg);
         if (response.error) throw new Error(response.error);
         if (!response.orderID) throw new Error('OrderID missing!');
@@ -103,10 +105,14 @@ export async function placeMakerOrder(
             let avgPrice = price;     // fallback
 
             if (tradeIds.length > 0) {
-                const trades = await fetchTradesByIds(clobClient, tradeIds);
+                const tickSize = client.getTickSize(tokenId);
+                const trades = await fetchTradesByIds(client, tradeIds);
+
                 const result = computeAveragePrice(trades);
-                execSize = result.exec_size;
-                avgPrice = result.average_price;
+
+                execSize = safeFloat(result.exec_size, DEFAULT_ORDER_AMOUNT_FRACTION);
+                // All trades have prices with tick fixed size - floating point operations errors fix
+                avgPrice = safeFloat(result.average_price, getDecimalsFromTickString(await tickSize));
             }
 
             return {
@@ -126,13 +132,13 @@ export async function placeMakerOrder(
 
 /**
  * Cancels a single order by its order ID.
- * @param clobClient - Initialized and authenticated CLOB client.
+ * @param client - Initialized and authenticated CLOB client.
  * @param orderId - The order ID (string) returned when the order was placed.
  * @returns Promise that resolves when cancelled (no value), rejects on error.
  */
-export async function cancelOrder(clobClient: ClobClient, orderId: string): Promise<void> {
+export async function cancelOrder(client: ClobClient, orderId: string): Promise<void> {
     try {
-        const response = await clobClient.cancelOrder({orderID: orderId});
+        const response = await client.cancelOrder({orderID: orderId});
         // Code do not checks "not_canceled": {} in response to multiple cancel strategy
         if (response.error) throw new Error(response.error);
     } catch (error) {
@@ -142,16 +148,16 @@ export async function cancelOrder(clobClient: ClobClient, orderId: string): Prom
 
 /**
  * Cancels all open orders for a specific token.
- * @param clobClient - Initialized CLOB client.
+ * @param client - Initialized CLOB client.
  * @param tokenId - The token ID for which to cancel orders.
  */
-export async function cancelAllOrdersForToken(clobClient: ClobClient, tokenId: string): Promise<void> {
+export async function cancelAllOrdersForToken(client: ClobClient, tokenId: string): Promise<void> {
     try {
-        const openOrders = await clobClient.getOpenOrders({asset_id: tokenId});
+        const openOrders = await client.getOpenOrders({asset_id: tokenId});
         // If the client supports batch cancellation
         const orderIds = openOrders.map(order => order.id);
        
-        const cancelPromises = orderIds.map(orderid => cancelOrder(clobClient, orderid));
+        const cancelPromises = orderIds.map(orderid => cancelOrder(client, orderid));
         const results = await Promise.allSettled(cancelPromises);
         let isError = false;
         let errorMsg = ''
@@ -171,12 +177,12 @@ export async function cancelAllOrdersForToken(clobClient: ClobClient, tokenId: s
 /**
  * Cancels all open orders for the authenticated user (across all tokens).
  * Use with caution.
- * @param clobClient - Initialized CLOB client.
+ * @param client - Initialized CLOB client.
  */
-export async function cancelAllOrders(clobClient: ClobClient): Promise<void> {
+export async function cancelAllOrders(client: ClobClient): Promise<void> {
     try {
-        const allOrders = await clobClient.getOpenOrders();
-        const cancelPromises = allOrders.map(order => cancelOrder(clobClient, order.id));
+        const allOrders = await client.getOpenOrders();
+        const cancelPromises = allOrders.map(order => cancelOrder(client, order.id));
 
         const results = await Promise.allSettled(cancelPromises);
         let isError = false;
@@ -200,7 +206,7 @@ export const GTC_TAKER_ORDER_CANCEL_TIME = 200;
  * Returns the order ID and the filled size.
  */
 export async function placeGtcTakerOrder(
-    clobClient: ClobClient,
+    client: ClobClient,
     tokenId: string,
     side: Side,
     price: number,
@@ -208,14 +214,14 @@ export async function placeGtcTakerOrder(
     autoCancelAfterMs: number = GTC_TAKER_ORDER_CANCEL_TIME
 ): Promise<OrderStatusRaw> {
 
-    const order = await clobClient.createOrder({
+    const order = await client.createOrder({
         tokenID: tokenId,
         price,
         size,
         side,
     });
 
-    const response = await clobClient.postOrder(order, OrderType.GTC, false, false);
+    const response = await client.postOrder(order, OrderType.GTC, false, false);
             
     if (!response.orderID) {
         throw new Error('Order placed but orderID is missing in response!');
@@ -225,7 +231,7 @@ export async function placeGtcTakerOrder(
 
     await delay(autoCancelAfterMs);
 
-    const orderStatus = await clobClient.getOrder(orderId);
+    const orderStatus = await client.getOrder(orderId);
     const filledSize = safeToNum(orderStatus.size_matched);
 
     let successStatus = true;    
@@ -233,7 +239,7 @@ export async function placeGtcTakerOrder(
 
         try {
             successStatus = false;
-            await cancelOrder(clobClient, orderId);
+            await cancelOrder(client, orderId);
         } catch (error) {
             throw new Error(`Failed to cancel partial order ${orderId}: ${error_str(error)}`);
         }
@@ -245,22 +251,22 @@ export async function placeGtcTakerOrder(
  * Places an immediate FOK (Fill-Or-Kill) market order to buy a specified dollar amount.
  * The order will either be filled completely at the best available price or canceled.
  *
- * @param clobClient - An initialized and authenticated CLOB client.
+ * @param client - An initialized and authenticated CLOB client.
  * @param tokenId - The token ID for the specific outcome (e.g., "Yes" token).
  * @param amount - The dollar amount you want to spend.
  * @param maxPrice - Your slippage protection: the worst price per share you are willing to pay.
  * @returns Promise resolving to an object containing the order ID.
  */
 export async function placeFokMarketOrderBuy(
-    clobClient: ClobClient,
+    client: ClobClient,
     tokenId: string,
     amount: number,
     maxPrice: number
 ): Promise<OrderStatusRaw> {
     try {
-        const tickSize = await clobClient.getTickSize(tokenId);
+        const tickSize = await client.getTickSize(tokenId);
 
-        const order = await clobClient.createMarketOrder(
+        const order = await client.createMarketOrder(
             {
                 tokenID: tokenId,
                 side: Side.BUY,
@@ -270,7 +276,7 @@ export async function placeFokMarketOrderBuy(
             { tickSize, negRisk: false }
         );
 
-        const response = await clobClient.postOrder(order, OrderType.FOK);
+        const response = await client.postOrder(order, OrderType.FOK);
 
         if (!response.success) throw new Error(response.errorMsg);
         if (response.error) throw new Error(response.error);

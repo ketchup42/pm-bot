@@ -1,10 +1,10 @@
 import { ClobClient, Side } from "@polymarket/clob-client-v2";
-import { OrderWallet, OrderWalletParams, OrderWalletState } from "./OrderWallet.js";
-import { DEFAULT_BUY_ORDER_MIN_VALUE, cancelOrder, getUSDBalance, placeMakerOrder } from "../../rest/orders.js";
+import { ORDER_WALLET_FRACTION, OrderWallet, OrderWalletParams, OrderWalletState } from "./OrderWallet.js";
+import { cancelOrder, getUSDBalance, placeMakerOrder } from "../../rest/orders.js";
 import { OrderUpdateHandler, OrdersWatcher } from "./watcher/OrdersWatcher.js";
 import { tick_price, valid_quantity_unsafe } from "../../rest/orders-price.js";
 import { logger } from "../../log.js";
-import { error_str, safeToNum } from "../../utils.js";
+import { error_str, safeFloat, safeToNum } from "../../utils.js";
 import { isBidsEmpty } from "../../rest/price.js";
 
 /**
@@ -40,13 +40,13 @@ export class PairOrderWallet implements OrderWallet {
         logger.debug(`[PairOrderWallet] buyHandler called for ${state.id}, size_matched=${state.size_matched}`);
 
         const newMatched = safeToNum(state.size_matched);
-        const delta = newMatched - this._buyLastMatchedSize;
+        const delta = safeFloat(newMatched - this._buyLastMatchedSize, ORDER_WALLET_FRACTION);
 
         if (delta > 0) {
             const price = safeToNum(state.price);
             logger.debug(`[PairOrderWallet] buyHandler delta=${delta} price=${price}, updating balance/tokens`);
-            this._walletBalance -= price * delta;
-            this._tokenQuantity += delta;
+            this._walletBalance = safeFloat(this._walletBalance - price * delta, ORDER_WALLET_FRACTION);
+            this._tokenQuantity = safeFloat(this._tokenQuantity + delta, ORDER_WALLET_FRACTION);
         }
 
         this._buyLastMatchedSize = newMatched;
@@ -65,13 +65,13 @@ export class PairOrderWallet implements OrderWallet {
         logger.debug(`[PairOrderWallet] sellHandler called for ${state.id}, size_matched=${state.size_matched}`);
 
         const newMatched = safeToNum(state.size_matched);
-        const delta = newMatched - this._sellLastMatchedSize;
+        const delta = safeFloat(newMatched - this._sellLastMatchedSize, ORDER_WALLET_FRACTION);
 
         if (delta > 0) {
             const price = safeToNum(state.price);
             logger.debug(`[PairOrderWallet] sellHandler delta=${delta} price=${price}, updating balance/tokens`);
-            this._walletBalance += price * delta;
-            this._tokenQuantity -= delta;
+            this._walletBalance = safeFloat(this._walletBalance + price * delta, ORDER_WALLET_FRACTION);
+            this._tokenQuantity = safeFloat(this._tokenQuantity - delta, ORDER_WALLET_FRACTION);
         }
 
         this._sellLastMatchedSize = newMatched;
@@ -128,8 +128,8 @@ export class PairOrderWallet implements OrderWallet {
             logger.warn(`[PairOrderWallet] Token quantity is not enough: ${orderQuantity} for token ${this._tokenId}`);
             return undefined;
         }
-            
-        let orderValue =  orderPrice * orderQuantity;
+
+        let orderValue = safeFloat(orderPrice * orderQuantity, ORDER_WALLET_FRACTION);
 
         if (orderValue < this._minBuyOrderValue) {
             const desiredQuantity = Math.ceil(this._minBuyOrderValue / orderPrice);
@@ -138,7 +138,7 @@ export class PairOrderWallet implements OrderWallet {
                 logger.warn(`[PairOrderWallet] Cannot meet minimum buy value for token ${this._tokenId}`);
                 return undefined;
             }
-            orderValue = orderPrice * orderQuantity;
+            orderValue = safeFloat(orderPrice * orderQuantity, ORDER_WALLET_FRACTION);
             logger.warn(`[PairOrderWallet] Adjusted quantity to ${orderQuantity} to meet minimum buy value`);
         }
 
@@ -150,11 +150,18 @@ export class PairOrderWallet implements OrderWallet {
         if (!this._watcher.isActive()) {
             logger.warn(`[PairOrderWallet] Order watcher is not active!`);
             return undefined;
-        } 
+        }
 
-        const result = await placeMakerOrder(this._client, this._tokenId, Side.BUY, orderPrice, orderQuantity);
+        let result; 
+        try {
+            result = await placeMakerOrder(this._client, this._tokenId, Side.BUY, orderPrice, orderQuantity);
+        } catch (error) {
+            logger.warn(`[PairOrderWallet] Placing buy order failed – may be insufficient balance/allowance`);
+            return undefined;
+        }
+
         if (!result || !result.success || !result.orderID) {
-            logger.error(`[PairOrderWallet] Placing buy order error!`)
+            logger.warn(`[PairOrderWallet] Placing buy order unsuccess!`);
             return undefined;
         }
         logger.info(`[PairOrderWallet] BUY order post: ${result.orderID} price=${orderPrice} qty=${orderQuantity}`);
@@ -166,8 +173,8 @@ export class PairOrderWallet implements OrderWallet {
             const avgPrice = result.average_price || orderSetPrice;
 
             if (filledQty > 0) {
-                this._walletBalance -= avgPrice * filledQty;
-                this._tokenQuantity += filledQty;
+                this._walletBalance = safeFloat(this._walletBalance - avgPrice * filledQty, ORDER_WALLET_FRACTION);
+                this._tokenQuantity = safeFloat(this._tokenQuantity + filledQty, ORDER_WALLET_FRACTION);
             }
 
             if (filledQty >= orderSetQuantity) {
@@ -183,7 +190,7 @@ export class PairOrderWallet implements OrderWallet {
             }
 
             logger.info(`[PairOrderWallet] BUY order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} avgPrice=${avgPrice}, remaining will be placed as limit`);
-            const remainingQty = orderSetQuantity - filledQty;
+            const remainingQty = safeFloat(orderSetQuantity - filledQty, ORDER_WALLET_FRACTION);
             this._buyLastMatchedSize = filledQty;
             const buyOrderState: OrderWalletState = {
                 id: result.orderID,
@@ -234,9 +241,16 @@ export class PairOrderWallet implements OrderWallet {
             return undefined;
         }
 
-        const result = await placeMakerOrder(this._client, this._tokenId, Side.SELL, orderPrice, orderQuantity);
+        let result; 
+        try {
+            result = await placeMakerOrder(this._client, this._tokenId, Side.SELL, orderPrice, orderQuantity);
+        } catch (error) {
+            logger.warn(`[PairOrderWallet] Placing sell order failed – may be insufficient balance/allowance`);
+            return undefined;
+        }
+
         if (!result || !result.success || !result.orderID) {
-            logger.error(`[PairOrderWallet] Placing sell order error!`);
+            logger.warn(`[PairOrderWallet] Placing sell order unsuccess!`);
             return undefined;
         }
 
@@ -249,8 +263,8 @@ export class PairOrderWallet implements OrderWallet {
             const avgPrice = result.average_price || orderSetPrice;
 
             if (filledQty > 0) {
-                this._walletBalance += avgPrice * filledQty;
-                this._tokenQuantity -= filledQty;
+                this._walletBalance = safeFloat(this._walletBalance + avgPrice * filledQty, ORDER_WALLET_FRACTION);
+                this._tokenQuantity = safeFloat(this._tokenQuantity - filledQty, ORDER_WALLET_FRACTION);
             }
 
             if (filledQty >= orderSetQuantity) {
@@ -266,7 +280,7 @@ export class PairOrderWallet implements OrderWallet {
             }
 
             logger.info(`[PairOrderWallet] SELL order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} avgPrice=${avgPrice}, remaining will be placed as limit`);
-            const remainingQty = orderSetQuantity - filledQty;
+            const remainingQty = safeFloat(orderSetQuantity - filledQty, ORDER_WALLET_FRACTION);
             this._sellLastMatchedSize = filledQty;
             const sellOrderState: OrderWalletState = {
                 id: result.orderID,
@@ -291,7 +305,6 @@ export class PairOrderWallet implements OrderWallet {
         this._watcher.setUpdateHandler(this._sellOrderId, this._sellHandler);
         return sellOrderState;
     }
-
 
     public async cancel_order(orderId: string): Promise<boolean> {
         if (orderId !== this._buyOrderId && orderId !== this._sellOrderId) return false;
@@ -350,15 +363,15 @@ export class PairOrderWallet implements OrderWallet {
     }
 
     public getBalance(): number {
-        return this._walletBalance;
+        return safeFloat(this._walletBalance, ORDER_WALLET_FRACTION);
     }
 
     public getBalanceChange(): number {
-        return (this._walletBalance - this._walletInitBalance);
+        return safeFloat((this.getBalance() - this._walletInitBalance), ORDER_WALLET_FRACTION);
     }
 
     public getTokensQuantity(): number {
-        return this._tokenQuantity;
+        return safeFloat(this._tokenQuantity, ORDER_WALLET_FRACTION);
     }
 
     public getBuyOrdersCount(): number {
@@ -369,19 +382,16 @@ export class PairOrderWallet implements OrderWallet {
         return (this._sellOrderId)? 1: 0;
     }
 
-    public setTick(tickSize: number): void {
-        if (tickSize <= 0) return;         
-        this._tickSize = tickSize;
+    public getTick(): number {
+        return this._tickSize;
     }
 
-    public setMinOrderSize(orderSize: number): void {
-        if (orderSize <= 0) return;
-        this._minOrderSize = orderSize;
+    public getMinOrderSize(): number {
+        return this._minOrderSize;
     }
 
-    public setMinBuyOrderValue(orderValue: number): void {
-        if (orderValue < DEFAULT_BUY_ORDER_MIN_VALUE) return;
-        this._minBuyOrderValue = orderValue;
+    public getMinBuyOrderValue(): number {
+        return this._minBuyOrderValue;
     }
 
     public async dispose(sellAll: boolean): Promise<void> {
@@ -404,19 +414,20 @@ export class PairOrderWallet implements OrderWallet {
         if (!allCancelled) {
             logger.warn(`[PairOrderWallet] Some orders could not be cancelled before dispose!`);
         }
-        if (sellAll && this._tokenQuantity > 0) {
+        if (sellAll && this.getTokensQuantity() > 0) {
             logger.info(`[PairOrderWallet] Sell all flag set, trying to sell all tokens before dispose...`);
 
             const isAbleToSell = !(await isBidsEmpty(this._client, this._tokenId));
             if (isAbleToSell) {
-                await this.sell(this._tickSize, this._tokenQuantity);
+                await this.sell(this.getTick(), this.getTokensQuantity());
                 allCancelled = await this.cancel_all();
                 if (!allCancelled) {
                     logger.warn(`[PairOrderWallet] Some orders could not be cancelled before dispose!`);
                 }
             } else {
                 logger.info(`[PairOrderWallet] Selling all tokens before dispose failed, no liquidity...`);
-            }        }
+            }        
+        }
         this._watcher.disconnect();
     }
 }

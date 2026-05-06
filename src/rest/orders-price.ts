@@ -1,4 +1,18 @@
 import { Side } from "@polymarket/clob-client-v2";
+import { safeFloat } from "../utils.js";
+import { DEFAULT_ORDER_AMOUNT_FRACTION } from "./orders.js";
+
+export const getDecimalsFromTick = (tick: number) => {
+    const s = tick.toString();
+    const dot = s.indexOf('.');
+    return dot === -1 ? 0 : s.length - dot - 1;
+};
+
+export const getDecimalsFromTickString = (tick: string) => {
+    const s = tick.toString();
+    const dot = s.indexOf('.');
+    return dot === -1 ? 0 : s.length - dot - 1;
+};
 
 /**
  * Rounds the price according to the tick size and allowed range.
@@ -15,45 +29,47 @@ export function tick_price(price: number, tickSize: number, side: Side): number 
     // Clamp to the allowed range [tickSize, 1 - tickSize]
     rounded = Math.max(rounded, tickSize);
     rounded = Math.min(rounded, 1 - tickSize);
-    return rounded;
+    return safeFloat(rounded, getDecimalsFromTick(tickSize));
 }
 
 /**
- * Returns a valid order quantity:
- * - Rounds to the nearest tickSize multiple.
- *   BUY: rounds down (conservative cost).
- *   SELL: rounds up (ensures intended amount can be fully sold).
- * - Returns 0 if the final quantity is below minOrderSize.
+ * Returns a valid order quantity.
+ * - Formats the result to DEFAULT_ORDER_AMOUNT_FRACTION.
+ * - Returns 0 if the quantity is below minOrderSize.
+ *
+ * @param quantity     - desired quantity
+ * @param minOrderSize - the minimum allowed order size
+ * @param _tickSize    - (unused, kept for backward compatibility)
+ * @param _side        - (unused, kept for backward compatibility)
  */
 export function valid_quantity_safe(
     quantity: number,
     minOrderSize: number,
-    tickSize: number,
-    side: Side
+    _tickSize: number,
+    _side: Side
 ): number {
-    if (tickSize <= 0 || minOrderSize <= 0) return 0;
-    const rounded =
-        side === Side.BUY
-            ? Math.floor(quantity / tickSize) * tickSize
-            : Math.ceil(quantity / tickSize) * tickSize;
-    return rounded >= minOrderSize ? rounded : 0;
+    if (minOrderSize <= 0) return 0;
+    const formatted = safeFloat(quantity, DEFAULT_ORDER_AMOUNT_FRACTION);
+    return formatted >= minOrderSize ? formatted : 0;
 }
 
 /**
  * Returns a guaranteed minimum order quantity (at least minOrderSize).
- * - For BUY: rounds DOWN to keep cost under control, then if below minOrderSize returns minOrderSize.
- * - For SELL: rounds UP to avoid leaving dust, then if below minOrderSize returns minOrderSize.
+ * - Formats the result to DEFAULT_ORDER_AMOUNT_FRACTION.
+ * - If the quantity is below minOrderSize, returns minOrderSize.
+ *
+ * @param quantity     - desired quantity
+ * @param minOrderSize - the minimum allowed order size
+ * @param _tickSize    - (unused, kept for backward compatibility)
+ * @param _side        - (unused, kept for backward compatibility)
  */
 export function valid_quantity_unsafe(
     quantity: number,
     minOrderSize: number,
-    tickSize: number,
-    side: Side
+    _tickSize: number,
+    _side: Side
 ): number {
-    if (tickSize <= 0 || minOrderSize <= 0) return 0;
-    const rounded =
-        side === Side.BUY
-            ? Math.floor(quantity / tickSize) * tickSize
-            : Math.ceil(quantity / tickSize) * tickSize;
-    return rounded >= minOrderSize ? rounded : minOrderSize;
+    if (minOrderSize <= 0) return 0;
+    const formatted = safeFloat(quantity, DEFAULT_ORDER_AMOUNT_FRACTION);
+    return formatted >= minOrderSize ? formatted : minOrderSize;
 }

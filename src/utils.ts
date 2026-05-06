@@ -92,6 +92,10 @@ export function safeToNum(value: unknown, fallback: number = 0): number {
     return isNaN(converted) ? fallback : converted;
 }
 
+export function safeFloat(value: number, digits: number): number {
+    return safeToNum(value.toFixed(digits));
+}
+
 /**
  * Checks if a value is valid (not null, not undefined, and not NaN if a number).
  * Works with any type: numbers, strings, objects, arrays, etc.

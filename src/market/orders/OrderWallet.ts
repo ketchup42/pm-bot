@@ -1,4 +1,6 @@
-import { LiveOrderWallet } from "./LiveOrderWallet";
+import { DEFAULT_ORDER_AMOUNT_FRACTION } from "../../rest/orders.js";
+
+export const ORDER_WALLET_FRACTION = DEFAULT_ORDER_AMOUNT_FRACTION;
 
 /** Data of the current limit order */
 export interface OrderValue {
@@ -110,9 +112,9 @@ export interface OrderWallet {
      */
     getSellOrdersCount(): number;
 
-    setTick(tickSize: number): void;
-    setMinOrderSize(orderSize: number): void;
-    setMinBuyOrderValue(orderValue: number): void;
+    getTick(): number;
+    getMinOrderSize(): number;
+    getMinBuyOrderValue(): number;
 
     /**
      * Cancels a single order by its exchange ID.

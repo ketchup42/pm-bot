@@ -1,10 +1,10 @@
 import { ClobClient, Side } from "@polymarket/clob-client-v2";
-import { OrderWalletParams, OrderWalletState } from "./OrderWallet.js";
-import { DEFAULT_BUY_ORDER_MIN_VALUE, cancelOrder, getUSDBalance, placeMakerOrder } from "../../rest/orders.js";
+import { ORDER_WALLET_FRACTION, OrderWalletParams, OrderWalletState } from "./OrderWallet.js";
+import { cancelOrder, getUSDBalance, placeMakerOrder } from "../../rest/orders.js";
 import { OrderUpdateHandler, OrdersWatcher } from "./watcher/OrdersWatcher.js";
 import { tick_price, valid_quantity_unsafe } from "../../rest/orders-price.js";
 import { logger } from "../../log.js";
-import { error_str, safeToNum } from "../../utils.js";
+import { error_str, safeFloat, safeToNum } from "../../utils.js";
 import { MultiOrderWallet } from "./MultiOrderWallet.js";
 import { isBidsEmpty } from "../../rest/price.js";
 
@@ -48,16 +48,16 @@ export class LiveOrderWallet implements MultiOrderWallet {
         if (state.id !== order.state.id) return;
 
         const newMatched = safeToNum(state.size_matched);
-        const delta = newMatched - order.lastMatchedSize;
+        const delta = safeFloat(newMatched - order.lastMatchedSize, ORDER_WALLET_FRACTION);
 
         logger.debug(`[LiveOrderWallet] BUY handler: order=${state.id} size_matched=${newMatched} delta=${delta}`);
 
         if (delta > 0) {
             const price = safeToNum(state.price);
-            this._walletBalance -= price * delta;
-            this._tokenQuantity += delta;
+            this._walletBalance = safeFloat(this._walletBalance - price * delta, ORDER_WALLET_FRACTION);
+            this._tokenQuantity = safeFloat(this._tokenQuantity + delta, ORDER_WALLET_FRACTION);
 
-            order.state.value.quantity = Math.max(0, order.state.value.quantity - delta);
+            order.state.value.quantity = safeFloat(Math.max(0, order.state.value.quantity - delta), ORDER_WALLET_FRACTION);
             logger.debug(`[LiveOrderWallet] BUY fill: delta=${delta} price=${price} newBalance=${this._walletBalance} newTokens=${this._tokenQuantity}`);
         }
 
@@ -80,16 +80,16 @@ export class LiveOrderWallet implements MultiOrderWallet {
         if (state.id !== order.state.id) return;
 
         const newMatched = safeToNum(state.size_matched);
-        const delta = newMatched - order.lastMatchedSize;
+        const delta = safeFloat(newMatched - order.lastMatchedSize, ORDER_WALLET_FRACTION);
 
         logger.debug(`[LiveOrderWallet] SELL handler: order=${state.id} size_matched=${newMatched} delta=${delta}`);
 
         if (delta > 0) {
             const price = safeToNum(state.price);
-            this._walletBalance += price * delta;
-            this._tokenQuantity -= delta;
+            this._walletBalance = safeFloat(this._walletBalance + price * delta, ORDER_WALLET_FRACTION);
+            this._tokenQuantity = safeFloat(this._tokenQuantity - delta, ORDER_WALLET_FRACTION);
 
-            order.state.value.quantity = Math.max(0, order.state.value.quantity - delta);
+            order.state.value.quantity = safeFloat(Math.max(0, order.state.value.quantity - delta), ORDER_WALLET_FRACTION);
             logger.debug(`[LiveOrderWallet] SELL fill: delta=${delta} price=${price} newBalance=${this._walletBalance} newTokens=${this._tokenQuantity}`);
         }
 
@@ -140,9 +140,9 @@ export class LiveOrderWallet implements MultiOrderWallet {
     private _getTotalBuyReserved(): number {
         let total = 0;
         for (const order of this._activeBuyOrders.values()) {
-            total += order.state.value.price * Math.max(0, order.state.value.quantity);
+            total += safeFloat(order.state.value.price * Math.max(0, order.state.value.quantity), ORDER_WALLET_FRACTION);
         }
-        return total;
+        return safeFloat(total, ORDER_WALLET_FRACTION);
     }
 
     /**
@@ -153,8 +153,9 @@ export class LiveOrderWallet implements MultiOrderWallet {
         for (const order of this._activeSellOrders.values()) {
             total += Math.max(0, order.state.value.quantity);
         }
-        return total;
+        return safeFloat(total, ORDER_WALLET_FRACTION);
     }
+
     /**
      * Places a maker BUY order. May be called multiple times as long as
      * sufficient virtual balance is available.
@@ -170,7 +171,7 @@ export class LiveOrderWallet implements MultiOrderWallet {
             return undefined;
         }
 
-        let orderValue = orderPrice * orderQuantity;
+        let orderValue = safeFloat(orderPrice * orderQuantity, ORDER_WALLET_FRACTION);
 
         if (orderValue < this._minBuyOrderValue) {
             const desiredQuantity = Math.ceil(this._minBuyOrderValue / orderPrice);
@@ -179,11 +180,11 @@ export class LiveOrderWallet implements MultiOrderWallet {
                 logger.warn(`[LiveOrderWallet] Cannot meet minimum buy value for token ${this._tokenId}`);
                 return undefined;
             }
-            orderValue = orderPrice * orderQuantity;
+            orderValue = safeFloat(orderPrice * orderQuantity, ORDER_WALLET_FRACTION);
             logger.warn(`[LiveOrderWallet] Adjusted quantity to ${orderQuantity} to meet minimum buy value`);
         }
 
-        const availableBalance = this._walletBalance - this._getTotalBuyReserved();
+        const availableBalance = safeFloat((this._walletBalance - this._getTotalBuyReserved()), ORDER_WALLET_FRACTION);
         if (orderValue > availableBalance) {
             logger.warn(`[LiveOrderWallet] Not enough balance. Available: ${availableBalance}, required: ${orderValue}`);
             return undefined;
@@ -194,9 +195,16 @@ export class LiveOrderWallet implements MultiOrderWallet {
             return undefined;
         }
 
-        const result = await placeMakerOrder(this._client, this._tokenId, Side.BUY, orderPrice, orderQuantity);
+        let result;
+        try {
+            result = await placeMakerOrder(this._client, this._tokenId, Side.BUY, orderPrice, orderQuantity);
+        } catch (error) {
+            logger.warn(`[LiveOrderWallet] Placing buy order failed – may be insufficient balance/allowance`);
+            return undefined;
+        }
+
         if (!result || !result.success || !result.orderID) {
-            logger.error(`[LiveOrderWallet] Placing buy order error!`);
+            logger.warn(`[LiveOrderWallet] Placing buy order unsuccess!`);
             return undefined;
         }
 
@@ -209,8 +217,8 @@ export class LiveOrderWallet implements MultiOrderWallet {
             const avgPrice = result.average_price || orderSetPrice;
 
             if (filledQty > 0) {
-                this._walletBalance -= avgPrice * filledQty;
-                this._tokenQuantity += filledQty;
+                this._walletBalance = safeFloat(this._walletBalance - avgPrice * filledQty, ORDER_WALLET_FRACTION);
+                this._tokenQuantity = safeFloat(this._tokenQuantity + filledQty, ORDER_WALLET_FRACTION);
             }
 
             if (filledQty >= orderSetQuantity) {
@@ -223,7 +231,7 @@ export class LiveOrderWallet implements MultiOrderWallet {
             }
 
             logger.info(`[LiveOrderWallet] BUY order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} avgPrice=${avgPrice}, remaining will be placed as limit`);
-            const remainingQty = orderSetQuantity - filledQty;
+            const remainingQty = safeFloat(orderSetQuantity - filledQty, ORDER_WALLET_FRACTION);
             const buyOrderState: OrderWalletState = {
                 id: result.orderID,
                 value: { price: orderSetPrice, quantity: remainingQty },
@@ -264,7 +272,7 @@ export class LiveOrderWallet implements MultiOrderWallet {
             return undefined;
         }
 
-        const availableTokens = this._tokenQuantity - this._getTotalSellReserved();
+        const availableTokens = safeFloat((this._tokenQuantity - this._getTotalSellReserved()), ORDER_WALLET_FRACTION);
         if (orderQuantity > availableTokens) {
             logger.warn(`[LiveOrderWallet] Not enough tokens to sell. Available: ${availableTokens}, required: ${orderQuantity}`);
             return undefined;
@@ -275,9 +283,16 @@ export class LiveOrderWallet implements MultiOrderWallet {
             return undefined;
         }
 
-        const result = await placeMakerOrder(this._client, this._tokenId, Side.SELL, orderPrice, orderQuantity);
+        let result; 
+        try {
+            result = await placeMakerOrder(this._client, this._tokenId, Side.SELL, orderPrice, orderQuantity);
+        } catch (error) {
+            logger.warn(`[LiveOrderWallet] Placing sell order failed – may be insufficient balance/allowance`);
+            return undefined;
+        }
+        
         if (!result || !result.success || !result.orderID) {
-            logger.error(`[LiveOrderWallet] Placing sell order error!`);
+            logger.warn(`[LiveOrderWallet] Placing sell order unsuccess!`);
             return undefined;
         }
 
@@ -290,8 +305,8 @@ export class LiveOrderWallet implements MultiOrderWallet {
             const avgPrice = result.average_price || orderSetPrice;
 
             if (filledQty > 0) {
-                this._walletBalance += avgPrice * filledQty;
-                this._tokenQuantity -= filledQty;
+                this._walletBalance = safeFloat(this._walletBalance + avgPrice * filledQty, ORDER_WALLET_FRACTION);
+                this._tokenQuantity = safeFloat(this._tokenQuantity - filledQty, ORDER_WALLET_FRACTION);
             }
 
             if (filledQty >= orderSetQuantity) {
@@ -304,7 +319,7 @@ export class LiveOrderWallet implements MultiOrderWallet {
             }
 
             logger.info(`[LiveOrderWallet] SELL order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} avgPrice=${avgPrice}, remaining will be placed as limit`);
-            const remainingQty = orderSetQuantity - filledQty;
+            const remainingQty = safeFloat(orderSetQuantity - filledQty, ORDER_WALLET_FRACTION);
             const sellOrderState: OrderWalletState = {
                 id: result.orderID,
                 value: { price: orderSetPrice, quantity: remainingQty },
@@ -334,7 +349,6 @@ export class LiveOrderWallet implements MultiOrderWallet {
         this._watcher.setUpdateHandler(result.orderID, this._sellHandler);
         return sellOrderState;
     }
-
 
     /**
      * Cancels a specific order by its exchange ID.
@@ -394,29 +408,29 @@ export class LiveOrderWallet implements MultiOrderWallet {
     }
 
     public getBalance(): number {
-        return this._walletBalance;
+        return safeFloat(this._walletBalance, ORDER_WALLET_FRACTION);
     }
 
     public getBalanceChange(): number {
-        return this._walletBalance - this._walletInitBalance;
+        return safeFloat((this.getBalance() - this._walletInitBalance), ORDER_WALLET_FRACTION);
     }
 
     public getTokensQuantity(): number {
-        return this._tokenQuantity;
+        return safeFloat(this._tokenQuantity, ORDER_WALLET_FRACTION);
     }
 
     /**
      * Free virtual balance (available for new buy orders).
      */
     public getAvailableBalance(): number {
-        return this._walletBalance - this._getTotalBuyReserved();
+        return safeFloat((this._walletBalance - this._getTotalBuyReserved()), ORDER_WALLET_FRACTION);
     }
 
     /**
      * Free token quantity (available for new sell orders).
      */
     public getAvailableTokens(): number {
-        return this._tokenQuantity - this._getTotalSellReserved();
+        return safeFloat((this._tokenQuantity - this._getTotalSellReserved()), ORDER_WALLET_FRACTION);
     }
 
     /**
@@ -433,19 +447,16 @@ export class LiveOrderWallet implements MultiOrderWallet {
         return this._activeSellOrders.size;
     }
 
-    public setTick(tickSize: number): void {
-        if (tickSize <= 0) return;
-        this._tickSize = tickSize;
+    public getTick(): number {
+        return this._tickSize;
     }
 
-    public setMinOrderSize(orderSize: number): void {
-        if (orderSize <= 0) return;
-        this._minOrderSize = orderSize;
+    public getMinOrderSize(): number {
+        return this._minOrderSize;
     }
 
-    public setMinBuyOrderValue(orderValue: number): void {
-        if (orderValue < DEFAULT_BUY_ORDER_MIN_VALUE) return;
-        this._minBuyOrderValue = orderValue;
+    public getMinBuyOrderValue(): number {
+        return this._minBuyOrderValue;
     }
 
     public async dispose(sellAll: boolean): Promise<void> {
@@ -468,12 +479,12 @@ export class LiveOrderWallet implements MultiOrderWallet {
         if (!allCancelled) {
             logger.warn(`[LiveOrderWallet] Some orders could not be cancelled before dispose!`);
         }
-        if (sellAll && this._tokenQuantity > 0) {
+        if (sellAll && this.getTokensQuantity() > 0) {
             logger.info(`[LiveOrderWallet] Sell all flag set, trying to sell all tokens before dispose...`);
 
             const isAbleToSell = !(await isBidsEmpty(this._client, this._tokenId));
             if (isAbleToSell) {
-                await this.sell(this._tickSize, this._tokenQuantity);
+                await this.sell(this.getTick(), this.getTokensQuantity());
                 allCancelled = await this.cancel_all();
                 if (!allCancelled) {
                     logger.warn(`[LiveOrderWallet] Some orders could not be cancelled before dispose!`);
