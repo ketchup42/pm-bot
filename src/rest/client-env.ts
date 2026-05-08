@@ -163,7 +163,7 @@ export async function getTradingClient(): Promise<ClobClient> {
         creds,
         signatureType: config.signatureType,
         funderAddress: config.funderAddress,
-        throwOnError: true,
+        throwOnError: false,
     });
 }
 

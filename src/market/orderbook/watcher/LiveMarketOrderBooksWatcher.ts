@@ -1,9 +1,10 @@
 import { logger } from "../../../log.js";
 import { MarketSide } from "../../side.js";
-import { EventRaw, MarketRaw, fetchEventBySlug } from "../../../rest/scan.js";
-import { error_str, isValid, isoToMs, safeToNum } from "../../../utils.js";
+import { EventRaw, MarketRaw } from "../../../rest/scan.js";
+import { error_str, isValid, isoToMs, safeFloat, safeToNum } from "../../../utils.js";
 import { WSSubscriptionManager, WSSubscriptionManagerHandlers } from "../manager/WSSubscriptionManager.js";
-import { MarketOrderBooksWatcher, OrderBookLevel, EventMarketData, TokenMarketData } from "./MarketOrderBooksWatcher.js";
+import { MarketOrderBooksWatcher, OrderBookLevel, EventMarketData, TokenMarketData, LiquidityInfo } from "./MarketOrderBooksWatcher.js";
+import { DEFAULT_ORDER_AMOUNT_FRACTION } from "../../../rest/orders.js";
 
 const ORDER_BOOKS_WATCHER_RECONNECT_AND_CLEANUP = 500;
 const PENDING_FLUSH_INTERVAL_MS = 50;
@@ -38,7 +39,6 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
         this._marketDataRaw = marketData;
         this._handlers = handlers;
     }
-
 
     /**
      * Fetches event metadata, initialises WebSocket manager, and subscribes to Up/Down token books.
@@ -169,13 +169,13 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
 
                     const newTickSize = safeToNum(event.new_tick_size);
                     if (newTickSize <= 0) return;
-                    if (this._marketData && event.market === this._marketData.marketId) {
+                    if (this._marketData && event.market === this._marketData.conditionId) {
                         this._marketData.tick_size = newTickSize;
                     }
                });
-
                 await this.callHandler('onTickSizeChange', events);
             },
+
             onPolymarketPriceUpdate: async (events) => {
                 await this.callHandler('onPolymarketPriceUpdate', events);
             },
@@ -184,6 +184,7 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
             onWSClose: async (managerId: string, code: number, reason: string) => {
                 await this.callHandler('onWSClose', managerId, code, reason);
             },
+
             onWSOpen: async (managerId: string, pendingAssetIds: string[]) => {
                 await this.callHandler('onWSOpen', managerId, pendingAssetIds);
             }
@@ -376,6 +377,45 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
             outcome: this._marketData!.down.outcome,
             tokenId: this._marketData!.down.tokenId
         };
+    }
+
+    /**
+     * Helper: aggregates total size, total cost, and average price from a list of book levels.
+     */
+    private computeLiquidity(levels: OrderBookLevel[]): LiquidityInfo {
+        let totalSize = 0;
+        let totalCost = 0;
+        for (const level of levels) {
+            const size = safeToNum(level.size);
+            const price = safeToNum(level.price);
+            // For complete safety, use this:
+            // totalSize = safeFloat(totalSize + size, DEFAULT_ORDER_AMOUNT_FRACTION);
+            // totalCost = safeFloat(totalCost + price * size, DEFAULT_ORDER_AMOUNT_FRACTION);
+            totalSize += size;
+            totalCost += price * size;
+        }
+        const averagePrice = totalSize > 0 ? totalCost / totalSize : 0;
+        return {
+            total_size: safeFloat(totalSize, DEFAULT_ORDER_AMOUNT_FRACTION),
+            total_cost: safeFloat(totalCost, DEFAULT_ORDER_AMOUNT_FRACTION),
+            average_price: safeFloat(averagePrice, DEFAULT_ORDER_AMOUNT_FRACTION),
+        };
+    }
+
+    public getUpBidLiquidity(): LiquidityInfo {
+        return this.computeLiquidity(this.getBidsUp());
+    }
+
+    public getUpAskLiquidity(): LiquidityInfo {
+        return this.computeLiquidity(this.getAsksUp());
+    }
+
+    public getDownBidLiquidity(): LiquidityInfo {
+        return this.computeLiquidity(this.getBidsDown());
+    }
+
+    public getDownAskLiquidity(): LiquidityInfo {
+        return this.computeLiquidity(this.getAsksDown());
     }
 
     /** @returns Whether the Up token’s initial snapshot has been received. */

@@ -62,11 +62,12 @@ export const priceToPercent = (price: number): string =>
  * @param decimals - decimal places (default 6)
  * @returns rounded number
  */
-export const roundTo = (value: number | undefined, decimals: number = 6): number | undefined => {
-  if (!value) return undefined;
+export function roundTo(value: number | undefined, decimals: number = 6): number | undefined {
+  if (value === undefined) return undefined;
+  if (isNaN(value) || !isFinite(value)) return undefined;
   const factor = Math.pow(10, decimals);
   return Math.round(value * factor) / factor;
-};
+}
 
 /**
  * Validate Ethereum address (simple check: starts with 0x and length 42)

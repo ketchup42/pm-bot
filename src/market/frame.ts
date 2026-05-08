@@ -13,8 +13,15 @@ export const FRAME_5M_SEC = 300;
 export const FRAME_15M_SEC = 900;
 
 /**
+ * Returns the list of all supported event frame types.
+ * @returns A read‑only array of available {@link EventFrame} values.
+ */
+export function getSupportedFrames(): readonly EventFrame[] {
+    return ['5m', '15m'] as const;
+}
+
+/**
  * Waits until the exact start of the next time interval (based on current time)
- * 
  * @param frame - Interval type (default: 300_000 ms = 5 minutes)
  */
 export async function waitFrameStart(frame: EventFrame = '5m'): Promise<void> {
@@ -24,7 +31,6 @@ export async function waitFrameStart(frame: EventFrame = '5m'): Promise<void> {
 
 /**
  * Waits until the exact start of the next time interval (based on current time)
- * 
  * @param intervalMs - Interval length in milliseconds (e.g., 300_000 for 5 minutes)
  */
 export async function waitFrameStartMs(intervalMs: number): Promise<void> {
@@ -44,14 +50,13 @@ export function getCoinSlug(coin: Coin, frame: EventFrame = '5m'): string {
     return (frame === '5m')? getCoin5mSlug(coin): getCoin15mSlug(coin);
 }
 
-// Optional: Add validation or a function to get the window's close time
 export function getFrameCloseTimebySlug(slug: string, frame: EventFrame = '5m'): number {
     return (frame === '5m')? get5mFrameCloseTimebySlug(slug): get15mFrameCloseTimebySlug(slug);
 }
 
 /**
  * Calculates the value of UTC timestamp for events
- * @returns UTC interval start value
+ * @returns UTC interval start value in seconds
  */
 export function getCurrentFrameStart(frame: EventFrame = '5m'): number {
     return (frame === '5m')? getCurrent5mFrameStart(): getCurrent15mFrameStart();
@@ -86,10 +91,9 @@ export function getCoin5mSlug(coin: Coin): string {
     return `${coin}-updown-5m-${windowStartTimestamp}`;
 }
 
-// Optional: Add validation or a function to get the window's close time
 export function get5mFrameCloseTimebySlug(slug: string): number {
     const timestamp = safeToNum(slug.split('-').pop() || '0', 10);
-    return timestamp + FRAME_5M_SEC; // Window closes 5 minutes later
+    return timestamp + FRAME_5M_SEC; // Frame closes 5 minutes later
 }
 
 /**
@@ -97,8 +101,8 @@ export function get5mFrameCloseTimebySlug(slug: string): number {
  * @returns UTC 5m interval start value
  */
 export function getCurrent5mFrameStart(): number {
-  const now = Math.floor(Date.now() / 1000); // seconds UTC
-  return now - (now % FRAME_5M_SEC); // 300 seconds = 5 m
+  const now = Math.floor(Date.now() / 1000);
+  return now - (now % FRAME_5M_SEC); // 300 seconds = 5m
 }
 
 /**
@@ -113,9 +117,9 @@ export function getCoin15mSlug(coin: Coin): string {
 }
 
 /**
- * Returns the closing timestamp of a 15‑minute market window.
+ * Returns the closing timestamp of a 15‑minute market frame.
  * @param slug - The market slug (e.g., "doge-updown-15m-1742227200")
- * @returns The UTC timestamp when the window closes (start + 900 seconds)
+ * @returns The UTC timestamp when the frame closes (start + 900 seconds)
  */
 export function get15mFrameCloseTimebySlug(slug: string): number {
     const timestamp = safeToNum(slug.split('-').pop() || '0', 10);
@@ -124,7 +128,7 @@ export function get15mFrameCloseTimebySlug(slug: string): number {
 
 /**
  * Calculates the current UTC start timestamp of the 15‑minute interval.
- * @returns The start of the current 15‑minute window in seconds since epoch.
+ * @returns The start of the current 15‑minute frame in seconds since epoch.
  */
 export function getCurrent15mFrameStart(): number {
     const now = Math.floor(Date.now() / 1000);

@@ -24,6 +24,15 @@ export interface TokenMarketData {
   tokenId: string;
 }
 
+export interface LiquidityInfo {
+  /** Total number of tokens on this side of the book. */
+  total_size: number;
+  /** Total notional value (price * size) of all orders on this side. */
+  total_cost: number;
+  /** Volume‑weighted average price of the orders. 0 if the book is empty. */
+  average_price: number;
+}
+
 export interface MarketOrderBooksWatcher {
 
   /** Returns sorted COPY bid levels for the Up token (descending price) */
@@ -58,6 +67,11 @@ export interface MarketOrderBooksWatcher {
   getMarketData(): EventMarketData;
   getUpMarketData(): TokenMarketData;
   getDownMarketData(): TokenMarketData;
+
+  getUpBidLiquidity(): LiquidityInfo;
+  getUpAskLiquidity(): LiquidityInfo;
+  getDownBidLiquidity(): LiquidityInfo;
+  getDownAskLiquidity(): LiquidityInfo;
 
   /**
    * Returns the timestamp of the last received book update.

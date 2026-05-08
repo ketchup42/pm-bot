@@ -2,6 +2,7 @@ import winston from 'winston';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
+import { safeToNum } from './utils.js';
 
 /**
  * Environment variables for logging configuration.
@@ -23,27 +24,11 @@ const NO_COLOR = process.env.NO_COLOR === 'true' || process.env.NO_COLOR === '1'
 
 /**
  * Valid Winston log levels.
- * @constant {string[]}
  */
 const validLevels = ['error', 'warn', 'info', 'debug'];
 
-/**
- * Parses a string size value into an integer.
- * Falls back to a default value if parsing fails.
- *
- * @param value - The size string to parse (e.g., '5242880').
- * @param defaultValue - Fallback value if parsing fails.
- * @returns Parsed integer or default.
- */
-const parseSize = (value: string, defaultValue: number): number => {
-    // parseInt with base 10 ensures integer conversion
-    const parsed = parseInt(value, 10);
-    // Also reject zero or negative values (invalid file size)
-    return isNaN(parsed) || parsed <= 0 ? defaultValue : parsed;
-};
-
-const maxSize = parseSize(LOG_FILE_MAX_SIZE, 5242880);
-const maxFiles = parseSize(LOG_FILE_MAX_FILES, 5);
+const maxSize = Math.max(1, safeToNum(LOG_FILE_MAX_SIZE, 5242880));
+const maxFiles = Math.max(1, safeToNum(LOG_FILE_MAX_FILES, 5));
 
 /**
  * Base Winston log format without colors.
