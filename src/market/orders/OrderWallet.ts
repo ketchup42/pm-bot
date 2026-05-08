@@ -21,7 +21,7 @@ export interface OrderWalletParams {
     balance: number
     tick_size: number,
     min_order_size: number,
-    min_buy_order_value: number,
+    min_buy_order_value: number
 }
 
 /**
@@ -67,7 +67,14 @@ export interface OrderWallet {
      *
      * Delegates to the internal {@link OrdersWatcher}.
      */
-    isFilled(orderId: string): boolean;
+    isFullFilled(orderId: string): boolean;
+
+    /**
+     * Whether the given order is partial filled (size_matched > 0).
+     *
+     * Delegates to the internal {@link OrdersWatcher}.
+     */
+    isPartialFilled(orderId: string): boolean;
 
     /**
      * Whether the given order is still live (PLACEMENT or UPDATE).

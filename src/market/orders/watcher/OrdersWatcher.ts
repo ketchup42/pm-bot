@@ -22,6 +22,7 @@ export interface OrderStatus {
      * User space fields:
      */
     has_size_matched: boolean; // original_size === size_matched
+    has_size_matched_partial: boolean; // has_size_matched===true => has_size_matched_partial===false
     is_live: boolean;
     has_canceled: boolean;
 }
@@ -47,6 +48,12 @@ export interface OrdersWatcher {
      * @param orderId 
      */
     isFullMatched(orderId: string): boolean;
+
+    /**
+     * Function check is order if partial filed and completed.
+     * @param orderId 
+     */
+    isPartialMatched(orderId: string): boolean;
 
     /**
      * Function check is order in live state in order book.

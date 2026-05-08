@@ -387,8 +387,12 @@ export class LiveOrderWallet implements MultiOrderWallet {
         return allCancelled;
     }
 
-    public isFilled(orderId: string): boolean {
+    public isFullFilled(orderId: string): boolean {
         return this._watcher.isFullMatched(orderId);
+    }
+
+    public isPartialFilled(orderId: string): boolean {
+        return this._watcher.isPartialMatched(orderId);
     }
 
     public isLive(orderId: string): boolean {

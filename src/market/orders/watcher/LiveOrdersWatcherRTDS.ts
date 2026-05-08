@@ -57,9 +57,10 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
 
         // It works for any type of order event types.
         // https://docs.polymarket.com/market-data/websocket/user-channel
-        let has_size_matched: boolean = safeToNum(payload.original_size) <= safeToNum(payload.size_matched);
+        const has_size_matched: boolean = safeToNum(payload.original_size) <= safeToNum(payload.size_matched);
+        const has_size_matched_partial = !has_size_matched && (safeToNum(payload.size_matched) > 0);
 
-        const is_live = payload.type === "PLACEMENT" || payload.type === "UPDATE";
+        const is_live = (payload.type === "PLACEMENT" || payload.type === "UPDATE") && !has_size_matched;
         const is_canceled = payload.type === "CANCELLATION";
 
         const status: OrderStatus = {
@@ -73,6 +74,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
             side: payload.side,
             raw_data: payload,
             has_size_matched: has_size_matched,
+            has_size_matched_partial: has_size_matched_partial,
             is_live: is_live,
             has_canceled: is_canceled
         };
@@ -155,6 +157,12 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
 
                 // const is_status_matched = rawOrder.status === "MATCHED";
                 const is_status_matched = true;
+
+                const matched = safeToNum(rawOrder.size_matched);
+                const original = safeToNum(rawOrder.original_size);
+                const has_size_matched = is_status_matched && matched >= original;
+                const has_size_matched_partial = !has_size_matched && matched > 0;
+
                 const is_live = rawOrder.status === "LIVE";
                 const is_canceled = rawOrder.status === "CANCELED";
 
@@ -169,7 +177,8 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
                     side: rawOrder.side,
 
                     raw_data: rawOrder,
-                    has_size_matched: is_status_matched && safeToNum(rawOrder.size_matched) >= safeToNum(rawOrder.original_size),
+                    has_size_matched: has_size_matched,
+                    has_size_matched_partial: has_size_matched_partial,
                     is_live: is_live,
                     has_canceled: is_canceled
                 };
@@ -190,7 +199,11 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     public isFullMatched(orderId: string): boolean {
         return this._watchingOrders.get(orderId)?.has_size_matched ?? false;
     }
-    
+
+    public isPartialMatched(orderId: string): boolean {
+        return this._watchingOrders.get(orderId)?.has_size_matched_partial ?? false;
+    }
+
     public isLive(orderId: string): boolean {
         return this._watchingOrders.get(orderId)?.is_live ?? false;
     }
