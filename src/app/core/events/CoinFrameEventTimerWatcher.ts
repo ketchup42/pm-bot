@@ -1,14 +1,11 @@
-import { Coin, coin_precis } from "../../../market/coins.js";
+import { Coin } from "../../../market/coins.js";
 import { EventFrame, getCoinSlug, getCurrentFrameStart, getFrameDuration } from "../../../market/frame.js";
 import { MarketOrderBooksWatcher } from "../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
 import { CoinFrameEventMarketData, MarketTokenSnapshot } from "../history/coin_frame.js";
 import { CoinPriceWatcher } from "../../../market/price/CoinPriceWatcher.js";
 import { EventWatcher } from "./EventWatcher.js";
-import { roundTo } from "../../../utils.js";
-import { TIMER_FAST, TickTimer } from "../../../timer.js";
+import { TickTimer } from "../../../timer.js";
 import { logger } from "../../../log.js";
-import { PriceWatcherFactory } from "../../../market/price/PriceWatcherFactory.js";
-import { PriceSource } from "../../../market/price/price_source.js";
 import { CoinMarketOrderBooksWatcher } from "../../../market/orderbook/watcher/CoinMarketOrderBooksWatcher.js";
 
 /**
@@ -18,6 +15,7 @@ import { CoinMarketOrderBooksWatcher } from "../../../market/orderbook/watcher/C
  */
 export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMarketData> {
   private _coin: Coin;
+  private _frame: EventFrame;
   private _slug: string;
 
   private _watcherHistoryUp: CoinFrameEventMarketData;
@@ -31,84 +29,33 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
 
   private _tickTimer: TickTimer;
 
-  // Event handling service values for special starting price forming logic
-  private ___coinFrameStartPriceReal: number | undefined = undefined;
-  private ___isCoinFrameStartPriceRealWritten = false;
-
-  private _priceChangeEventStartPriceHandler(): void {
-    if (this.___isCoinFrameStartPriceRealWritten) return;
-
-    /**
-     * If you want start price with round strategy, use:
-     * const coinCurrentPrice = this.getCoinPrice();
-     */
-    const coinCurrentPrice = this._coinPriceWatcher.getCurrentPrice();
-    
-    // TODO FIX: Add 500-650 ms timeout to start price fetch, mb start price error if there are no updates of price for 600+ms after start
-
-    if (this.___coinFrameStartPriceReal && !this.___isCoinFrameStartPriceRealWritten && this.___coinFrameStartPriceReal !== coinCurrentPrice) {
-      const startPrice = roundTo(coinCurrentPrice, coin_precis(this._coin));
-
-      this._watcherHistoryUp.coin_frame_start_price = startPrice;
-      this._watcherHistoryDown.coin_frame_start_price = startPrice;
-
-      this.___isCoinFrameStartPriceRealWritten = true;
-    }
-  }
-
-  private _startPriceBookEventHandler(): void {
-    if (this.___isCoinFrameStartPriceRealWritten) return;
-
-    /**
-     * If you want start price with round strategy, use:
-     * const coinCurrentPrice = this.getCoinPrice();
-     */
-    const coinCurrentPrice = this._coinPriceWatcher.getCurrentPrice();
-    
-    if (!this.___coinFrameStartPriceReal && !this.___isCoinFrameStartPriceRealWritten) {
-      this.___coinFrameStartPriceReal = coinCurrentPrice;
-    }
-  }
-
   // Function for timer tick handle - by timer
-  private _timerModeTickHandler(): void {
+  private async _timerModeTickHandler(): Promise<void> {
     if (this._isDisposed) return;
     if (this.isFinished()) return;
+
     if (this._orderBookWatcher!.isFinished()) {
-        this._tickTimer.disable();
 
-        ///////////////////////////////////////////////////////////////////////
-        // Frame end price is approximate!
-        // Frame end price is the next frame start price, so only real time price, or the last snapshot coin price
-
-        // For last market snapshot coin price strategy use this:
-        //
-        // const price = this.getCoinPrice();
-        // const lastUpPrice = this._watcherHistoryUp.side_token_market_snapshots[this._watcherHistoryUp.side_token_market_snapshots.length - 1]?.coin_price;
-        // this._watcherHistoryUp.coin_frame_end_price = roundTo(lastUpPrice ?? price, coin_precis(this._coin));
-
-        // const lastDownPrice = this._watcherHistoryDown.side_token_market_snapshots[this._watcherHistoryDown.side_token_market_snapshots.length - 1]?.coin_price;
-        // this._watcherHistoryDown.coin_frame_end_price = roundTo(lastDownPrice ?? price, coin_precis(this._coin));
-
-        const price = this.getCoinPrice();
-        this._watcherHistoryUp.coin_frame_end_price = price;
-        this._watcherHistoryDown.coin_frame_end_price = price;
-
-        ///////////////////////////////////////////////////////////////////////
-        this._isFinished = true;
-
-        // Call dispose by hand in global circle
-        return;
+      this._tickTimer.disable();
+      // Frame end price is the next frame start price, so only real time price
+      let price = undefined;
+      try {
+        price = await this._coinPriceWatcher.getPriceByFrame(this._frame);
+        if (price === undefined)
+          price = this._coinPriceWatcher.getCoinPrice();
+      } catch(error) {
+          logger.warn(`WARN: Frame end price is undefined for event with slug: ${this._slug}`);
       }
-    this.watcherMakeSnapshot();
-  }
 
-  /**
-   * Polymarket uses rounded prices in coin events not raw rtds data.
-   */
-  private getCoinPrice(): number | undefined
-  {
-    return roundTo(this._coinPriceWatcher.getCurrentPrice(), coin_precis(this._coin));
+      this._watcherHistoryUp.coin_frame_end_price = price;
+      this._watcherHistoryDown.coin_frame_end_price = price;
+
+      this._isFinished = true;
+
+      // Call dispose by hand in global circle
+      return;
+    }
+    this.watcherMakeSnapshot();
   }
 
   private watcherMakeSnapshot(): void {
@@ -117,15 +64,14 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
     if (!this._orderBookWatcher?.isActive()) return;
 
     const now = Date.now(); 
-    
-    const coinCurrentPrice = this.getCoinPrice();
+    const price = this._coinPriceWatcher.getCoinPrice();
 
     // If we have some problems with price mb connection errors than wait until next call
-    if (!coinCurrentPrice) { logger.warn(`WARN: Coin price watcher current price return error for ${this._coinPriceWatcher.getCoin().toString()}.`); return; }
+    if (!price) { logger.warn(`WARN: Coin price watcher returns undefined for ${this._coinPriceWatcher.getCoin().toString()}.`); return; }
 
     const coinFrameUpEventDTO: MarketTokenSnapshot =
     {
-      coin_price: coinCurrentPrice,
+      coin_price: price,
       timestamp: now,
 
       asks: this._orderBookWatcher.getAsksUp(),
@@ -138,7 +84,7 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
 
     const coinFrameDownEventDTO: MarketTokenSnapshot =
     {
-      coin_price: coinCurrentPrice,
+      coin_price: price,
       timestamp: now,
 
       asks: this._orderBookWatcher.getAsksDown(),
@@ -156,25 +102,26 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
   private constructor(coin: Coin, frame: EventFrame, tick: number, watcher: CoinPriceWatcher)
   {
     if (tick <= 0) throw Error("Error: Ticks can not be less than zero!");
-    
+  
     this._coin = coin;
-    this._slug = getCoinSlug(coin, frame);
+    this._frame = frame;
+    this._slug = getCoinSlug(coin, this._frame);
 
     this._tickTimer = new TickTimer(tick, () => {
       this._timerModeTickHandler();
     });
 
     this._coinPriceWatcher = watcher;
-    const frameStartTime = getCurrentFrameStart(frame);
+    const frameStartTime = getCurrentFrameStart(this._frame);
 
     this._watcherHistoryUp = {
       event_slug: this._slug,
       eventId: '',
       marketId: '',
-      coin: coin,
+      coin: this._coin,
       side: 'up',
       start_time: frameStartTime,
-      end_time: frameStartTime + getFrameDuration(frame),
+      end_time: frameStartTime + getFrameDuration(this._frame),
 
       coin_frame_start_price: undefined,
       coin_frame_end_price:  undefined,
@@ -186,10 +133,10 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
       event_slug: this._slug,
       eventId: '',
       marketId: '',
-      coin: coin,
+      coin: this._coin,
       side: 'down',
       start_time: frameStartTime,
-      end_time: frameStartTime + getFrameDuration(frame),
+      end_time: frameStartTime + getFrameDuration(this._frame),
 
       coin_frame_start_price: undefined,
       coin_frame_end_price:  undefined,
@@ -200,27 +147,12 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
 
   private async init(): Promise<void>
   {
-    this._orderBookWatcher = await CoinMarketOrderBooksWatcher.create(this._slug,
-    {onBook: async (events) => {
-        this._startPriceBookEventHandler();
-        this._priceChangeEventStartPriceHandler();
-      },
-      onPriceChange: async (events) => {
-        this._priceChangeEventStartPriceHandler();
-      },
-      // These handlers are more than we need at the start of price forming.
-      //
-      //onLastTradePrice:  async (events) => {
-      //  this._priceChangeEventStartPriceHandler();
-      //},
-      //onTickSizeChange: async (events) => {
-      //  this._priceChangeEventStartPriceHandler();
-      //},
-      //onPolymarketPriceUpdate: async (events) => {
-      //  this._priceChangeEventStartPriceHandler();
-      //}
-    });
-    
+    this._orderBookWatcher = await CoinMarketOrderBooksWatcher.create(this._slug);
+  
+    const price = await this._coinPriceWatcher.getPriceByFrame(this._frame);
+    this._watcherHistoryUp.coin_frame_start_price = price;
+    this._watcherHistoryDown.coin_frame_start_price = price;
+
     this._watcherHistoryUp.eventId = this.getEventId();
     this._watcherHistoryDown.eventId =  this.getEventId();
 
@@ -240,21 +172,6 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
    */
   public static async create(coin: Coin, frame: EventFrame, tick: number, watcher: CoinPriceWatcher): Promise<CoinFrameEventTimerWatcher> {
     if (watcher.getCoin() !== coin) throw new Error("Error: Given CoinPriceWatcher has a different target coin!");
-    const instance = new CoinFrameEventTimerWatcher(coin, frame, tick, watcher);
-    await instance.init();
-    return instance;
-  }
-
-  /**
-   * Creates a new timer‑driven watcher for the given coin and frame and other, delay to warm up the coin price watcher.
-   * @param coin - The coin to watch.
-   * @param frame - Time frame for the watcher.
-   * @param tick - Snapshot interval in milliseconds (must be > 0).
-   * @param source - Price source for coin price watcher.
-   * @returns A promise that resolves to the initialized watcher (timer already enabled).
-   */
-  public static async create_me(coin: Coin, frame: EventFrame, tick: number, source: PriceSource): Promise<CoinFrameEventTimerWatcher> {
-    const watcher = await PriceWatcherFactory.getCoinWatcher(coin, source).warmUp(TIMER_FAST);
     const instance = new CoinFrameEventTimerWatcher(coin, frame, tick, watcher);
     await instance.init();
     return instance;
