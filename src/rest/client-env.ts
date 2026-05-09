@@ -1,5 +1,7 @@
-import { ClobClient } from "@polymarket/clob-client-v2";
-import { Wallet } from "ethers";
+import { ClobClient, Chain, AssetType } from "@polymarket/clob-client-v2";
+import { createWalletClient, http, createPublicClient, formatUnits } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { polygon } from "viem/chains";
 import "dotenv/config";
 
 import { error_str, safeToNum } from "../utils.js";
@@ -7,23 +9,41 @@ import { REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID } from "./hosts.js";
 import { isMeBlocked } from "./block.js";
 import { ClobApiKeyCreds } from "@polymarket/real-time-data-client";
 
+/** Address of the pUSD token contract on Polygon Mainnet. */
+const PUSD_TOKEN_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+
+/** Minimal ERC-20 ABI for balanceOf and decimals. */
+const ERC20_ABI = [
+    "function balanceOf(address) view returns (uint256)",
+    "function decimals() view returns (uint8)"
+];
+
+/** RPC URL for Polygon network – uses environment variable or public default. */
+const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
+
 /**
- *  Environment Variables Configuration Block
+ * Configuration required for authenticated trading operations.
  */
 interface TradingEnvConfig {
+    /** Ethereum private key (with or without 0x prefix). */
     privateKey: string;
+    /** Polymarket API key. */
     apiKey: string;
+    /** Polymarket API secret. */
     apiSecret: string;
+    /** Polymarket API passphrase. */
     apiPassphrase: string;
+    /** Signature type: 0=EOA, 1=POLY_PROXY, 2=GNOSIS_SAFE, 3=Deposit wallet. */
     signatureType: number;
+    /** Address that will pay gas fees (proxy address for type 2/3, or EOA address for type 0). */
     funderAddress: string;
 }
 
 /**
- * Normalizes a private key: ensures it has a 0x prefix and is valid hex.
+ * Normalizes a private key: ensures it has a 0x prefix and is a valid 64‑character hex string.
  * @param key - Raw private key (with or without 0x)
  * @returns Normalized private key with 0x prefix
- * @throws Error if key is not a valid 64-character hex string
+ * @throws Error if key is not a valid 64‑character hex string
  */
 function normalizePrivateKey(key: string): string {
     const trimmed = key.trim();
@@ -36,9 +56,9 @@ function normalizePrivateKey(key: string): string {
 }
 
 /**
- * Basic validation for an Ethereum address.
+ * Checks if a string is a valid Ethereum address.
  * @param address - Address to validate
- * @returns True if address matches pattern 0x + 40 hex chars
+ * @returns True if address matches 0x followed by 40 hex characters
  */
 function isValidEthereumAddress(address: string): boolean {
     return /^0x[0-9a-fA-F]{40}$/.test(address);
@@ -46,22 +66,18 @@ function isValidEthereumAddress(address: string): boolean {
 
 /**
  * Reads and validates all required environment variables for trading.
- * Throws clear errors if any required variable is missing or invalid.
+ * Supports signature types 0, 1, 2, 3.
+ * @returns Validated trading configuration object.
+ * @throws Error if any required variable is missing or invalid.
  */
 function getTradingEnvConfig(): TradingEnvConfig {
-    // Read raw values
-
-    /////////////////////////////////////////////////////////////////
     const rawPrivateKey = process.env.PRIVATE_KEY;
     const apiKey = process.env.API_KEY;
     const apiSecret = process.env.API_SECRET;
     const apiPassphrase = process.env.API_PASSPHRASE;
     const rawFunderAddress = process.env.FUNDER_ADDRESS;
-    /////////////////////////////////////////////////////////////////
 
-    // Collect validation errors
     const errors: string[] = [];
-
     if (!rawPrivateKey) errors.push('PRIVATE_KEY is not set');
     if (!apiKey) errors.push('API_KEY is not set');
     if (!apiSecret) errors.push('API_SECRET is not set');
@@ -72,7 +88,6 @@ function getTradingEnvConfig(): TradingEnvConfig {
         throw new Error(`Missing environment variables:\n${errors.join('\n')}`);
     }
 
-    // Normalize and validate private key
     let privateKey: string;
     try {
         privateKey = normalizePrivateKey(rawPrivateKey!);
@@ -80,28 +95,24 @@ function getTradingEnvConfig(): TradingEnvConfig {
         throw new Error(`Invalid PRIVATE_KEY: ${error_str(error)}`);
     }
 
-    // Validate funder address format
     const funderAddress = rawFunderAddress!;
     if (!isValidEthereumAddress(funderAddress)) {
         throw new Error('FUNDER_ADDRESS must be a valid Ethereum address (0x followed by 40 hex chars)');
     }
 
-    // Parse signature type (optional, default = 2)
     const signatureTypeRaw = safeToNum(process.env.SIGNATURE_TYPE, 2);
     let signatureType = 2;
     if (signatureTypeRaw >= 0) {
         signatureType = signatureTypeRaw;
     }
-
-    // Enforce integer
     if (!Number.isInteger(signatureType)) {
-        throw new Error(`SIGNATURE_TYPE must be an integer (0-2). Got: ${signatureType}`);
+        throw new Error(`SIGNATURE_TYPE must be an integer (0-3). Got: ${signatureType}`);
     }
-    if (signatureType > 2) {
-        throw new Error(`SIGNATURE_TYPE is set to ${signatureType}, expected 0-2.`);
+    if (signatureType > 3) {
+        throw new Error(`SIGNATURE_TYPE is set to ${signatureType}, expected 0-3.`);
     }
-    if (signatureType !== 2) {
-        console.warn(`SIGNATURE_TYPE is set to ${signatureType}, expected 2 (EIP-712). Trading may fail.`);
+    if (signatureType !== 2 && signatureType !== 3) {
+        console.warn(`SIGNATURE_TYPE is set to ${signatureType}. Make sure your funder address matches this type.`);
     }
 
     return {
@@ -114,34 +125,40 @@ function getTradingEnvConfig(): TradingEnvConfig {
     };
 }
 
+/**
+ * Returns API credentials (key, secret, passphrase) from environment variables.
+ * @returns ClobApiKeyCreds object.
+ */
 export function getEnvApiKeyCreds(): ClobApiKeyCreds {
     const config = getTradingEnvConfig();
     return {
         key: config.apiKey,
         secret: config.apiSecret,
-        passphrase: config.apiPassphrase
+        passphrase: config.apiPassphrase,
     };
 }
 
 /**
- * Public Client (Unauthenticated)
- * Returns a public (unauthenticated) CLOB client.
- * Use this for read‑only operations like fetching order books or market data.
+ * Creates a public (unauthenticated) CLOB client for read‑only operations.
+ * @returns Unauthenticated ClobClient instance.
+ * @throws Error if host or chain configuration is missing.
  */
 export function getPublicClient(): ClobClient {
     if (!REST_DEFAULT_HOST_CLOB || !REST_CHAIN_ID) {
         throw new Error('Missing REST_DEFAULT_HOST_CLOB or REST_CHAIN_ID configuration!');
     }
+    const chain = safeToNum(REST_CHAIN_ID) === 137 ? Chain.POLYGON : Chain.AMOY;
     return new ClobClient({
         host: REST_DEFAULT_HOST_CLOB,
-        chain: REST_CHAIN_ID,
+        chain: chain,
     });
 }
 
 /**
- * Trading Client (Authenticated)
- * Returns an authenticated CLOB client for trading.
- * Requires environment variables to be set (see .env.example).
+ * Creates an authenticated trading client using environment variables.
+ * Supports signature types 0, 1, 2, and 3 via the SIGNATURE_TYPE env variable.
+ * @returns Authenticated ClobClient instance ready for trading.
+ * @throws Error if IP is geo‑blocked or environment validation fails.
  */
 export async function getTradingClient(): Promise<ClobClient> {
     const block = await isMeBlocked();
@@ -149,56 +166,91 @@ export async function getTradingClient(): Promise<ClobClient> {
 
     const config = getTradingEnvConfig();
 
-    const signer = new Wallet(config.privateKey);
+    const account = privateKeyToAccount(config.privateKey as `0x${string}`);
+    const walletClient = createWalletClient({
+        account,
+        transport: http(POLYGON_RPC_URL),
+    });
+
     const creds = {
         key: config.apiKey,
         secret: config.apiSecret,
         passphrase: config.apiPassphrase,
     };
 
-    return new ClobClient({
+    const chain = safeToNum(REST_CHAIN_ID) === 137 ? Chain.POLYGON : Chain.AMOY;
+    const client = new ClobClient({
         host: REST_DEFAULT_HOST_CLOB,
-        chain: REST_CHAIN_ID,
-        signer,
-        creds,
+        chain: chain,
+        signer: walletClient,
+        creds: creds,
         signatureType: config.signatureType,
         funderAddress: config.funderAddress,
         throwOnError: false,
     });
+    if (config.signatureType === 3) {
+        try {
+            await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+        } catch (error) {
+            console.warn(`Balance sync failed for type 3 wallet: ${error_str(error)}`);
+        }
+    }
+    return client;
+}
+
+const publicClient = createPublicClient({
+    chain: polygon,
+    transport: http(POLYGON_RPC_URL),
+});
+
+/**
+ * Returns the pUSD (Polymarket USD) balance for a given address.
+ * The function name is kept as `getUSDBalance` for backward compatibility,
+ * but it queries the official pUSD token contract.
+ * @param address - Wallet address (proxy or EOA) to check balance for.
+ * @returns pUSD balance as a number (human‑readable, with 6 decimals).
+ * @throws Error if the address is invalid or the contract call fails.
+ */
+export async function getUSDBalance(address: string): Promise<number> {
+    if (!isValidEthereumAddress(address)) throw new Error('Invalid address');
+
+    try {
+        const rawBalance = await publicClient.readContract({
+            address: PUSD_TOKEN_ADDRESS,
+            abi: ERC20_ABI,
+            functionName: 'balanceOf',
+            args: [address as `0x${string}`],
+        }) as bigint;
+        // decimals = 6
+        return safeToNum(formatUnits(rawBalance, 6));
+    } catch (error) {
+        throw new Error(`Failed to fetch pUSD balance: ${error_str(error)}`);
+    }
 }
 
 /**
- * Helper: Derive API Credentials from Private Key
- *
  * Derives API credentials (key, secret, passphrase) from a wallet private key.
  * Run this once and store the output in your .env file.
- *
  * @param privateKey - Wallet private key (with or without 0x prefix)
- * @returns Object containing apiKey, secret, and passphrase
+ * @returns Object containing apiKey, secret, and passphrase.
+ * @throws Error if derivation fails or credentials are incomplete.
  */
 export async function fstInitDeriveApiCredentials(privateKey: string): Promise<ClobApiKeyCreds> {
-    if (!privateKey) {
-        throw new Error('Private key is required!');
-    }
-
+    if (!privateKey) throw new Error('Private key is required!');
     const normalizedKey = normalizePrivateKey(privateKey);
-
-    try {
-        const signer = new Wallet(normalizedKey);
-
-        const tempClient = new ClobClient({
-            host: REST_DEFAULT_HOST_CLOB,
-            chain: REST_CHAIN_ID,
-            signer,
-        });
-        const creds = await tempClient.createOrDeriveApiKey();
-
-        if (!creds.key || !creds.secret || !creds.passphrase) {
-            throw new Error('Derived credentials are incomplete!');
-        }
-
-        return creds;
-    } catch (error) {
-        throw new Error(`Failed to derive API credentials: ${error_str(error)}`);
+    const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+    const walletClient = createWalletClient({
+        account,
+        transport: http(POLYGON_RPC_URL),
+    });
+    const tempClient = new ClobClient({
+        host: REST_DEFAULT_HOST_CLOB,
+        chain: safeToNum(REST_CHAIN_ID) === 137 ? Chain.POLYGON : Chain.AMOY,
+        signer: walletClient,
+    });
+    const creds = await tempClient.createOrDeriveApiKey();
+    if (!creds.key || !creds.secret || !creds.passphrase) {
+        throw new Error('Derived credentials are incomplete!');
     }
+    return creds;
 }
