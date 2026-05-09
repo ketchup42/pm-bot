@@ -1,12 +1,16 @@
+import { ClobClient, OpenOrder } from "@polymarket/clob-client-v2";
 import { ClobApiKeyCreds } from "@polymarket/real-time-data-client";
 import { OrderStatus, OrderUpdateHandler, OrdersWatcher } from "./OrdersWatcher.js";
 import { delay, error_str, safeToNum } from "../../../utils.js";
-import { ClobClient } from "@polymarket/clob-client-v2";
 import { logger } from "../../../log.js";
 import { ClobOrderEvent, ClobUserClient } from "polymarket-websocket-client";
 
+const RTDS_MAX_RECONNECT_ATTEMPTS = 20;
+const MAX_SYNC_OPEN_ORDERS_ATTEMPTS = 5;
+const WATCHER_RECONNECT_DELAY = 1000;
+
 /**
- * Raw status fields from data stream:
+ * Raw status fields from data stream
  */
 export interface OrderStatusRTDS {
   asset_id: string;     // Order's ERC1155 token ID of conditional token
@@ -42,11 +46,16 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     private _handlers = new Map<string, OrderUpdateHandler>();
 
     private _isConnected: boolean = false;
+    private _isDisposed: boolean = false;
+    private _shouldReconnect: boolean = true;
+    private _isSyncing: boolean = false;
 
     /**
      * Callback triggered for every incoming WebSocket message.
      */
     private readonly _onOrder = (event: ClobOrderEvent): void => {
+        if (this._isDisposed) return;
+
         // Process only order update messages
         if (event.event_type !== "order") return;
         const payload = event as OrderStatusRTDS;
@@ -85,6 +94,50 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
         handler?.(status);
     };
 
+    private async _reconnect(): Promise<void> {
+        if (!this._shouldReconnect || this._isDisposed) return;
+        let attempt = 0;
+        while (this._shouldReconnect && !this._isConnected && attempt < RTDS_MAX_RECONNECT_ATTEMPTS) {
+            attempt++;
+            logger.warn(`[LiveOrdersWatcherRTDS] Reconnecting (${attempt}/${RTDS_MAX_RECONNECT_ATTEMPTS})...`);
+            await delay(WATCHER_RECONNECT_DELAY);
+            if (this._isDisposed) return;
+            try {
+                await this._userClient.connect();
+                break;
+            } catch (error) {
+                logger.error(`[LiveOrdersWatcherRTDS] Reconnect attempt ${attempt} failed: ${error_str(error)}`);
+            }
+        }
+    }
+
+    private async _syncOpenOrdersWithRetry(retries: number, delayMs: number): Promise<void> {
+        if (this._isDisposed) return;
+        if (this._isSyncing) {
+            logger.debug(`[LiveOrdersWatcherRTDS] Watcher syncOpenOrders already in progress, skipping...`);
+            return;
+        }
+        this._isSyncing = true;
+        try {
+            for (let attempt = 1; attempt <= retries; attempt++) {
+                if (this._isDisposed) return;
+                try {
+                    await this.syncOpenOrders();
+                    return;
+                } catch (error) {
+                    logger.warn(`[LiveOrdersWatcherRTDS] Watcher syncOpenOrders attempt ${attempt}/${retries} failed: ${error_str(error)}`);
+                    if (attempt === retries) {
+                        logger.error(`[LiveOrdersWatcherRTDS] Giving up syncOpenOrders after ${retries} attempts`);
+                        return;
+                    }
+                    await delay(delayMs * attempt);
+                    if (this._isDisposed) return;
+                }
+            }
+        } finally {
+            this._isSyncing = false;
+        }
+    }
 
     private constructor(conditionId: string, client: ClobClient, api?: ClobApiKeyCreds) {
         this._conditionId = conditionId.toLowerCase();
@@ -102,40 +155,41 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
         this._userClient.onOrder(this._onOrder);
 
         this._userClient.on('connected', () => {
+            if (this._isDisposed) return;
             this._userClient.subscribe([this._conditionId]);
-            this.syncOpenOrders(this._client).catch((error) => {
-                logger.error(`[LiveOrdersWatcherRTDS] Failed to sync open orders: ${error_str(error)}`);
-            });
+            this._syncOpenOrdersWithRetry(MAX_SYNC_OPEN_ORDERS_ATTEMPTS, WATCHER_RECONNECT_DELAY);
             this._isConnected = true;
         });
 
         this._userClient.on('disconnected', ({ code, reason }) => {
             this._isConnected = false;
-            // this._watchingOrders.clear(); // If watcher reconnecting we need its old history state
-            // this._handlers.clear();
+            logger.warn(`[LiveOrdersWatcherRTDS] Disconnected: ${reason} (${code})`);
+            if (this._shouldReconnect) this._reconnect();
         });
-        
+
         this._userClient.on('error', (error) => {
             this._isConnected = false;
-            this._watchingOrders.clear();
-            this._handlers.clear();
             logger.error(`[LiveOrdersWatcherRTDS] Error: ${error_str(error)}`);
+            if (this._shouldReconnect) this._reconnect();
         });
     }
 
     public setUpdateHandler(orderId: string, handler: OrderUpdateHandler): void {
+        if (this._isDisposed) return;
         this._handlers.set(orderId, handler);
         if (this._watchingOrders.has(orderId)) {
             const handler = this._handlers.get(orderId)!;
             handler(this._watchingOrders.get(orderId)!);
         }
     }
-    
+
     public resetUpdateHandler(orderId: string): void {
+        if (this._isDisposed) return;
         this._handlers.delete(orderId);
     }
 
     public resetAllUpdateHandlers(): void {
+        if (this._isDisposed) return;
         this._handlers.clear();
     }
 
@@ -150,9 +204,87 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
         return watcher
     }
 
-    private async syncOpenOrders(client: ClobClient): Promise<void> {
+    private async _checkMissingOrders(openOrders: OpenOrder[]): Promise<void> {
+        const currentOrderIds = new Set(openOrders.map(o => o.id));
+        for (const [id, status] of this._watchingOrders.entries()) {
+            if (this._isDisposed) return;
+
+            if (currentOrderIds.has(id) || status.has_size_matched || status.has_canceled) continue;
+
+            try {
+                const orderDetails = await this._client.getOrder(id);
+                if (this._isDisposed) return;
+
+                const matched = safeToNum(orderDetails.size_matched);
+                const original = safeToNum(orderDetails.original_size);
+
+                // const is_status_matched = orderDetails.status === "MATCHED";
+                const is_status_matched = true;
+                const has_size_matched = is_status_matched && matched >= original;
+
+                if (orderDetails.status === "CANCELED") {
+                    const updatedStatus: OrderStatus = {
+                        ...status,
+                        has_canceled: true,
+                        is_live: false,
+                        raw_data: orderDetails,
+                    };
+
+                    if (this._isDisposed) return;
+                    this._watchingOrders.set(id, updatedStatus);
+                    const handler = this._handlers.get(id);
+                    handler?.(updatedStatus);
+                    logger.debug(`[LiveOrdersWatcherRTDS] Order ${id} marked as canceled via missing order check`);
+                    continue;
+                }
+
+                if (status.size_matched && safeToNum(status.size_matched) > matched) {
+                    logger.debug(`[LiveOrdersWatcherRTDS] Skip missing order check for ${id}: existing matched ${status.size_matched} > REST matched ${matched}`);
+                    continue;
+                }
+
+                if (has_size_matched) {
+                    const updatedStatus: OrderStatus = {
+                        ...status,
+                        is_live: false,
+                        has_size_matched: true,
+                        has_size_matched_partial: false,
+                        size_matched: orderDetails.size_matched,
+                        raw_data: orderDetails,
+                    };
+
+                    if (this._isDisposed) return;
+                    this._watchingOrders.set(id, updatedStatus);
+                    const handler = this._handlers.get(id);
+                    handler?.(updatedStatus);
+                    logger.debug(`[LiveOrdersWatcherRTDS] Order ${id} marked as fully matched via missing order check`);
+
+                } else if (matched > 0 && matched > safeToNum(status.size_matched)) {
+                    const updatedStatus: OrderStatus = {
+                        ...status,
+                        size_matched: orderDetails.size_matched,
+                        has_size_matched_partial: true,
+                        raw_data: orderDetails,
+                    };
+
+                    if (this._isDisposed) return;
+                    this._watchingOrders.set(id, updatedStatus);
+                    const handler = this._handlers.get(id);
+                    handler?.(updatedStatus);
+                    logger.debug(`[LiveOrdersWatcherRTDS] Order ${id} marked as partially matched via missing order check`);
+                }
+            } catch (error) {
+                logger.warn(`[LiveOrdersWatcherRTDS] Could not fetch details for missing order ${id}: ${error_str(error)}`);
+            }
+        }
+    }
+
+    private async syncOpenOrders(): Promise<void> {
+        if (this._isDisposed) return;
         try {
-            const openOrders = await client.getOpenOrders({ market: this._conditionId });
+            const openOrders = await this._client.getOpenOrders({ market: this._conditionId });
+            if (this._isDisposed) return;
+
             for (const rawOrder of openOrders) {
 
                 // const is_status_matched = rawOrder.status === "MATCHED";
@@ -163,7 +295,9 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
                 const has_size_matched = is_status_matched && matched >= original;
                 const has_size_matched_partial = !has_size_matched && matched > 0;
 
-                const is_live = rawOrder.status === "LIVE";
+                let is_live = rawOrder.status === "LIVE";
+                if (has_size_matched) is_live = false;
+
                 const is_canceled = rawOrder.status === "CANCELED";
 
                 const status: OrderStatus = {
@@ -182,11 +316,20 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
                     is_live: is_live,
                     has_canceled: is_canceled
                 };
-                this._watchingOrders.set(status.id, status);
 
-                const handler = this._handlers.get(status.id);
-                handler?.(status);
+                const existing = this._watchingOrders.get(rawOrder.id);
+                const shouldUpdate = !existing ||
+                    safeToNum(rawOrder.size_matched) > safeToNum(existing.size_matched) ||
+                    (!existing.has_size_matched && has_size_matched);
+
+                if (shouldUpdate) {
+                    this._watchingOrders.set(rawOrder.id, status);
+                    const handler = this._handlers.get(rawOrder.id);
+                    handler?.(status);
+                }
             }
+
+            await this._checkMissingOrders(openOrders);
         } catch (error) {
            throw new Error(`[LiveOrdersWatcherRTDS] Failed to sync open orders: ${error_str(error)}`);
         }
@@ -217,7 +360,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     }
     
     public isActive(): boolean {
-        return this._isConnected;
+        return !this._isDisposed && this._isConnected;
     }
     
     public isWatching(): boolean {
@@ -229,7 +372,10 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     }
     
     public async warmUp(tick: number): Promise<this> {
-        while(!this.isActive()) await delay(tick);
+        while(!this.isActive()) {
+            if (this._isDisposed) return this;
+            await delay(tick);
+        }
         return this;
     }
     
@@ -237,6 +383,8 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
      * Gracefully closes the WebSocket connection and cleans up resources.
      */
     public disconnect(): void {
+        this._shouldReconnect = false;
+        this._isDisposed = true;
         if (this._userClient) {
             this._userClient.disconnect();
 
