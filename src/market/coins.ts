@@ -1,4 +1,4 @@
-export type Coin = 'btc' | 'doge' | 'eth' | 'sol' | 'xrp';
+export type Coin = 'btc' | 'doge' | 'eth' | 'sol' | 'xrp' | 'bnb' | 'hype';
 
 export const DEFAULT_COIN_PRICE_TICK_SIZE = 0.01;
 
@@ -16,6 +16,8 @@ export function coin_precis(coin: Coin): number {
         eth: 2,
         xrp: 4,
         sol: 2,
+        bnb: 4,
+        hype: 4,
         // Add other coins as needed
     };
     return records[coin] ?? 6;
