@@ -95,6 +95,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     };
 
     private async _reconnect(): Promise<void> {
+        logger.debug(`[LiveOrdersWatcherRTDS] _reconnect called, shouldReconnect=${this._shouldReconnect}, isDisposed=${this._isDisposed}, isConnected=${this._isConnected}`);
         if (!this._shouldReconnect || this._isDisposed) return;
         let attempt = 0;
         while (this._shouldReconnect && !this._isConnected && attempt < RTDS_MAX_RECONNECT_ATTEMPTS) {
@@ -104,6 +105,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
             if (this._isDisposed) return;
             try {
                 await this._userClient.connect();
+                logger.info(`[LiveOrdersWatcherRTDS] Reconnect succeeded (attempt ${attempt})`);
                 break;
             } catch (error) {
                 logger.error(`[LiveOrdersWatcherRTDS] Reconnect attempt ${attempt} failed: ${error_str(error)}`);
@@ -157,6 +159,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
         this._userClient.on('connected', () => {
             if (this._isDisposed) return;
             this._userClient.subscribe([this._conditionId]);
+            logger.info(`[LiveOrdersWatcherRTDS] Connected to user channel for condition ${this._conditionId}`);
             this._syncOpenOrdersWithRetry(MAX_SYNC_OPEN_ORDERS_ATTEMPTS, WATCHER_RECONNECT_DELAY);
             this._isConnected = true;
         });

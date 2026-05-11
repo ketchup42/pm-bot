@@ -46,10 +46,10 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
     private static readonly _STRATEGY_COIN: Coin = 'doge';
 
     // ====================== STRATEGY PARAMETERS ========================
-    private readonly _INITIAL_BALANCE: number = 6;      /** Initial balance in USD (virtual, for internal tracking). */
+    private readonly _INITIAL_BALANCE: number = 9;      /** Initial balance in USD (virtual, for internal tracking). */
     private readonly _WALL_SIZE: number = 5;            /** Size threshold for wall detection in the order book. */
     private readonly _MIN_BUY_VALUE_USD: number = 1;    /** Default USD sum that uses to buy tokens. */
-    private readonly _TARGET_PROFIT: number = 1.5;      /** Desired profit above which sell may be triggered. */
+    private readonly _TARGET_PROFIT: number = 0.45;     /** Desired profit above which sell may be triggered. */
     private readonly _MIN_SPREAD: number = 0.04;        /** Minimum acceptable spread between ask and buy order price. */
     private readonly _MAX_POSITION_SIZE: number = DEFAULT_ORDER_MIN_SIZE * 2 - 1;  /** Maximum allowed position size (in tokens) before buying is blocked. */
     private readonly _BTC_IMPULSE_THRESHOLD: number = 5;                           /** BTC price change (in USD) required to trigger order adjustment. */
@@ -57,9 +57,9 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
     private readonly _PRICE_TOLERANCE: number = DEFAULT_COIN_PRICE_TICK_SIZE;      /** Tolerance added/subtracted when placing orders near the wall price. */
     private readonly _START_INTERVAL_FACTOR: number = 0.05;                        /** Fraction of the frame duration at which we consider we are start. */
     private readonly _END_INTERVAL_FACTOR: number = 0.8;                           /** Fraction of the frame duration at which we consider we are at the end. */
-    private readonly _MIN_ABS_PRICE_DEVIATION_TRADING_START: number = 0.000009;    /** Minimum absolute coin price deviation from the event start price required to begin normal trading. */
-    private readonly _FORCED_ABS_PRICE_DEVIATION_TRADING_START: number = 0.000030; /** Larger absolute deviation threshold used to force an aggressive trading start. */
-    private readonly _COIN_PRICE_HISTORY_LENGTH: number = 35;                      /** Minimum coin price history length to start check trading conditions. */
+    private readonly _MIN_ABS_PRICE_DEVIATION_TRADING_START: number = 0.000005;    /** Minimum absolute coin price deviation from the event start price required to begin normal trading. */
+    private readonly _FORCED_ABS_PRICE_DEVIATION_TRADING_START: number = 0.000015; /** Larger absolute deviation threshold used to force an aggressive trading start. */
+    private readonly _COIN_PRICE_HISTORY_LENGTH: number = 20;                      /** Minimum coin price history length to start check trading conditions. */
     // ===================================================================
 
     // ========================= TRADING STATE ===========================
@@ -163,11 +163,13 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
     }
 
     private getOrderState(order: OrderWalletState | undefined): string {
+        if (!this._wallet) return "-UNKNOWN-";
         if (!order) return "-UNSET-";
 
-        if (this._wallet?.hasCanceled(order.id)) return "-CANCELED-";
-        if (this._wallet?.isFullFilled(order.id)) return "-MATCHED-";
-        if (this._wallet?.isLive(order.id)) return "-LIVE-";
+        if (this._wallet.hasCanceled(order.id)) return "-CANCELED-";
+        if (this._wallet.isPartialFilled(order.id)) return "-PARTIAL-MATCHED-";
+        if (this._wallet.isFullFilled(order.id)) return "-MATCHED-";
+        if (this._wallet.isLive(order.id)) return "-LIVE-";
         return "-UNKNOWN-";
     }
 
@@ -355,6 +357,12 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
 
         // ---------- Pre‑trading: accumulate prices until conditions are met ----------
         if (!this._isTradingStarted) {
+
+            if (this._coinPricesHistory.length > this._COIN_PRICE_HISTORY_LENGTH) {
+                this._coinPricesHistory = [];
+                return false;
+            }
+
             if (currentCoinPrice !== undefined) {
                 this._coinPricesHistory.push(currentCoinPrice);
             }
@@ -377,7 +385,7 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
                 this._isTradingStarted = true;
                 this.log(`Trading start condition reached. min=${minCondition}, forced=${forcedCondition}`);
             } else {
-                this.log(`Start conditions not met. minCondition=${minCondition}, forcedCondition=${forcedCondition}`);
+                this.log(`Start conditions not met. min=${minCondition}, forced=${forcedCondition}`);
                 return false;
             }
         }
@@ -431,13 +439,13 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
         let buyQty;
 
 
-        // TODO: modify prices to nore agressive trade
+        // TODO: modify prices for more agressive trading
         if (this._isVeryFirstInitBuy) {
             buyPrice = Math.min(prices.bidOverWall * 0.9, prices.askUnderWall * 0.8);
             buyQty = this.getBuyQuantity(buyPrice);
 
             if (forcedCondition) {
-                buyPrice = prices.bidOverWall; // TODO: mb set taker price to fast buy and sell
+                buyPrice = prices.bidOverWall; // TODO: may be set as taker price to fast buy and sell
                 buyQty = this.getBuyQuantity(buyPrice);
             }
         } else {
@@ -445,7 +453,7 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
             buyQty = this.calculateBuyQuantity(buyPrice, prices.ask);
 
             if (forcedCondition) {
-                buyPrice = Math.min(prices.bidOverWall * 0.9, prices.askUnderWall * 0.8); // TODO: mb set taker price to fast buy and sell
+                buyPrice = Math.min(prices.bidOverWall * 0.9, prices.askUnderWall * 0.8); // TODO: may be set as taker price to fast buy and sell
                 buyQty = this.calculateBuyQuantity(buyPrice, prices.ask);
             } 
         }
@@ -829,10 +837,9 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
 
         if (this._currentSellOrder && wallet.isLive(this._currentSellOrder.id) /** && !wallet.isPartialFilled(this._currentSellOrder.id)*/ && newSellPrice !== sellOrderPrice) {
 
-            this.log(`BTC down: adjusting sell price from ${this._currentSellOrder.value.price} to ${newSellPrice}`);
-
             // MAY LEAVE DUST
             if (wallet.getTokensQuantity() >= wallet.getMinOrderSize()) {
+                this.log(`BTC down: adjusting sell price from ${this._currentSellOrder.value.price} to ${newSellPrice}`);
                 await wallet.cancel_order(this._currentSellOrder.id);
                 this._currentSellOrder = undefined;
 
@@ -852,10 +859,10 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
 
         if (this._currentBuyOrder && wallet.isLive(this._currentBuyOrder.id) /** && !wallet.isPartialFilled(this._currentBuyOrder.id)*/ && newBuyPrice !== buyOrderPrice) {
 
-            this.log(`BTC down: adjusting buy price from ${this._currentBuyOrder.value.price} to ${newBuyPrice}`);
             const buyQty = this.calculateBuyQuantity(newBuyPrice, prices.ask);
 
             if (buyQty > 0) {
+                this.log(`BTC down: adjusting buy price from ${this._currentBuyOrder.value.price} to ${newBuyPrice}`);
                 let buyState = await wallet.buy(newBuyPrice, buyQty);
 
                 if (this._currentBuyOrder) {
@@ -880,10 +887,10 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
 
         if (this._currentBuyOrder && wallet.isLive(this._currentBuyOrder.id) /** && !wallet.isPartialFilled(this._currentBuyOrder.id)*/ && newBuyPrice !== buyOrderPrice) {
 
-            this.log(`BTC up: adjusting buy price from ${this._currentBuyOrder.value.price} to ${newBuyPrice}`);
             const buyQty = this.calculateBuyQuantity(newBuyPrice, prices.ask);
 
             if (buyQty > 0) {
+                this.log(`BTC up: adjusting buy price from ${this._currentBuyOrder.value.price} to ${newBuyPrice}`);
                 let buyState = await wallet.buy(newBuyPrice, buyQty);
 
                 if (this._currentBuyOrder) {
@@ -908,10 +915,9 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
 
         if (this._currentSellOrder && wallet.isLive(this._currentSellOrder.id) /** && !wallet.isPartialFilled(this._currentSellOrder.id)*/ && newSellPrice !== sellOrderPrice) {
 
-            this.log(`BTC up: adjusting sell price from ${this._currentSellOrder.value.price} to ${newSellPrice}`);
-
             // MAY LEAVE DUST
             if (wallet.getTokensQuantity() >= wallet.getMinOrderSize()) {
+                this.log(`BTC up: adjusting sell price from ${this._currentSellOrder.value.price} to ${newSellPrice}`);
                 await wallet.cancel_order(this._currentSellOrder.id);
                 this._currentSellOrder = undefined;
 

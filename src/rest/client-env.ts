@@ -97,7 +97,7 @@ function getTradingEnvConfig(): TradingEnvConfig {
 
     const funderAddress = rawFunderAddress!;
     if (!isValidEthereumAddress(funderAddress)) {
-        throw new Error('FUNDER_ADDRESS must be a valid Ethereum address (0x followed by 40 hex chars)');
+        throw new Error('FUNDER_ADDRESS must be a valid ERC-20 address (0x followed by 40 hex chars)');
     }
 
     const signatureTypeRaw = safeToNum(process.env.SIGNATURE_TYPE, 2);
