@@ -7,7 +7,9 @@ import { ClobOrderEvent, ClobUserClient } from "polymarket-websocket-client";
 
 const RTDS_MAX_RECONNECT_ATTEMPTS = 20;
 const MAX_SYNC_OPEN_ORDERS_ATTEMPTS = 5;
-const WATCHER_RECONNECT_DELAY = 1000;
+
+const WATCHER_CONNECT_TIMEOUT_MS = 10000;
+const WATCHER_RECONNECT_DELAY_MS = 1000;
 
 /**
  * Raw status fields from data stream
@@ -39,7 +41,9 @@ export interface OrderStatusRTDS {
  */
 export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     private _client: ClobClient;
-    private _userClient: ClobUserClient;
+    private _apiCreds: ClobApiKeyCreds;
+    private _userClient: ClobUserClient | undefined;
+    private _currentClientId: number = 0;
 
     private _conditionId: string;
     private _watchingOrders = new Map<string, OrderStatus>();
@@ -48,6 +52,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     private _isConnected: boolean = false;
     private _isDisposed: boolean = false;
     private _shouldReconnect: boolean = true;
+    private _reconnecting = false;
     private _isSyncing: boolean = false;
 
     /**
@@ -95,25 +100,34 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     };
 
     private async _reconnect(): Promise<void> {
-        logger.debug(`[LiveOrdersWatcherRTDS] _reconnect called, shouldReconnect=${this._shouldReconnect}, isDisposed=${this._isDisposed}, isConnected=${this._isConnected}`);
-        if (!this._shouldReconnect || this._isDisposed) return;
+        if (!this._shouldReconnect || this._isDisposed || this._reconnecting) return;
+        this._reconnecting = true;
         let attempt = 0;
-        while (this._shouldReconnect && !this._isConnected && attempt < RTDS_MAX_RECONNECT_ATTEMPTS) {
-            attempt++;
-            logger.warn(`[LiveOrdersWatcherRTDS] Reconnecting (${attempt}/${RTDS_MAX_RECONNECT_ATTEMPTS})...`);
-            await delay(WATCHER_RECONNECT_DELAY);
-            if (this._isDisposed) return;
-            try {
-                await this._userClient.connect();
-                logger.info(`[LiveOrdersWatcherRTDS] Reconnect succeeded (attempt ${attempt})`);
-                break;
-            } catch (error) {
-                logger.error(`[LiveOrdersWatcherRTDS] Reconnect attempt ${attempt} failed: ${error_str(error)}`);
+        try {
+            while (this._shouldReconnect && !this._isConnected && attempt < RTDS_MAX_RECONNECT_ATTEMPTS) {
+                attempt++;
+                logger.warn(`[LiveOrdersWatcherRTDS] Reconnecting (${attempt}/${RTDS_MAX_RECONNECT_ATTEMPTS})...`);
+                await delay(WATCHER_RECONNECT_DELAY_MS);
+                if (this._isDisposed || !this._shouldReconnect || this._isConnected) return;
+                try {
+                    await this._createClientAndConnect();
+                    logger.info(`[LiveOrdersWatcherRTDS] Reconnect succeeded (attempt ${attempt})`);
+                    return;
+                } catch (error) {
+                    logger.error(`[LiveOrdersWatcherRTDS] Reconnect attempt ${attempt} failed: ${error_str(error)}`);
+                }
             }
+            if (attempt >= RTDS_MAX_RECONNECT_ATTEMPTS && this._shouldReconnect) {
+                logger.warn(`[LiveOrdersWatcherRTDS] All reconnect attempts exhausted, waiting ${WATCHER_RECONNECT_DELAY_MS * 5}ms before next cycle`);
+                await delay(WATCHER_RECONNECT_DELAY_MS * 5);
+            }
+        } finally {
+            this._reconnecting = false;
         }
     }
 
-    private async _syncOpenOrdersWithRetry(retries: number, delayMs: number): Promise<void> {
+    private async _syncOpenOrdersWithRetry(retries: number, delayMs: number, expectedClientId: number): Promise<void> {
+        if (this._currentClientId !== expectedClientId) return;
         if (this._isDisposed) return;
         if (this._isSyncing) {
             logger.debug(`[LiveOrdersWatcherRTDS] Watcher syncOpenOrders already in progress, skipping...`);
@@ -133,7 +147,10 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
                         return;
                     }
                     await delay(delayMs * attempt);
-                    if (this._isDisposed) return;
+                    if (this._isDisposed || !this._shouldReconnect || this._currentClientId !== expectedClientId) {
+                        this._isSyncing = false;
+                        return;
+                    }
                 }
             }
         } finally {
@@ -144,33 +161,73 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     private constructor(conditionId: string, client: ClobClient, api?: ClobApiKeyCreds) {
         this._conditionId = conditionId.toLowerCase();
         this._client = client;
-
         const apiKeysCreds = api ?? client.creds;
         if (!apiKeysCreds) throw new Error("[LiveOrdersWatcherRTDS] API Key creds required!");
+        this._apiCreds = apiKeysCreds;
+    }
 
-        this._userClient = new ClobUserClient({
-            apiKey: apiKeysCreds.key,
-            secret: apiKeysCreds.secret,
-            passphrase: apiKeysCreds.passphrase
+    private async _createClientAndConnect(): Promise<void> {
+        if (this._isDisposed) return;
+        const oldClient = this._userClient;
+        this._userClient = undefined;
+
+        if (oldClient) {
+            oldClient.removeAllListeners();
+            try { oldClient.disconnect(); } catch(e) {}
+        }
+
+        const newClient = new ClobUserClient({
+            apiKey: this._apiCreds.key,
+            secret: this._apiCreds.secret,
+            passphrase: this._apiCreds.passphrase
         });
+        const clientId = ++this._currentClientId;
+        this._userClient = newClient;
+        this._setupClientHandlers(this._userClient, clientId);
 
-        this._userClient.onOrder(this._onOrder);
+        try {
+            await Promise.race([
+                this._userClient.connect(),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error(`Connect timeout after ${WATCHER_CONNECT_TIMEOUT_MS}ms`)), WATCHER_CONNECT_TIMEOUT_MS)
+                )
+            ]);
+        } catch (error) {
+            this._userClient.removeAllListeners();
+            try { this._userClient.disconnect(); } catch(e) {}
+            this._userClient = undefined;
+            throw error;
+        }
+    }
 
-        this._userClient.on('connected', () => {
-            if (this._isDisposed) return;
-            this._userClient.subscribe([this._conditionId]);
-            logger.info(`[LiveOrdersWatcherRTDS] Connected to user channel for condition ${this._conditionId}`);
-            this._syncOpenOrdersWithRetry(MAX_SYNC_OPEN_ORDERS_ATTEMPTS, WATCHER_RECONNECT_DELAY);
+    private _setupClientHandlers(client: ClobUserClient, clientId: number): void {
+        client.onOrder(this._onOrder);
+
+        client.on('connected', () => {
+            if (this._isDisposed || this._userClient !== client || clientId !== this._currentClientId) return;
             this._isConnected = true;
+            try {
+                client.subscribe([this._conditionId]);
+            } catch (err) {
+                logger.error(`[LiveOrdersWatcherRTDS] Subscribe failed: ${error_str(err)}`);
+                this._isConnected = false;
+                this._reconnect();
+                return;
+            }
+
+            logger.info(`[LiveOrdersWatcherRTDS] Connected to user channel for condition ${this._conditionId}`);
+            this._syncOpenOrdersWithRetry(MAX_SYNC_OPEN_ORDERS_ATTEMPTS, WATCHER_RECONNECT_DELAY_MS, this._currentClientId);
         });
 
-        this._userClient.on('disconnected', ({ code, reason }) => {
+        client.on('disconnected', ({ code, reason }) => {
+            if (this._isDisposed || this._userClient !== client) return;
             this._isConnected = false;
             logger.warn(`[LiveOrdersWatcherRTDS] Disconnected: ${reason} (${code})`);
             if (this._shouldReconnect) this._reconnect();
         });
 
-        this._userClient.on('error', (error) => {
+        client.on('error', (error) => {
+            if (this._isDisposed || this._userClient !== client) return;
             this._isConnected = false;
             logger.error(`[LiveOrdersWatcherRTDS] Error: ${error_str(error)}`);
             if (this._shouldReconnect) this._reconnect();
@@ -196,15 +253,11 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
         this._handlers.clear();
     }
 
-    private async init(): Promise<void> {
-        await this._userClient.connect();
-    }
-
     /** Factory method that creates and connects the watcher. */
     public static async create(conditionId: string, client: ClobClient, api?: ClobApiKeyCreds): Promise<LiveOrdersWatcherRTDS> {
         const watcher = new LiveOrdersWatcherRTDS(conditionId, client, api);
-        await watcher.init();
-        return watcher
+        await watcher._createClientAndConnect();
+        return watcher;
     }
 
     private async _checkMissingOrders(openOrders: OpenOrder[]): Promise<void> {
@@ -361,27 +414,31 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
     public isUnderWatching(orderId: string): boolean {
         return this._watchingOrders.has(orderId);
     }
-    
+
     public isActive(): boolean {
         return !this._isDisposed && this._isConnected;
     }
-    
+
     public isWatching(): boolean {
         return this._watchingOrders.size !== 0;
     }
-    
+
     public getConditionId(): string {
         return this._conditionId;
     }
-    
+
     public async warmUp(tick: number): Promise<this> {
-        while(!this.isActive()) {
+        const start = Date.now();
+        while (!this.isActive()) {
             if (this._isDisposed) return this;
+            if (Date.now() - start > WATCHER_CONNECT_TIMEOUT_MS) {
+                throw new Error(`[LiveOrdersWatcherRTDS] warmUp timeout after ${WATCHER_CONNECT_TIMEOUT_MS}ms`);
+            }
             await delay(tick);
         }
         return this;
     }
-    
+
     /**
      * Gracefully closes the WebSocket connection and cleans up resources.
      */
@@ -389,12 +446,12 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
         this._shouldReconnect = false;
         this._isDisposed = true;
         if (this._userClient) {
-            this._userClient.disconnect();
-
-            // Additional clear steps to full safe
-            this._isConnected = false;
-            this._watchingOrders.clear();
-            this._handlers.clear();
+            this._userClient.removeAllListeners();
+            try { this._userClient.disconnect(); } catch(e) {}
+            this._userClient = undefined;
         }
+        this._isConnected = false;
+        this._watchingOrders.clear();
+        this._handlers.clear();
     }
 }
