@@ -11,6 +11,14 @@ export interface MarketRaw {
   active: boolean;
   closed: boolean;
   enableOrderBook: boolean;
+
+  feesEnabled: boolean;
+  makerBaseFee: number;
+  takerBaseFee: number;
+
+  rewardsMaxSpread: number;
+  rewardsMinSize: number;
+
   orderMinSize: number;
   orderPriceMinTickSize: number;
   outcomes: string[];
@@ -189,6 +197,11 @@ export async function fetchMarketById(marketId: string): Promise<MarketRaw> {
     active: marketData.active,
     closed: marketData.closed,
     enableOrderBook: marketData.enableOrderBook,
+    feesEnabled: marketData.feesEnabled,
+    makerBaseFee: marketData.makerBaseFee,
+    takerBaseFee: marketData.takerBaseFee,
+    rewardsMaxSpread: marketData.rewardsMaxSpread,
+    rewardsMinSize: marketData.rewardsMaxSpread,
     orderMinSize: marketData.orderMinSize,
     orderPriceMinTickSize: marketData.orderPriceMinTickSize,
     outcomes,

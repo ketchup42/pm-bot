@@ -14,6 +14,12 @@ export interface EventMarketData
   tick_size: number;
   min_order_size: number
 
+  fees_enabled: boolean;
+  maker_base_fee: number;
+  taker_base_fee: number;
+  rewards_max_spread: number;
+  rewards_min_size: number;
+
   up: TokenMarketData;
   down: TokenMarketData;
 }
