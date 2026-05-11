@@ -68,7 +68,13 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
         const conditionId = market.conditionId;
         const tick_size = market.orderPriceMinTickSize;
         const min_order_size = market.orderMinSize;
-    
+
+        const fees_enabled = market.feesEnabled;
+        const maker_base_fee = market.makerBaseFee;
+        const taker_base_fee = market.takerBaseFee;
+        const rewards_max_spread = market.rewardsMaxSpread;
+        const rewards_min_size = market.rewardsMinSize;
+
         let upData: TokenMarketData | undefined = undefined;
         let downData: TokenMarketData | undefined = undefined;
 
@@ -97,6 +103,12 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
             conditionId: conditionId,
             tick_size: tick_size,
             min_order_size: min_order_size,
+
+            fees_enabled: fees_enabled,
+            maker_base_fee: maker_base_fee,
+            taker_base_fee: taker_base_fee,
+            rewards_max_spread: rewards_max_spread,
+            rewards_min_size: rewards_min_size,
 
             up: upData,
             down: downData
@@ -153,7 +165,7 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
 
             onError: async (error) => {
                 logger.error(`[LiveMarketOrderBooksWatcher] Error: ${error_str(error)}`);
-                                
+
                 await this.callHandler('onError', error);
                 try {
                     if (this._manager) this._manager.clearState();
@@ -353,10 +365,16 @@ export class LiveMarketOrderBooksWatcher implements MarketOrderBooksWatcher {
     public getMarketData(): EventMarketData {
         return {
             eventId: this._marketData!.eventId,
-            marketId: this._marketData!.marketId,    // id from REST Raw
+            marketId: this._marketData!.marketId,
             conditionId: this._marketData!.conditionId,
             tick_size: this._marketData!.tick_size,
             min_order_size: this._marketData!.min_order_size,
+
+            fees_enabled: this._marketData!.fees_enabled,
+            maker_base_fee: this._marketData!.maker_base_fee,
+            taker_base_fee: this._marketData!.taker_base_fee,
+            rewards_max_spread: this._marketData!.rewards_max_spread,
+            rewards_min_size: this._marketData!.rewards_min_size,
 
             up: this._marketData!.up,
             down: this._marketData!.down
