@@ -10,19 +10,32 @@ This document describes all environment variables used to configure the applicat
 | `API_KEY` | API key derived from your wallet (see [CLOB authentication docs](https://docs.polymarket.com/clob-api/authentication)). | `6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d` |
 | `API_SECRET` | API secret derived from your wallet. | `9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c` |
 | `API_PASSPHRASE` | API passphrase derived from your wallet. | `MyStrongPassphrase123!` |
-| `SIGNATURE_TYPE` | Type of wallet signature:<br/>`0` – EOA (standard wallet)<br/>`1` – POLY_PROXY (Magic Link)<br/>`2` – GNOSIS_SAFE (most common for Polymarket) | `2` |
-| `FUNDER_ADDRESS` | Address that will pay gas fees. For type `0` – your wallet address; for types `1`/`2` – your proxy/Safe address. | `0xyour_funder_address_here` |
+| `SIGNATURE_TYPE` | Type of wallet signature:<br/>`0` – EOA (standard wallet)<br/>`1` – POLY_PROXY (Magic Link)<br/>`2` – GNOSIS_SAFE (most common for Polymarket)<br/>`3` – Deposit wallet (new deposit‑only wallet type) | `2` |
+| `FUNDER_ADDRESS` | Address that will pay gas fees. For type `0` – your wallet address; for types `1`/`2`/`3` – your proxy/Safe/deposit address. | `0xyour_funder_address_here` |
+
+## Blockchain Configuration
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `POLYGON_RPC_URL` | Polygon RPC endpoint (required for reading blockchain data and submitting transactions). Use a public endpoint or a private RPC provider for better reliability. | `https://polygon-rpc.com` |
 
 ## Logging Configuration
 
+| Variable             | Description                                                                                    | Default              |
+| ----------------------| ------------------------------------------------------------------------------------------------| ----------------------|
+| `LOG_LEVEL`          | Console log level (`debug`, `info`, `warn`, `error`). If not set, console logging is disabled. | (not set)            |
+| `LOG_FILE`           | Path to the log file. Enables file logging when set.                                           | (not set)            |
+| `LOG_FILE_LEVEL`     | Log level for file output (e.g., `debug`, `info`).                                             | (not set)            |
+| `LOG_FILE_MAX_SIZE`  | Maximum file size in bytes before rotation.                                                    | `10485760` (10 MB)   |
+| `LOG_FILE_MAX_FILES` | Number of rotated log files to keep.                                                           | `3`                  |
+| `NO_COLOR`           | Disable ANSI colors in console output. Set to `1` or `true` to disable.                        | `0` (colors enabled) |
+
+## Data Persistence
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LOG_LEVEL` | Console log level (`debug`, `info`, `warn`, `error`). If not set, console logging is disabled. | (not set) |
-| `LOG_FILE` | Path to the log file. Enables file logging when set. | (not set) |
-| `LOG_FILE_LEVEL` | Log level for file output (e.g., `debug`, `info`). | (not set) |
-| `LOG_FILE_MAX_SIZE` | Maximum file size in bytes before rotation. | `10485760` (10 MB) |
-| `LOG_FILE_MAX_FILES` | Number of rotated log files to keep. | `3` |
-| `NO_COLOR` | Disable ANSI colors in console output. Set to `1` or `true` to disable. | `0` (colors enabled) |
+| `DUMPS_DIR` | Directory where historical data dumps (e.g., trade history) are stored. Disabled if not set. | (not set) |
+| `DUMP_MAX_FILES` | Number of rotated dump files to keep. | `20` |
 
 ## Example `.env` File
 
@@ -35,31 +48,40 @@ API_KEY=your_api_key_here
 API_SECRET=your_api_secret_here
 API_PASSPHRASE=your_api_passphrase_here
 
-# Signature type: 0 = EOA (standard wallet), 1 = POLY_PROXY (Magic Link), 2 = GNOSIS_SAFE (most common for Polymarket)
+# Signature type:
+# 0 = EOA (externally owned account) – standard wallet, pays its own gas.
+# 1 = POLY_PROXY (Magic Link / email login) – proxy wallet controlled by Polymarket.
+# 2 = GNOSIS_SAFE – most common for accounts created via browser wallet (MetaMask, WalletConnect).
+# 3 = Deposit wallet – new deposit‑only wallet type.
 SIGNATURE_TYPE=2
 
-# Address that will pay gas fees (your wallet address for type 0, or your proxy address for types 1/2)
+# Address that will pay gas fees and holds the trading collateral (pUSD).
+# For type 0: your EOA address.
+# For types 1/2/3: the proxy, Safe, or deposit wallet address shown in your Polymarket profile.
 FUNDER_ADDRESS=0xyour_funder_address_here
+
+# Polygon RPC endpoint (required for reading blockchain data and submitting transactions)
+POLYGON_RPC_URL=https://polygon-rpc.com
 
 # Console log level (debug|info|warn|error). Console is disabled if LOG_LEVEL not set
 LOG_LEVEL=error
 
 # Enable file logging by specifying a file path
-LOG_FILE=logs/pm.log
+LOG_FILE=logs/polymarket.log
 
-# File log level
-LOG_FILE_LEVEL=debug
+# File log level (debug|info|warn|error)
+LOG_FILE_LEVEL=info
 
 # Max file size before rotation (bytes) – 10MB
 LOG_FILE_MAX_SIZE=10485760
 
 # Number of rotated log files to keep
-LOG_FILE_MAX_FILES=3
+LOG_FILE_MAX_FILES=5
 
 # Output color option (0 = enable colors, 1 = disable)
 NO_COLOR=0
 
-# Dumps directory, disabled if not set
+# Dumps directory (disabled if not set)
 DUMPS_DIR=history
 
 # Number of rotated dump files to keep

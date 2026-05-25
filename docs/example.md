@@ -5,7 +5,7 @@
 const client = initTradingClientRest();
 
 const scheduler = new ExecScheduler([
-    async () => 
+    async () =>
         new ExecManager(
             client,
             [
