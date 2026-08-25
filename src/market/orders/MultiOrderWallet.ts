@@ -1,4 +1,4 @@
-import { OrderWallet } from "./OrderWallet";
+import { OrderWallet } from "./OrderWallet.js";
 
 /**
  * Virtual wallet abstraction for one strategy.

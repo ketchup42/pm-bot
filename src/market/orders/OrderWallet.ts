@@ -132,9 +132,8 @@ export interface OrderWallet {
     cancel_order(orderId: string): Promise<boolean>;
 
     /**
-     * Cancels a all orders.
+     * Cancels all orders.
      *
-     * @param orderId - The order to cancel.
      * @return False if the API call fails.
      */
     cancel_all(): Promise<boolean>;

@@ -41,16 +41,16 @@ export interface LiquidityInfo {
 
 export interface MarketOrderBooksWatcher {
 
-  /** Returns sorted COPY bid levels for the Up token (descending price) */
+  /** Returns sorted COPY bid levels for the Up token (ascending price) */
   getBidsUp(): OrderBookLevel[];
 
-  /** Returns sorted COPY ask levels for the Up token (ascending price) */
+  /** Returns sorted COPY ask levels for the Up token (descending price) */
   getAsksUp(): OrderBookLevel[];
 
-  /** Returns sorted COPY bid levels for the Down token (descending price) */
+  /** Returns sorted COPY bid levels for the Down token (ascending price) */
   getBidsDown(): OrderBookLevel[];
 
-  /** Returns sorted COPY ask levels for the Down token (ascending price) */
+  /** Returns sorted COPY ask levels for the Down token (descending price) */
   getAsksDown(): OrderBookLevel[];
 
   /** Best bid (highest price) for the specified token */

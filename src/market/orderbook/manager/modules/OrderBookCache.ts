@@ -204,7 +204,7 @@ export class OrderBookCache {
      * @param assetId tokenId of a market 
      */
     public clear(assetId?: string): void {
-        if (assetId) {null
+        if (assetId) {
             delete this.bookCache[assetId];
         } else {
             for (const k of Object.keys(this.bookCache)) {

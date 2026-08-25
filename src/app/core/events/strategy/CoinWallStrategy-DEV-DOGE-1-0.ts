@@ -149,7 +149,7 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
     private getPriceFromOrderBook(orders: OrderBookLevel[], fallbackPrice: number | undefined): number | undefined {
         if (orders.length === 0) return fallbackPrice;
         let cumulativeSize = 0;
-        for (let i = orders.length - 1; i > 0; i--) {
+        for (let i = orders.length - 1; i >= 0; i--) {
             cumulativeSize += safeToNum(orders[i]!.size);
             if (cumulativeSize > this._WALL_SIZE) return safeToNum(orders[i]!.price);
         }

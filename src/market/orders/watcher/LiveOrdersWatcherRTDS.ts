@@ -359,7 +359,7 @@ export class LiveOrdersWatcherRTDS implements OrdersWatcher {
                 const status: OrderStatus = {
                     id: rawOrder.id,
                     token_id: rawOrder.asset_id,
-                    timestamp: rawOrder.created_at.toString(),
+                    timestamp: rawOrder.created_at?.toString() ?? '',
                     market: rawOrder.market,
                     original_size: rawOrder.original_size,
                     size_matched: rawOrder.size_matched,

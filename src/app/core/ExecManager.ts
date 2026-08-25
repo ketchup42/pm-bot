@@ -74,7 +74,7 @@ export class ExecManager {
                 logger.error(`RED ALERT! SYSTEM IN INCONSISTENT STATE! ERROR DURING DIE: ${error_str(dieError)}`);
             }
         } finally {
-            logger.info(`EXEC MANAGER INFO: STOPED`);
+            logger.info(`EXEC MANAGER INFO: STOPPED`);
         }
     }
 

@@ -201,7 +201,7 @@ export async function fetchMarketById(marketId: string): Promise<MarketRaw> {
     makerBaseFee: marketData.makerBaseFee,
     takerBaseFee: marketData.takerBaseFee,
     rewardsMaxSpread: marketData.rewardsMaxSpread,
-    rewardsMinSize: marketData.rewardsMaxSpread,
+    rewardsMinSize: marketData.rewardsMinSize,
     orderMinSize: marketData.orderMinSize,
     orderPriceMinTickSize: marketData.orderPriceMinTickSize,
     outcomes,

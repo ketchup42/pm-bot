@@ -1,5 +1,5 @@
 import { UnsubscribeHook, delay, error_str, killSignalsHook } from "../../utils.js";
-import { ExecManager } from "./ExecManager";
+import { ExecManager } from "./ExecManager.js";
 import { logger, logger_shutdown } from "../../log.js";
 import { waitFrameStartMs } from "../../market/frame.js";
 
