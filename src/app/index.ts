@@ -7,24 +7,26 @@ import { TIMER_FAST, TIMER_NORM } from "../timer.js";
 import { CoinFrameEventTimerWatcher } from "./core/events/CoinFrameEventTimerWatcher.js";
 import { ExecScheduler } from "./core/ExecScheduler.js";
 import { ExecManager } from "./core/ExecManager.js";
-import { CoinWallStrategyDoge } from "./core/events/strategy/CoinWallStrategy-DEV-DOGE-1-0.js";
 import { PriceWatcherFactory } from "../market/price/PriceWatcherFactory.js";
+import { CoinTrendLineStrategyV1 } from "./core/events/strategy/CoinTrendLineStrategyV1.js";
 
-logger.debug("If you see this in the file, logging works fine:)");
+logger.info("If you see this in the file, logging works fine:)");
 
 const client = await getTradingClient();
-const coin_watcher = await PriceWatcherFactory.getCoinWatcher('doge', PS_CHAINLINK).warmUp(TIMER_FAST);
+const coin_watcher = await PriceWatcherFactory.getCoinWatcher('btc', PS_CHAINLINK).warmUp(TIMER_FAST);
 
 const scheduler = new ExecScheduler([
     async () => {
-    const watcher = await CoinFrameEventTimerWatcher.create('doge', '5m', TIMER_FAST, coin_watcher);
-    const strategy = await CoinWallStrategyDoge.create(watcher.getEventId(), 'up');
-    return new ExecManager(client,
+        const watcher = await CoinFrameEventTimerWatcher.create('btc', '5m', TIMER_FAST, coin_watcher);
+        const strategyUp = await CoinTrendLineStrategyV1.create(watcher.getEventId(), 'btc', 'up');
+        const strategyDown = await CoinTrendLineStrategyV1.create(watcher.getEventId(), 'btc', 'down');
+        return new ExecManager(client,
             [
                 watcher
             ],
             [
-                strategy
+                strategyUp,
+                strategyDown
             ],
             true)
     }
