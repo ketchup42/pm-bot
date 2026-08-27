@@ -930,7 +930,7 @@ export class CoinWallStrategyDoge implements EventStrategy<CoinFrameEventMarketD
     }
 
     // ---------------------------- CANCEL ----------------------------
-    public async cancel(client: ClobClient, watchers: readonly EventWatcher<CoinFrameEventMarketData>[]): Promise<boolean> {
+    public async cancel(client: ClobClient, watchers: readonly EventWatcher<CoinFrameEventMarketData>[], isSignal: boolean): Promise<boolean> {
         if (this._wallet) {
             await this._wallet.dispose(true);   // cancels orders and sells tokens
         }

@@ -19,6 +19,8 @@ export interface EventStrategy<EventDataType> {
      * Executes cancel operations for strategy, Dispose strategy state and rolls back all operations.
      * @param client Polymarket CLOB client.
      * @param watchers Read-only list of event watchers.
+     * @param isSignal True if cancel was triggered by an external signal (keyboard/SIGINT/SIGTERM) or an error;
+     *                 false on the natural end of the frame (time).
      */
-    cancel(client: ClobClient, watchers: readonly EventWatcher<EventDataType>[]): Promise<boolean>;
+    cancel(client: ClobClient, watchers: readonly EventWatcher<EventDataType>[], isSignal: boolean): Promise<boolean>;
 }

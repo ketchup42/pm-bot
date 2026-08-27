@@ -27,7 +27,7 @@ export class LogCoinStrategy implements EventStrategy<CoinFrameEventMarketData> 
      * @param watchers - Array of event watchers (ignored)
      * @returns Always `true`
      */
-    public async cancel(client: ClobClient, watchers: readonly EventWatcher<CoinFrameEventMarketData>[]): Promise<boolean> {
+    public async cancel(client: ClobClient, watchers: readonly EventWatcher<CoinFrameEventMarketData>[], isSignal: boolean): Promise<boolean> {
         logger.info("INFO: LogCoinStrategy cancel..");
         return true;
     }

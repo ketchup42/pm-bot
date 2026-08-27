@@ -24,6 +24,7 @@ export class ExecManager {
     private _inDebugMode = false;
     private _isStopped = false;
     private _disposed = false;
+    private _cancelIsSignal = false;
 
     constructor(client: ClobClient, watchers: EventWatcher<ExecTarget>[], strategies: EventStrategy<ExecTarget>[], debug?: boolean)
     {
@@ -63,12 +64,15 @@ export class ExecManager {
                 // Global tick delay
                 if (!this._isStopped) await delay(tick);
             }
-            if (!this._disposed)
+            if (!this._disposed) {
+                this._cancelIsSignal = false; // natural frame end (time)
                 await this.die();
+            }
 
         } catch (error) {
             logger.error(`SYSTEM ERROR: ${error_str(error)}`);
             try {
+                this._cancelIsSignal = true; // abnormal termination — treat as external signal
                 await this.die();
             } catch (dieError) {
                 logger.error(`RED ALERT! SYSTEM IN INCONSISTENT STATE! ERROR DURING DIE: ${error_str(dieError)}`);
@@ -85,6 +89,7 @@ export class ExecManager {
      */
     public async shutdown(): Promise<void> {
         this._isStopped = true; // For master manager loop exit
+        this._cancelIsSignal = true; // external signal (keyboard/SIGINT/SIGTERM)
         logger.info(`EXEC MANAGER INFO: SHUTDOWN SIGNAL!`);
         await this.die();
     }
@@ -99,7 +104,7 @@ export class ExecManager {
         this._diePromise = (async () => {
             if (this._disposed) return;
             this._disposed = true;
-            await Promise.all(this._strategies.map(s => s.cancel(this._client, this._watchers)));
+            await Promise.all(this._strategies.map(s => s.cancel(this._client, this._watchers, this._cancelIsSignal)));
 
             const dumpPromises: Promise<void>[] = [];
             if (this._inDebugMode) {

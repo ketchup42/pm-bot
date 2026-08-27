@@ -10,14 +10,17 @@ pieces it uses are described in [`docs/abstractions.md`](abstractions.md).
 ```ts
 export interface EventStrategy<EventDataType> {
     execute(client: ClobClient, watchers: readonly EventWatcher<EventDataType>[]): Promise<boolean>;
-    cancel(client: ClobClient, watchers: readonly EventWatcher<EventDataType>[]): Promise<boolean>;
+    cancel(client: ClobClient, watchers: readonly EventWatcher<EventDataType>[], isSignal: boolean): Promise<boolean>;
 }
 ```
 
 - `execute` is called on **every tick** by `ExecManager` while the frame is active.
   Return `true` if something was done, `false` otherwise.
 - `cancel` is called once at the end of the frame (or on shutdown) to roll back
-  state and dispose resources.
+  state and dispose resources. `isSignal` is `true` when the cancel was triggered by
+  an external signal (keyboard/SIGINT/SIGTERM) or an error, and `false` on the
+  natural end of the frame (time). Anything that is not a natural frame end is a
+  signal.
 
 ### Lifecycle
 
@@ -89,11 +92,13 @@ const ask = this._market.getBestAsk(this._side);
 const bid = this._market.getBestBid(this._side);
 if (ask === undefined || bid === undefined) return false;
 
-// Taker entry: cross the ask by one tick.
-await this._wallet.buy(ask + this._wallet.getTick(), 5);
+// Taker entry: buy at the best ask (fills instantly on a tick-aligned book).
+// To guarantee crossing regardless, use ask + this._wallet.getTick() instead.
+await this._wallet.buy(ask, 5);
 
-// Taker exit: cross the bid by one tick.
-await this._wallet.sell(bid - this._wallet.getTick(), this._wallet.getTokensQuantity());
+// Taker exit: sell at the best bid (fills instantly on a tick-aligned book).
+// To guarantee crossing regardless, use bid - this._wallet.getTick() instead.
+await this._wallet.sell(bid, this._wallet.getTokensQuantity());
 ```
 
 - `wallet.buy/sell` internally apply `tick_price` (rounds buy down, sell up) and
@@ -105,8 +110,10 @@ await this._wallet.sell(bid - this._wallet.getTick(), this._wallet.getTokensQuan
 ### 6. `cancel()`
 
 ```ts
-public async cancel(client, watchers): Promise<boolean> {
-    if (this._wallet) await this._wallet.dispose(true); // cancel orders + sell remaining tokens
+public async cancel(client, watchers, isSignal): Promise<boolean> {
+    // isSignal=true (keyboard/SIGINT/SIGTERM/error): sell remaining tokens (dispose(true)).
+    // isSignal=false (natural frame end): keep the position, just cancel orders (dispose(false)).
+    if (this._wallet) await this._wallet.dispose(isSignal);
     // reset all per-frame state
     this._wallet = undefined;
     this._event = undefined;
@@ -116,8 +123,9 @@ public async cancel(client, watchers): Promise<boolean> {
 }
 ```
 
-`dispose(true)` liquidates the remaining position at the end of the frame; use
-`dispose(false)` to keep the position instead.
+`dispose(true)` liquidates the remaining position (market sell at the tick floor);
+`dispose(false)` cancels orders and keeps the tokens. Pass the `isSignal` flag
+through so signal-driven cancels sell, while natural frame ends keep the position.
 
 ### 7. Wire it into `index.ts`
 
@@ -153,9 +161,10 @@ await scheduler.start(FRAME_5M_MS, TIMER_NORM);
 - **Taker price clamping**: buying `ask + tick` near `1.0` gets clamped to
   `1 - tick`; the order may rest instead of filling. Same for selling near the tick
   floor.
-- **Forced liquidation**: with `dispose(true)`, a position opened right before the
-  frame ends gets sold at the tick price. Use an end-of-frame cutoff (e.g. stop
-  entering after `progress > 0.9`) to avoid this.
+- **Forced liquidation**: with `dispose(true)` (signal-driven cancel), a position is
+  sold at the tick floor (market). On a natural frame end (`isSignal=false`) tokens
+  are kept. Use an end-of-frame cutoff (e.g. stop entering after `progress > 0.9`)
+  to avoid opening positions right before the frame ends.
 - **Min order size / value**: the wallet rejects orders below `min_order_size` or
   `min_buy_order_value`; check the values from `getMarketData()`.
 - **Insufficient balance**: `wallet.buy` returns `undefined` when the order value
