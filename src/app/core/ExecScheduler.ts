@@ -1,17 +1,12 @@
 import { UnsubscribeHook, delay, error_str, killSignalsHook } from "../../utils.js";
 import { ExecManager } from "./ExecManager.js";
-import { logger, logger_shutdown } from "../../log.js";
+import { logger } from "../../log.js";
 import { waitFrameStartMs } from "../../market/frame.js";
 
 /**
  * Type of functions that create ExecManager instances for each cycle.
  */
 export type SchedulerTickInitType = () => Promise<ExecManager>;
-
-/**
- * When scheduler receives kill signal it needs to delay some time to stops correctly.
- */
-const EXEC_SCHEDULER_SHUTDOWN_SIGNAL_DELAY = 3500;
 
 export class ExecScheduler {
 
@@ -24,6 +19,7 @@ export class ExecScheduler {
     private _isStopped = false;
     private _isStarted = false;
     private _isShuttingDown = false;
+    private _paused = false;
 
     private _currentManagers: ExecManager[] = [];
     private _cycleStartHandlers: SchedulerTickInitType[];
@@ -52,18 +48,19 @@ export class ExecScheduler {
         // Align to the next time frame boundary
         await waitFrameStartMs(alignMs);
 
-        // Single global shutdown hook
+        // Per-scheduler shutdown hook: on a signal only this scheduler is stopped gracefully.
         this._unsubscribeHook = killSignalsHook(async () => {
             await this.shutdown();
-            process.stdout.write(`Die...\n`);
-
-            await logger_shutdown();
-            await delay(EXEC_SCHEDULER_SHUTDOWN_SIGNAL_DELAY);
-            process.exit(0);
         });
 
         try {
             while (!this._isStopped) {
+                if (this._paused) {
+                    logger.info(`SCHEDULER: PAUSED, waiting ${alignMs}ms`);
+                    await this.waitPaused(alignMs, execTickMs);
+                    continue;
+                }
+
                 const results = await Promise.allSettled(
                     this._cycleStartHandlers.map(handler => handler())
                 );
@@ -111,6 +108,35 @@ export class ExecScheduler {
      */
     public stop(): void {
         this._isStopped = true;
+    }
+
+    /** Pauses this scheduler: the loop stops creating/running managers and just waits alignMs each iteration. */
+    public pause(): void {
+        this._paused = true;
+    }
+
+    /** Resumes normal operation: managers are created and run again. */
+    public unpause(): void {
+        this._paused = false;
+    }
+
+    /** Whether this scheduler is paused. */
+    public isPaused(): boolean {
+        return this._paused;
+    }
+
+    /** Idles while paused: micro-steps of stepMs until the remaining time to the next frame
+     * boundary fits in one step, then waitFrameStartMs finishes the exact alignment.
+     * Checks the stop flag so shutdown/stop interrupts promptly. */
+    private async waitPaused(alignMs: number, stepMs: number): Promise<void> {
+        while (!this._isStopped) {
+            const remaining = alignMs - (Date.now() % alignMs);  // ms until the next frame boundary
+            if (remaining <= stepMs) break;                      // close enough — let waitFrameStartMs finish
+            await delay(stepMs);                                 // micro-step
+        }
+        if (!this._isStopped) {
+            await waitFrameStartMs(alignMs);                     // exact frame-boundary alignment
+        }
     }
 
     /**

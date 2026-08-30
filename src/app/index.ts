@@ -1,5 +1,4 @@
-import { exit } from "process";
-import { logger } from "../log.js";
+import { logger} from "../log.js";
 import { FRAME_5M_MS } from "../market/frame.js";
 import { PS_CHAINLINK } from "../market/price/price_source.js";
 import { getTradingClient } from "../rest/client-env.js";
@@ -10,6 +9,7 @@ import { ExecManager } from "./core/ExecManager.js";
 import { PriceWatcherFactory } from "../market/price/PriceWatcherFactory.js";
 import { CoinTrendLineStrategyV1 } from "./core/events/strategy/CoinTrendLineStrategyV1.js";
 import { CoinTrendLineStrategyV2 } from "./core/events/strategy/CoinTrendLineStrategyV2.js";
+import { globalDie } from "../die.js";
 
 logger.info("If you see this in the file, logging works fine:)");
 
@@ -41,4 +41,4 @@ const scheduler = new ExecScheduler([
 
 await scheduler.start(FRAME_5M_MS, TIMER_NORM);
 
-exit();
+await globalDie();
