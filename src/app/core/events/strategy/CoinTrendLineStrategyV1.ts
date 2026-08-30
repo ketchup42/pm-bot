@@ -8,9 +8,11 @@ import { DEFAULT_BUY_ORDER_MIN_VALUE } from "../../../../rest/orders.js";
 import { MarketSide } from "../../../../market/side.js";
 import { MarketOrderBooksWatcher } from "../../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
 import { Coin } from "../../../../market/coins.js";
-import { ORDER_WALLET_FRACTION, OrderWalletState } from "../../../../market/orders/OrderWallet.js";
+import { ORDER_WALLET_FRACTION, OrderWalletParams, OrderWalletState } from "../../../../market/orders/OrderWallet.js";
+import { MultiOrderWallet } from "../../../../market/orders/MultiOrderWallet.js";
 import { LiveOrdersWatcherRTDS } from "../../../../market/orders/watcher/LiveOrdersWatcherRTDS.js";
 import { LiveOrderWallet } from "../../../../market/orders/LiveOrderWallet.js";
+import { VirtualTakerLiveOrderWallet } from "../../../../market/orders/VirtualTakerLiveOrderWallet.js";
 
 /** Start/end timestamps of the current trading frame (in seconds). */
 interface FrameTime { startTime: number; endTime: number; }
@@ -34,7 +36,9 @@ export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMark
 
     // ====================== STRATEGY PARAMETERS ========================
     private readonly _ORDER_VOLUME: number = 5;              /** Position size in tokens (per trade). */
-    
+
+    private readonly _INITIAL_BALANCE: number = 6;           /** Virtual USD balance. */
+
     private readonly _PRICE_BUY_START: number = 0.55;        /** Standard entry line start (mirror off); interpolates to _PRICE_BUY_END. */
     private readonly _PRICE_BUY_START_MIRROR: number = 0.51; /** Mirror-mode entry line start; interpolates to _PRICE_BUY_END. */
     private readonly _PRICE_BUY_END: number = 1.0;           /** Entry line end (shared for both mirror states). */
@@ -43,11 +47,9 @@ export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMark
     
     private readonly _PRICE_SELL_LEVEL: number = 0.46;   /** Normal exit level (horizontal). */
     private readonly _MIRROR_EXIT_LEVEL: number = 0.1;   /** Mirror-mode exit level (horizontal). */
-    
-    private readonly _INITIAL_BALANCE: number = 6;       /** Virtual USD balance. */
-    
-    private readonly _START_INTERVAL_FACTOR: number = 0; /** Fraction of the frame duration before which we do not enter new positions. */
-    private readonly _END_INTERVAL_FACTOR: number = 0.95; /** Fraction of the frame duration at which we stop entering new positions. */
+
+    private readonly _START_INTERVAL_FACTOR: number = 0.01; /** Fraction of the frame duration before which we do not enter new positions. */
+    private readonly _END_INTERVAL_FACTOR: number = 0.99; /** Fraction of the frame duration at which we stop entering new positions. */
     // ===================================================================
 
     // ========================= TRADING STATE ===========================
@@ -59,20 +61,35 @@ export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMark
     private _buyOrder: OrderWalletState | undefined = undefined;
     private _sellOrder: OrderWalletState | undefined = undefined;
 
-    private _wallet: LiveOrderWallet | undefined = undefined;
+    private _wallet: MultiOrderWallet | undefined = undefined;
+    private _isDebug: boolean;
     private _event: EventWatcher<CoinFrameEventMarketData> | undefined = undefined;
     private _market: MarketOrderBooksWatcher | undefined = undefined;
     private _frameTime: FrameTime | undefined = undefined;
     // ================================================================
 
-    private constructor(eventId: string, coin: Coin, side: MarketSide) {
+    private constructor(eventId: string, coin: Coin, side: MarketSide, isDebug: boolean) {
         this._eventId = eventId;
         this._coin = coin;
         this._side = side;
+        this._isDebug = isDebug;
     }
 
-    public static async create(eventId: string, coin: Coin, side: MarketSide): Promise<CoinTrendLineStrategyV1> {
-        return new CoinTrendLineStrategyV1(eventId, coin, side);
+    public static async create(eventId: string, coin: Coin, side: MarketSide, isDebug: boolean = false): Promise<CoinTrendLineStrategyV1> {
+        return new CoinTrendLineStrategyV1(eventId, coin, side, isDebug);
+    }
+
+    /**
+     * Factory: creates the strategy wallet.
+     * - isDebug=true  -> virtual emulation (instant fills from the order book, no real orders).
+     * - isDebug=false -> live wallet (real orders + user-channel orders watcher).
+     */
+    private async createWallet(client: ClobClient, params: OrderWalletParams, conditionId: string): Promise<MultiOrderWallet> {
+        if (this._isDebug) {
+            return VirtualTakerLiveOrderWallet.create(params, this._market!);
+        }
+        const watcher = await LiveOrdersWatcherRTDS.create(conditionId, client, client!.creds);
+        return LiveOrderWallet.create(client, params, watcher);
     }
 
     private log(msg: string): void {
@@ -142,15 +159,14 @@ export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMark
 
         if (!this._wallet) {
             try {
-                this._wallet = await LiveOrderWallet.create(client,
-                {
+                const params: OrderWalletParams = {
                     token_id: sideMarketData.tokenId,
                     balance: this._INITIAL_BALANCE,
                     tick_size: marketData.tick_size,
                     min_order_size: marketData.min_order_size,
                     min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE
-                },
-                await LiveOrdersWatcherRTDS.create(marketData.conditionId, client, client!.creds));
+                };
+                this._wallet = await this.createWallet(client, params, marketData.conditionId);
 
                 this.log(`Wallet created, token=${this._wallet.getTokenId()}, balance=${this._INITIAL_BALANCE}`);
             } catch (error) {
@@ -252,7 +268,7 @@ export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMark
         // isSignal=false (natural frame end by time): just cancel orders and
         // keep the position — dispose(false) does not sell tokens.
         if (this._wallet) {
-            await this._wallet.dispose(isSignal);
+            await this._wallet.dispose(isSignal || this._isDebug);
         }
         // =========================================================
 
