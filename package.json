@@ -19,6 +19,7 @@
     "typescript": "^6.0.2"
   },
   "dependencies": {
+    "@polymarket/client": "^0.8.1",
     "@polymarket/clob-client-v2": "1.0.6",
     "@polymarket/real-time-data-client": "^1.4.0",
     "dotenv": "^17.4.2",

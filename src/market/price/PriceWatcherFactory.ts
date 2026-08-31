@@ -1,9 +1,15 @@
 import { CoinPriceWatcherRTDS } from './CoinPriceWatcherRTDS.js';
-import { PriceSource } from './price_source.js';
+import { CoinPriceWatcherTWAP } from './CoinPriceWatcherTWAP.js';
+import { PriceSource, PS_CHAINLINK_TWAP_30, PS_CHAINLINK_TWAP_60 } from './price_source.js';
 import { Coin } from '../coins.js';
 import { logger } from '../../log.js';
 import { error_str } from '../../utils.js';
 import { CoinPriceWatcher } from './CoinPriceWatcher.js';
+
+/** Whether the source is a Chainlink TWAP source (30s/60s). */
+function isTwapSource(source: PriceSource): boolean {
+    return source === PS_CHAINLINK_TWAP_30 || source === PS_CHAINLINK_TWAP_60;
+}
 
 /**
  * Factory that creates and manages PriceWatchers instances.
@@ -36,7 +42,9 @@ export class PriceWatcherFactory {
         if (existing) {
             return existing;
         }
-        const watcher = new CoinPriceWatcherRTDS(coin, source);
+        const watcher = isTwapSource(source)
+            ? new CoinPriceWatcherTWAP(coin, source)
+            : new CoinPriceWatcherRTDS(coin, source);
         this._instances.set(key, watcher);
         return watcher;
     }
@@ -74,7 +82,9 @@ export class PriceWatcherFactory {
      * @returns A fresh price watcher instance.
      */
     static createNewCoinWatcher(coin: Coin, source: PriceSource): CoinPriceWatcher {
-        return new CoinPriceWatcherRTDS(coin, source);
+        return isTwapSource(source)
+            ? new CoinPriceWatcherTWAP(coin, source)
+            : new CoinPriceWatcherRTDS(coin, source);
     }
 
    /**
@@ -119,5 +129,7 @@ export class PriceWatcherFactory {
  * @returns A new price watcher instance.
  */
 export function createCoinPriceWatcher(coin: Coin, source: PriceSource): CoinPriceWatcher {
-    return new CoinPriceWatcherRTDS(coin, source);
+    return isTwapSource(source)
+        ? new CoinPriceWatcherTWAP(coin, source)
+        : new CoinPriceWatcherRTDS(coin, source);
 }
