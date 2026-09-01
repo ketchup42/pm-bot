@@ -48,8 +48,8 @@ export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMark
     private readonly _PRICE_SELL_LEVEL: number = 0.46;   /** Normal exit level (horizontal). */
     private readonly _MIRROR_EXIT_LEVEL: number = 0.1;   /** Mirror-mode exit level (horizontal). */
 
-    private readonly _START_INTERVAL_FACTOR: number = 0.01; /** Fraction of the frame duration before which we do not enter new positions. */
-    private readonly _END_INTERVAL_FACTOR: number = 0.99; /** Fraction of the frame duration at which we stop entering new positions. */
+    private readonly _START_INTERVAL_FACTOR: number = 0.015; /** Fraction of the frame duration before which we do not enter new positions. */
+    private readonly _END_INTERVAL_FACTOR: number = 0.9725; /** Fraction of the frame duration at which we stop entering new positions. */
     // ===================================================================
 
     // ========================= TRADING STATE ===========================
@@ -93,7 +93,7 @@ export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMark
     }
 
     private log(msg: string): void {
-        logger.info(`[CoinTrendLine][${this._eventId}][${this._coin}][${this._side}] ${msg}`);
+        logger.info(`[CoinTrendLineV1][${this._eventId}][${this._coin}][${this._side}] ${msg}`);
     }
 
     // ---------------------------- HELPERS ----------------------------

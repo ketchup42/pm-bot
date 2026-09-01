@@ -127,9 +127,9 @@ export class ExecScheduler {
 
     /** Idles while paused: micro-steps of stepMs until the remaining time to the next frame
      * boundary fits in one step, then waitFrameStartMs finishes the exact alignment.
-     * Checks the stop flag so shutdown/stop interrupts promptly. */
+     * Checks the stop and pause flags so shutdown/stop/unpause interrupt promptly. */
     private async waitPaused(alignMs: number, stepMs: number): Promise<void> {
-        while (!this._isStopped) {
+        while (!this._isStopped && this._paused) {
             const remaining = alignMs - (Date.now() % alignMs);  // ms until the next frame boundary
             if (remaining <= stepMs) break;                      // close enough — let waitFrameStartMs finish
             await delay(stepMs);                                 // micro-step
