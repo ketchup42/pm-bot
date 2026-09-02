@@ -21,14 +21,14 @@ Everything the app reads from the environment, in one place.
 
 ## Logging Configuration
 
-| Variable             | Description                                                                                    | Default              |
-| ----------------------| ------------------------------------------------------------------------------------------------| ----------------------|
-| `LOG_LEVEL`          | Console log level (`debug`, `info`, `warn`, `error`). If not set, console logging is disabled. | (not set)            |
-| `LOG_FILE`           | Path to the log file. File logging is enabled when `LOG_FILE_LEVEL` is also set.               | (not set)            |
+| Variable             | Description                                                                                     | Default              |
+| ----------------------| -------------------------------------------------------------------------------------------------| ----------------------|
+| `LOG_LEVEL`          | Console log level (`debug`, `info`, `warn`, `error`). If not set, console logging is disabled.  | (not set)            |
+| `LOG_FILE`           | Path to the log file. File logging is enabled when `LOG_FILE_LEVEL` is also set.                | (not set)            |
 | `LOG_FILE_LEVEL`     | Log level for file output (e.g., `debug`, `info`). Enables file logging when `LOG_FILE` is set. | (not set)            |
-| `LOG_FILE_MAX_SIZE`  | Maximum file size in bytes before rotation.                                                    | `5242880` (5 MB)     |
-| `LOG_FILE_MAX_FILES` | Number of rotated log files to keep.                                                           | `5`                  |
-| `NO_COLOR`           | Disable ANSI colors in console output. Set to `1` or `true` to disable.                        | `0` (colors enabled) |
+| `LOG_FILE_MAX_SIZE`  | Maximum file size in bytes before rotation.                                                     | `5242880` (5 MB)     |
+| `LOG_FILE_MAX_FILES` | Number of rotated log files to keep.                                                            | `5`                  |
+| `NO_COLOR`           | Disable ANSI colors in console output. Set to `1` or `true` to disable.                         | `0` (colors enabled) |
 
 ## Data Persistence
 
@@ -36,6 +36,25 @@ Everything the app reads from the environment, in one place.
 |----------|-------------|---------|
 | `DUMPS_DIR` | Directory where historical data dumps (e.g., trade history) are stored. Disabled if not set. | (not set) |
 | `DUMP_MAX_FILES` | Number of rotated dump files to keep. | `10` |
+
+### Dedicated history collector
+
+The read-only collector started with
+`npm run collect -- --coin btc --frame 5m --source chainlink-twap-60`
+does not create a trading client and does not place orders.
+
+It writes `HistoryFrameV2` files used by the offline replay. Scheduler dumps in
+`DUMPS_DIR` use a separate live format and are not replay inputs. After markets
+resolve, `npm run history:settle` confirms their winning outcome. The no-network
+baseline is started with `npm run backtest -- --history history/frames`.
+
+| Variable              | Description                                       | Default          |
+| -----------------------| ---------------------------------------------------| ------------------|
+| `HISTORY_DIR`         | Directory for versioned frame files.              | `history/frames` |
+| `HISTORY_SNAPSHOT_MS` | Snapshot interval in milliseconds (minimum `25`). | `100`            |
+| `HISTORY_BOOK_DEPTH`  | Number of best bid/ask levels stored per side.    | `10`             |
+| `HISTORY_GZIP`        | Compress each frame (`true`/`false`, `1`/`0`).    | `true`           |
+| `HISTORY_MAX_FRAMES`  | Retained frame count; `0` disables rotation.      | `0`              |
 
 ## A full `.env` example
 
@@ -81,8 +100,23 @@ LOG_FILE_MAX_FILES=5
 # Output color option (0 = enable colors, 1 = disable)
 NO_COLOR=0
 
-# Dumps directory (disabled if not set)
-DUMPS_DIR=history
+# Scheduler dumps directory, disabled if not set
+DUMPS_DIR=history/dumps
 
-# Number of rotated dump files to keep
-DUMP_MAX_FILES=10
+# Number of rotated scheduler dump files to keep
+DUMP_MAX_FILES=20
+
+# Directory for collected historical frame files
+HISTORY_DIR=history/frames
+
+# Snapshot interval in milliseconds
+HISTORY_SNAPSHOT_MS=100
+
+# Number of best bid and ask levels stored for each market side
+HISTORY_BOOK_DEPTH=10
+
+# Enable gzip compression for historical frame files
+HISTORY_GZIP=true
+
+# Maximum retained frame count; 0 disables automatic deletion
+HISTORY_MAX_FRAMES=0

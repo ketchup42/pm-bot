@@ -29,7 +29,7 @@ export class PriceWatcherFactory {
      * Reuses an existing instance if one already exists for this (coin, source) pair.
      *
      * @param coin - The coin type (e.g., 'btc', 'eth').
-     * @param source - The price source: 'binance' or 'chainlink' (default 'binance').
+     * @param source - The price source, for example PS_BINANCE or PS_CHAINLINK.
      * @returns The price watcher instance.
      *
      * TODO NOTE: This method is not safe for concurrent async calls.
@@ -52,7 +52,7 @@ export class PriceWatcherFactory {
     // ========== Asynchronous version with locking (commented out) ==========
     // private static _pending: Map<string, Promise<PriceWatcher>> = new Map();
     //
-    // static async getCoinWatcherAsync(coin: Coin, source: PriceSource = 'binance'): Promise<PriceWatcher> {
+    // static async getCoinWatcherAsync(coin: Coin, source: PriceSource = PS_BINANCE): Promise<PriceWatcher> {
     //     const key = this.getCoinKey(coin, source);
     //     const pending = this._pending.get(key);
     //     if (pending) return pending;

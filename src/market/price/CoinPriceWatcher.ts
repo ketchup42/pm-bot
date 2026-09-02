@@ -1,6 +1,7 @@
 import { Coin } from "../coins.js";
 import { EventFrame } from "../frame.js";
 import { PriceWatcher } from "./PriceWatcher.js";
+import { PriceSource } from "./price_source.js";
 
 export const FRAME_PRICE_TIMEOUT_MS = 3000;
 
@@ -8,6 +9,9 @@ export const FRAME_PRICE_TIMEOUT_MS = 3000;
  * Defines the public contract for a cryptocurrency coin price watcher.
  */
 export interface CoinPriceWatcher extends PriceWatcher {
+    /** Returns the configured external price source. */
+    getSource(): PriceSource;
+
     /**
      * Returns the generic coin identifier (e.g., 'btc', 'eth') that uses by watcher.
      * This represents the cryptocurrency type regardless of the price source.

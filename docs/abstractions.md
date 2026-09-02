@@ -38,9 +38,9 @@ Here's a quick tour of the main pieces and how they fit. Skim the
 
 | Type | Location | Description |
 | --- | --- | --- |
-| `Coin` | `market/coins.ts` | `'btc' \| 'doge' \| 'eth' \| 'sol' \| 'xrp' \| 'bnb' \| 'hype'` |
-| `EventFrame` | `market/frame.ts` | `'5m' \| '15m'` |
-| `MarketSide` | `market/side.ts` | `'up' \| 'down'` |
+| `Coin` | `market/coins.ts` | Derived from the canonical `COIN_CONFIGS` registry |
+| `EventFrame` | `market/frame.ts` | Derived from the canonical `FRAME_CONFIGS` registry |
+| `MarketSide` | `market/side.ts` | Derived from the canonical `MARKET_SIDES` registry |
 
 Frame helpers in `market/frame.ts`:
 
@@ -64,6 +64,11 @@ The per-side history object produced by `CoinFrameEventTimerWatcher`:
 
 `MarketTokenSnapshot` holds one tick's data: `coin_price`, `timestamp`, `asks`,
 `bids`, `price`, `midpoint`, `spread`, optional `opt_price`.
+
+This is the live scheduler's legacy dump contract. It remains available for
+external analysis but is not consumed by the offline replay. The dedicated
+collector writes `HistoryFrameV2` from `src/app/core/history/history_frame.ts`,
+including paired books, source timestamps, connection gaps and settlement.
 
 ## Event watchers
 

@@ -7,7 +7,11 @@
     "start": "node ./dist/app/index.js",
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1",
+    "test:history": "npm run build && node --test test/*.test.mjs",
     "dev": "node --experimental-strip-types src/app/index.ts",
+    "collect": "npm run build && node dist/app/collect.js",
+    "history:settle": "npm run build && node dist/app/settle-history.js",
+    "backtest": "npm run build && node dist/app/backtest.js",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",

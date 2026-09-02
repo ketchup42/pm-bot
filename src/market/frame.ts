@@ -1,23 +1,38 @@
 import { safeToNum } from "../utils.js";
 import { Coin } from "./coins.js";
 
-/* 
- * Set of supported frame types
- */
-export type EventFrame = '5m' | '15m';
+export interface EventFrameConfig {
+    durationMs: number;
+    durationSec: number;
+}
 
-export const FRAME_5M_MS = 300_000;
-export const FRAME_15M_MS = 900_000;
+/** Canonical registry of event frames supported by the application. */
+export const FRAME_CONFIGS = {
+    '5m': { durationMs: 300_000, durationSec: 300 },
+    '15m': { durationMs: 900_000, durationSec: 900 },
+} as const satisfies Record<string, EventFrameConfig>;
 
-export const FRAME_5M_SEC = 300;
-export const FRAME_15M_SEC = 900;
+export type EventFrame = keyof typeof FRAME_CONFIGS;
+
+export const SUPPORTED_FRAMES: readonly EventFrame[] = Object.freeze(
+    Object.keys(FRAME_CONFIGS) as EventFrame[],
+);
+
+export const FRAME_5M_MS = FRAME_CONFIGS['5m'].durationMs;
+export const FRAME_15M_MS = FRAME_CONFIGS['15m'].durationMs;
+export const FRAME_5M_SEC = FRAME_CONFIGS['5m'].durationSec;
+export const FRAME_15M_SEC = FRAME_CONFIGS['15m'].durationSec;
 
 /**
  * Returns the list of all supported event frame types.
  * @returns A read‑only array of available {@link EventFrame} values.
  */
 export function getSupportedFrames(): readonly EventFrame[] {
-    return ['5m', '15m'] as const;
+    return SUPPORTED_FRAMES;
+}
+
+export function isEventFrame(value: string): value is EventFrame {
+    return Object.prototype.hasOwnProperty.call(FRAME_CONFIGS, value);
 }
 
 /**
@@ -25,8 +40,7 @@ export function getSupportedFrames(): readonly EventFrame[] {
  * @param frame - Interval type (default: 300_000 ms = 5 minutes)
  */
 export async function waitFrameStart(frame: EventFrame = '5m'): Promise<void> {
-    const intervalMs = frame === '5m'? FRAME_5M_MS: FRAME_15M_MS;
-    await waitFrameStartMs(intervalMs);
+    await waitFrameStartMs(getFrameDurationMs(frame));
 }
 
 /**
@@ -37,8 +51,17 @@ export async function waitFrameStartMs(intervalMs: number): Promise<void> {
     const nowMs = Date.now();
     const remainder = nowMs % intervalMs;
     const waitMs = (remainder === 0) ? 0 : intervalMs - remainder;
-
     return new Promise(resolve => setTimeout(resolve, waitMs));
+}
+
+/** Waits for a frame boundary while allowing the caller to cancel the wait. */
+export async function waitFrameStartMsUntil(intervalMs: number, shouldStop: () => boolean): Promise<void> {
+    while (!shouldStop()) {
+        const remainder = Date.now() % intervalMs;
+        const waitMs = remainder === 0 ? 0 : intervalMs - remainder;
+        if (waitMs === 0) return;
+        await new Promise(resolve => setTimeout(resolve, Math.min(waitMs, 1_000)));
+    }
 }
 
 /**
@@ -47,11 +70,12 @@ export async function waitFrameStartMs(intervalMs: number): Promise<void> {
  * @returns Market slug like "doge-updown-5m-1742227200"
  */
 export function getCoinSlug(coin: Coin, frame: EventFrame = '5m'): string {
-    return (frame === '5m')? getCoin5mSlug(coin): getCoin15mSlug(coin);
+    return `${coin}-updown-${frame}-${getCurrentFrameStart(frame)}`;
 }
 
 export function getFrameCloseTimebySlug(slug: string, frame: EventFrame = '5m'): number {
-    return (frame === '5m')? get5mFrameCloseTimebySlug(slug): get15mFrameCloseTimebySlug(slug);
+    const start = safeToNum(slug.split('-').pop() || '0', 10);
+    return start + getFrameDuration(frame);
 }
 
 /**
@@ -59,7 +83,9 @@ export function getFrameCloseTimebySlug(slug: string, frame: EventFrame = '5m'):
  * @returns UTC interval start value in seconds
  */
 export function getCurrentFrameStart(frame: EventFrame = '5m'): number {
-    return (frame === '5m')? getCurrent5mFrameStart(): getCurrent15mFrameStart();
+    const now = Math.floor(Date.now() / 1000);
+    const duration = getFrameDuration(frame);
+    return now - (now % duration);
 }
 
 /**
@@ -68,7 +94,7 @@ export function getCurrentFrameStart(frame: EventFrame = '5m'): number {
  * @returns Duration in seconds (300 for '5m', 900 for '15m')
  */
 export function getFrameDuration(frame: EventFrame): number {
-    return frame === '5m' ? FRAME_5M_SEC : FRAME_15M_SEC;
+    return FRAME_CONFIGS[frame].durationSec;
 }
 
 /**
@@ -77,7 +103,7 @@ export function getFrameDuration(frame: EventFrame): number {
  * @returns Duration in ms (300_000 for '5m', 900_000 for '15m')
  */
 export function getFrameDurationMs(frame: EventFrame): number {
-    return frame === '5m' ? FRAME_5M_MS : FRAME_15M_MS;
+    return FRAME_CONFIGS[frame].durationMs;
 }
 
 /**
@@ -86,14 +112,11 @@ export function getFrameDurationMs(frame: EventFrame): number {
  * @returns Market slug like "doge-updown-5m-1742227200"
  */
 export function getCoin5mSlug(coin: Coin): string {
-    const nowInSeconds = Math.floor(Date.now() / 1000);
-    const windowStartTimestamp = nowInSeconds - (nowInSeconds % FRAME_5M_SEC);
-    return `${coin}-updown-5m-${windowStartTimestamp}`;
+    return getCoinSlug(coin, '5m');
 }
 
 export function get5mFrameCloseTimebySlug(slug: string): number {
-    const timestamp = safeToNum(slug.split('-').pop() || '0', 10);
-    return timestamp + FRAME_5M_SEC; // Frame closes 5 minutes later
+    return getFrameCloseTimebySlug(slug, '5m');
 }
 
 /**
@@ -101,8 +124,7 @@ export function get5mFrameCloseTimebySlug(slug: string): number {
  * @returns UTC 5m interval start value
  */
 export function getCurrent5mFrameStart(): number {
-  const now = Math.floor(Date.now() / 1000);
-  return now - (now % FRAME_5M_SEC); // 300 seconds = 5m
+  return getCurrentFrameStart('5m');
 }
 
 /**
@@ -111,9 +133,7 @@ export function getCurrent5mFrameStart(): number {
  * @returns Market slug like "doge-updown-15m-1742227200"
  */
 export function getCoin15mSlug(coin: Coin): string {
-    const nowInSeconds = Math.floor(Date.now() / 1000);
-    const windowStartTimestamp = nowInSeconds - (nowInSeconds % FRAME_15M_SEC);
-    return `${coin}-updown-15m-${windowStartTimestamp}`;
+    return getCoinSlug(coin, '15m');
 }
 
 /**
@@ -122,8 +142,7 @@ export function getCoin15mSlug(coin: Coin): string {
  * @returns The UTC timestamp when the frame closes (start + 900 seconds)
  */
 export function get15mFrameCloseTimebySlug(slug: string): number {
-    const timestamp = safeToNum(slug.split('-').pop() || '0', 10);
-    return timestamp + FRAME_15M_SEC;
+    return getFrameCloseTimebySlug(slug, '15m');
 }
 
 /**
@@ -131,6 +150,5 @@ export function get15mFrameCloseTimebySlug(slug: string): number {
  * @returns The start of the current 15‑minute frame in seconds since epoch.
  */
 export function getCurrent15mFrameStart(): number {
-    const now = Math.floor(Date.now() / 1000);
-    return now - (now % FRAME_15M_SEC);
+    return getCurrentFrameStart('15m');
 }

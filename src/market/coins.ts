@@ -1,4 +1,36 @@
-export type Coin = 'btc' | 'doge' | 'eth' | 'sol' | 'xrp' | 'bnb' | 'hype';
+export interface CoinConfig {
+    /** Decimal places used when normalising the external price feed. */
+    precision: number;
+}
+
+/**
+ * Canonical registry of coins supported by the application.
+ * Add or remove coins here; the Coin type, runtime validation, collector CLI and
+ * all consumers of getSupportedCoins() update automatically.
+ */
+export const COIN_CONFIGS = {
+    btc: { precision: 2 },
+    doge: { precision: 6 },
+    eth: { precision: 2 },
+    sol: { precision: 2 },
+    xrp: { precision: 4 },
+    bnb: { precision: 4 },
+    hype: { precision: 4 },
+} as const satisfies Record<string, CoinConfig>;
+
+export type Coin = keyof typeof COIN_CONFIGS;
+
+export const SUPPORTED_COINS: readonly Coin[] = Object.freeze(
+    Object.keys(COIN_CONFIGS) as Coin[],
+);
+
+export function getSupportedCoins(): readonly Coin[] {
+    return SUPPORTED_COINS;
+}
+
+export function isCoin(value: string): value is Coin {
+    return Object.prototype.hasOwnProperty.call(COIN_CONFIGS, value);
+}
 
 export const DEFAULT_COIN_PRICE_TICK_SIZE = 0.01;
 
@@ -10,15 +42,5 @@ export const DEFAULT_COIN_PRICE_TICK_SIZE = 0.01;
  * @returns Number of decimal places.
  */
 export function coin_precis(coin: Coin): number {
-    const records: Record<Coin, number> = {
-        btc: 2,
-        doge: 6,
-        eth: 2,
-        xrp: 4,
-        sol: 2,
-        bnb: 4,
-        hype: 4,
-        // Add other coins as needed
-    };
-    return records[coin] ?? 6;
+    return COIN_CONFIGS[coin].precision;
 }

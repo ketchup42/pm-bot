@@ -50,6 +50,10 @@ npm start
 | `npm run build`     | Compile TypeScript to `dist/` (`tsc`)          |
 | `npm start`         | Run compiled `dist/app/index.js`               |
 | `npm run typecheck` | Type-check without emitting (`tsc --noEmit`)   |
+| `npm run collect -- --coin btc --frame 5m --source chainlink-twap-60 --count 1` | Collect a fixed number of public frames without placing orders (`0` = continuous) |
+| `npm run history:settle` | Confirm settlement for collected V2 frames |
+| `npm run backtest -- --history history/frames --output history/reports/latest` | Run the deterministic V2 no-trade replay baseline |
+| `npm run test:history` | Build and test history collection and replay |
 
 ## Documentation
 

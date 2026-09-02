@@ -11,7 +11,7 @@ interface RtdsSymbolPriceData {
 
 import { Coin, coin_precis } from "../coins.js";
 import { CoinPriceWatcher, FRAME_PRICE_TIMEOUT_MS } from "./CoinPriceWatcher.js";
-import { PriceSource } from "./price_source.js";
+import { PriceSource, PS_BINANCE, PS_CHAINLINK } from "./price_source.js";
 import { TIMER_FAST, TIMER_NORM } from "../../timer.js";
 import { EventFrame, getCurrentFrameStart, getSupportedFrames, waitFrameStart } from "../frame.js";
 import { delay, roundTo, safeToNum } from "../../utils.js";
@@ -42,6 +42,10 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
     /** Flags used to stop the background capture loops. */
     private _frameStopFlags: Map<EventFrame, boolean> = new Map();
 
+    public getSource(): PriceSource {
+        return this._priceTopic.source;
+    }
+
     /**
      * Callback triggered for every incoming WebSocket message.
      */
@@ -63,12 +67,12 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
     /**
      * Creates a new price watcher and immediately connects to the RTDS WebSocket.
      * @param coin - Crypto coin, e.g., 'btc', 'eth'
-     * @param source - Price source: 'binance' or 'chainlink'
+     * @param source - Price source: PS_BINANCE or PS_CHAINLINK.
      */
     constructor(coin: Coin, source: PriceSource) {
         // Map coin to symbol string based on source
         const getSymbol = (coin: Coin, source: PriceSource): string => {
-            if (source === 'binance') {
+            if (source === PS_BINANCE) {
                 return `${coin}usdt`;      // 'btcusdt', 'ethusdt', etc.
             } else {
                 return `${coin}/usd`;      // 'btc/usd', 'eth/usd', etc.
@@ -78,7 +82,7 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
 
         this._priceTopic = {
             source: source,
-            name: (source === "binance") ? "crypto_prices" : "crypto_prices_chainlink"
+            name: (source === PS_BINANCE) ? "crypto_prices" : "crypto_prices_chainlink"
         };
 
         // Initialize internal data store (no price yet)
@@ -181,10 +185,10 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
 
     /**
      * Returns the price source (Binance or Chainlink) based on the subscribed topic.
-     * @returns 'binance' for crypto_prices, 'chainlink' for crypto_prices_chainlink
+     * @returns PS_BINANCE for crypto_prices, PS_CHAINLINK for crypto_prices_chainlink.
      */
     public getPriceSource(): PriceSource {
-        return (this._priceTopic.name === "crypto_prices") ? "binance" : "chainlink";
+        return (this._priceTopic.name === "crypto_prices") ? PS_BINANCE : PS_CHAINLINK;
     }
 
     /**

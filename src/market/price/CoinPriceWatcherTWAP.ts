@@ -50,6 +50,7 @@ interface TwapPayload {
  */
 export class CoinPriceWatcherTWAP implements CoinPriceWatcher {
     private readonly _coin: Coin;
+    private readonly _source: PriceSource;
     private readonly _symbol: string;
     private readonly _windowSeconds: 30 | 60;
     private readonly _client = createPublicClient();
@@ -70,6 +71,7 @@ export class CoinPriceWatcherTWAP implements CoinPriceWatcher {
 
     constructor(coin: Coin, source: PriceSource) {
         this._coin = coin;
+        this._source = source;
         this._symbol = `${coin}/usd`;
 
         if (source === PS_CHAINLINK_TWAP_30) {
@@ -128,6 +130,10 @@ export class CoinPriceWatcherTWAP implements CoinPriceWatcher {
 
     public getSymbol(): string {
         return this._symbol;
+    }
+
+    public getSource(): PriceSource {
+        return this._source;
     }
 
     public getCurrentPrice(): number | undefined {
