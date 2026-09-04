@@ -2,9 +2,10 @@ import 'dotenv/config';
 import { logger, logger_shutdown } from '../log.js';
 import { error_str } from '../utils.js';
 import { settleHistoryDirectory } from './core/history/HistorySettlementService.js';
+import { DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
 
 async function main(): Promise<void> {
-    const directory = process.env.HISTORY_DIR || 'history/frames';
+    const directory = process.env.HISTORY_DIR || DEFAULT_HISTORY_DIRECTORY;
     const result = await settleHistoryDirectory({ directory });
     for (const failure of result.failures) {
         logger.warn(`[HistorySettlement] Failed ${failure.file_path}: ${failure.reason}`);

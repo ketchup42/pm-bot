@@ -2,13 +2,23 @@ import 'dotenv/config';
 import { getSupportedCoins, isCoin } from '../market/coins.js';
 import { getSupportedFrames, isEventFrame } from '../market/frame.js';
 import {
-    PS_CHAINLINK_TWAP_60,
     getSupportedPriceSources,
     isPriceSource,
 } from '../market/price/price_source.js';
 import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
 import { TIMER_FAST } from '../timer.js';
 import { logger, logger_shutdown } from '../log.js';
+import {
+    DEFAULT_HISTORY_BOOK_DEPTH,
+    DEFAULT_HISTORY_COIN,
+    DEFAULT_HISTORY_DIRECTORY,
+    DEFAULT_HISTORY_FRAME,
+    DEFAULT_HISTORY_FRAME_COUNT,
+    DEFAULT_HISTORY_GZIP,
+    DEFAULT_HISTORY_MAX_FRAMES,
+    DEFAULT_HISTORY_SNAPSHOT_INTERVAL_MS,
+    DEFAULT_HISTORY_SOURCE,
+} from './defaults.js';
 import { error_str, killSignalsHook, safeToNum } from '../utils.js';
 import { HistoryCollector } from './core/history/HistoryCollector.js';
 import { HistoryFrameWriter } from './core/history/HistoryFrameWriter.js';
@@ -64,9 +74,9 @@ async function main(): Promise<void> {
         return;
     }
 
-    const coinRaw = (readArgument('coin') ?? 'btc').toLowerCase();
-    const frameRaw = (readArgument('frame') ?? '5m').toLowerCase();
-    const sourceRaw = (readArgument('source') ?? PS_CHAINLINK_TWAP_60).toLowerCase();
+    const coinRaw = (readArgument('coin') ?? DEFAULT_HISTORY_COIN).toLowerCase();
+    const frameRaw = (readArgument('frame') ?? DEFAULT_HISTORY_FRAME).toLowerCase();
+    const sourceRaw = (readArgument('source') ?? DEFAULT_HISTORY_SOURCE).toLowerCase();
     if (!isCoin(coinRaw)) {
         throw new Error(`Unsupported coin: ${coinRaw}. Supported: ${getSupportedCoins().join(', ')}`);
     }
@@ -80,13 +90,13 @@ async function main(): Promise<void> {
     const coin = coinRaw;
     const frame = frameRaw;
     const source = sourceRaw;
-    const snapshotIntervalMs = readInteger('HISTORY_SNAPSHOT_MS', 100, 25);
-    const bookDepth = readInteger('HISTORY_BOOK_DEPTH', 10, 1);
+    const snapshotIntervalMs = readInteger('HISTORY_SNAPSHOT_MS', DEFAULT_HISTORY_SNAPSHOT_INTERVAL_MS, 25);
+    const bookDepth = readInteger('HISTORY_BOOK_DEPTH', DEFAULT_HISTORY_BOOK_DEPTH, 1);
     if (bookDepth > 100) throw new Error(`HISTORY_BOOK_DEPTH must be <= 100, got ${bookDepth}`);
-    const maxFrames = readInteger('HISTORY_MAX_FRAMES', 0, 0);
-    const directory = process.env.HISTORY_DIR || 'history/frames';
-    const gzipEnabled = readBoolean('HISTORY_GZIP', true);
-    const frameCount = readArgumentInteger('count', 0, 0);
+    const maxFrames = readInteger('HISTORY_MAX_FRAMES', DEFAULT_HISTORY_MAX_FRAMES, 0);
+    const directory = process.env.HISTORY_DIR || DEFAULT_HISTORY_DIRECTORY;
+    const gzipEnabled = readBoolean('HISTORY_GZIP', DEFAULT_HISTORY_GZIP);
+    const frameCount = readArgumentInteger('count', DEFAULT_HISTORY_FRAME_COUNT, 0);
 
     const coinWatcher = await PriceWatcherFactory
         .getCoinWatcher(coin, source)
