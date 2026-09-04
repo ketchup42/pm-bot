@@ -7,6 +7,7 @@ import {
     waitFrameStartMsUntil,
 } from '../../../market/frame.js';
 import { CoinPriceWatcher } from '../../../market/price/CoinPriceWatcher.js';
+import { getPriceSourceConfig } from '../../../market/price/price_source.js';
 import { CoinMarketOrderBooksWatcher } from '../../../market/orderbook/watcher/CoinMarketOrderBooksWatcher.js';
 import { MarketOrderBooksWatcher } from '../../../market/orderbook/watcher/MarketOrderBooksWatcher.js';
 import { MarketSide } from '../../../market/side.js';
@@ -34,12 +35,26 @@ export interface HistoryCollectorOptions {
     frameCount: number;
 }
 
+interface HistoryFrameFinalizationInput {
+    startTime: number;
+    endTime: number;
+    durationMs: number;
+    slug: string;
+    snapshots: HistorySnapshotV2[];
+    market: ReturnType<MarketOrderBooksWatcher['getMarketData']>;
+    connectionEvents: HistoryConnectionEventV2[];
+    stoppedEarly: boolean;
+    startPricePromise: Promise<number | undefined>;
+    endPricePromise: Promise<number | undefined> | undefined;
+}
+
 export class HistoryCollector {
     private readonly options: HistoryCollectorOptions;
     private readonly coinWatcher: CoinPriceWatcher;
     private readonly writer: HistoryFrameWriter;
     private stopped = false;
     private activeBookWatcher: MarketOrderBooksWatcher | undefined;
+    private readonly pendingFinalizations = new Set<Promise<void>>();
 
     public constructor(
         options: HistoryCollectorOptions,
@@ -73,7 +88,8 @@ export class HistoryCollector {
         let collectedFrames = 0;
         while (!this.stopped) {
             try {
-                await this.collectCurrentFrame();
+                const { finalization } = await this.collectCurrentFrame();
+                this.trackFinalization(finalization);
                 collectedFrames++;
                 if (this.options.frameCount > 0 && collectedFrames >= this.options.frameCount) this.stopped = true;
             } catch (error) {
@@ -85,6 +101,7 @@ export class HistoryCollector {
         }
         this.activeBookWatcher?.disconnect();
         this.activeBookWatcher = undefined;
+        await this.waitForPendingFinalizations();
         logger.info('[HistoryCollector] Stopped');
     }
 
@@ -92,7 +109,7 @@ export class HistoryCollector {
         await waitFrameStartMsUntil(getFrameDurationMs(this.options.frame), () => this.stopped);
     }
 
-    private async collectCurrentFrame(): Promise<void> {
+    private async collectCurrentFrame(): Promise<{ finalization: Promise<void> }> {
         const startTime = getCurrentFrameStart(this.options.frame);
         const durationMs = getFrameDurationMs(this.options.frame);
         const endTime = startTime + durationMs / 1_000;
@@ -101,22 +118,33 @@ export class HistoryCollector {
         logger.info(`[HistoryCollector] Starting ${slug}`);
 
         const connectionEvents: HistoryConnectionEventV2[] = [];
+        const unsubscribePriceEvents = this.coinWatcher.subscribeConnectionEvents(event => {
+            connectionEvents.push({
+                timestamp: event.timestamp,
+                state: event.state,
+                code: undefined,
+                reason: event.reason,
+                source: 'coin_price',
+            });
+        });
 
-        const [bookWatcher, startPriceValue] = await Promise.all([
-            CoinMarketOrderBooksWatcher.create(slug, {
-                onWSOpen: async () => {
-                    connectionEvents.push({ timestamp: Date.now(), state: 'open', code: undefined, reason: undefined });
-                },
-                onWSClose: async (_managerId, code, reason) => {
-                    connectionEvents.push({ timestamp: Date.now(), state: 'close', code, reason: reason || undefined });
-                },
-                onError: async error => {
-                    const reason = error instanceof Error ? error.message : error_str(error);
-                    connectionEvents.push({ timestamp: Date.now(), state: 'error', code: undefined, reason });
-                },
-            }),
-            this.coinWatcher.getPriceByFrame(this.options.frame),
-        ]);
+        const framePriceTimeoutMs = getPriceSourceConfig(this.coinWatcher.getSource()).framePriceCaptureTimeoutMs;
+        const startPricePromise = this.coinWatcher.getPriceByFrame(this.options.frame, framePriceTimeoutMs);
+        const bookWatcher = await CoinMarketOrderBooksWatcher.create(slug, {
+            onWSOpen: async () => {
+                connectionEvents.push({ timestamp: Date.now(), state: 'open', code: undefined, reason: undefined, source: 'clob' });
+            },
+            onWSClose: async (_managerId, code, reason) => {
+                connectionEvents.push({ timestamp: Date.now(), state: 'close', code, reason: reason || undefined, source: 'clob' });
+            },
+            onError: async error => {
+                const reason = error instanceof Error ? error.message : error_str(error);
+                connectionEvents.push({ timestamp: Date.now(), state: 'error', code: undefined, reason, source: 'clob' });
+            },
+        }).catch(error => {
+            unsubscribePriceEvents();
+            throw error;
+        });
         this.activeBookWatcher = bookWatcher;
         const market = bookWatcher.getMarketData();
         const snapshots: HistorySnapshotV2[] = [];
@@ -132,54 +160,100 @@ export class HistoryCollector {
             }
 
             const stoppedEarly = this.stopped || Date.now() < endTimeMs;
-            const endPriceValue = stoppedEarly
+            const endPricePromise = stoppedEarly
                 ? undefined
-                : await this.coinWatcher.getPriceByFrame(this.options.frame);
-            const startPrice = historyNumberOrUndefined(startPriceValue);
-            const endPrice = historyNumberOrUndefined(endPriceValue);
-            const quality = buildHistoryQuality(
-                snapshots,
-                startPrice,
-                endPrice,
-                durationMs,
-                this.options.snapshotIntervalMs,
-                stoppedEarly,
-                this.coinWatcher.getSource(),
-            );
-
-            const frame: HistoryFrameV2 = {
-                schema_version: HISTORY_SCHEMA_VERSION,
-                source: this.coinWatcher.getSource(),
-                coin: this.options.coin,
-                frame: this.options.frame,
-                slug,
-                start_time: startTime,
-                end_time: endTime,
-                collected_at: Date.now(),
-                snapshot_interval_ms: this.options.snapshotIntervalMs,
-                book_depth: this.options.bookDepth,
-                coin_frame_start_price: startPrice,
-                coin_frame_end_price: endPrice,
-                market_data: market,
-                settlement: {
-                    derived_outcome: deriveHistoryOutcome(startPrice, endPrice),
-                    confirmed_outcome: undefined,
-                    confirmed_at: undefined,
-                },
-                connection_events: connectionEvents,
-                data_gaps: buildHistoryGaps(snapshots, this.options.snapshotIntervalMs, this.coinWatcher.getSource()),
-                snapshots,
-                data_quality: quality,
+                : this.coinWatcher.getPriceByFrame(this.options.frame, framePriceTimeoutMs);
+            return {
+                finalization: this.finalizeFrame({
+                    startTime,
+                    endTime,
+                    durationMs,
+                    slug,
+                    snapshots,
+                    market,
+                    connectionEvents,
+                    stoppedEarly,
+                    startPricePromise,
+                    endPricePromise,
+                }),
             };
-            const result = await this.writer.write(frame);
-            logger.info(
-                `[HistoryCollector] Saved ${result.path} (${result.bytes} bytes, ` +
-                `${quality.snapshot_count}/${quality.expected_snapshots} snapshots, complete=${quality.complete})`,
-            );
         } finally {
+            unsubscribePriceEvents();
             bookWatcher.disconnect();
             this.activeBookWatcher = undefined;
         }
+    }
+
+    private async finalizeFrame({
+        startTime,
+        endTime,
+        durationMs,
+        slug,
+        snapshots,
+        market,
+        connectionEvents,
+        stoppedEarly,
+        startPricePromise,
+        endPricePromise,
+    }: HistoryFrameFinalizationInput): Promise<void> {
+        const startPrice = historyNumberOrUndefined(await startPricePromise);
+        const endPrice = historyNumberOrUndefined(await endPricePromise);
+        const quality = buildHistoryQuality(
+            snapshots,
+            startPrice,
+            endPrice,
+            durationMs,
+            this.options.snapshotIntervalMs,
+            stoppedEarly,
+            this.coinWatcher.getSource(),
+        );
+        const frame: HistoryFrameV2 = {
+            schema_version: HISTORY_SCHEMA_VERSION,
+            source: this.coinWatcher.getSource(),
+            coin: this.options.coin,
+            frame: this.options.frame,
+            slug,
+            start_time: startTime,
+            end_time: endTime,
+            collected_at: Date.now(),
+            snapshot_interval_ms: this.options.snapshotIntervalMs,
+            book_depth: this.options.bookDepth,
+            coin_frame_start_price: startPrice,
+            coin_frame_end_price: endPrice,
+            market_data: market,
+            settlement: {
+                derived_outcome: deriveHistoryOutcome(startPrice, endPrice),
+                confirmed_outcome: undefined,
+                confirmed_at: undefined,
+            },
+            connection_events: connectionEvents,
+            data_gaps: buildHistoryGaps(snapshots, this.options.snapshotIntervalMs, this.coinWatcher.getSource()),
+            snapshots,
+            data_quality: quality,
+        };
+        const result = await this.writer.write(frame);
+        const qualityDetails = quality.warnings.length === 0 ? '' :
+            ` warnings=${quality.warnings.join(',')} coinGaps=${quality.coin_gap_snapshots} ` +
+            `clobDisconnects=${quality.disconnected_book_snapshots}`;
+        logger.info(
+            `[HistoryCollector] Saved ${result.path} (${result.bytes} bytes, ` +
+            `${quality.snapshot_count}/${quality.expected_snapshots} snapshots, complete=${quality.complete}${qualityDetails})`,
+        );
+    }
+
+    private trackFinalization(finalization: Promise<void>): void {
+        const pending = finalization.catch(error => {
+            logger.error(`[HistoryCollector] Frame finalization failed: ${error_str(error)}`);
+        }).finally(() => {
+            this.pendingFinalizations.delete(pending);
+        });
+        this.pendingFinalizations.add(pending);
+    }
+
+    private async waitForPendingFinalizations(): Promise<void> {
+        if (this.pendingFinalizations.size === 0) return;
+        logger.info(`[HistoryCollector] Waiting for ${this.pendingFinalizations.size} frame finalization(s)`);
+        await Promise.all(this.pendingFinalizations);
     }
 
     private makeSnapshot(book: MarketOrderBooksWatcher, timestamp: number): HistorySnapshotV2 {

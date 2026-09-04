@@ -1,4 +1,9 @@
-import { Message, RealTimeDataClient } from "@polymarket/real-time-data-client";
+import {
+    ConnectionStatus,
+    Message,
+    RealTimeDataClient,
+    RealTimeDataClientArgs,
+} from "@polymarket/real-time-data-client";
 
 const RTDS_PRICE_NODATA = undefined;
 
@@ -10,37 +15,56 @@ interface RtdsSymbolPriceData {
 }
 
 import { Coin, coin_precis } from "../coins.js";
-import { CoinPriceWatcher, FRAME_PRICE_TIMEOUT_MS } from "./CoinPriceWatcher.js";
-import { PriceSource, PS_BINANCE, PS_CHAINLINK } from "./price_source.js";
+import { CoinPriceWatcher, isPriceStreamStale, PriceConnectionEvent, PriceConnectionListener } from "./CoinPriceWatcher.js";
+import { getPriceSourceConfig, PriceSource, PS_BINANCE, PS_CHAINLINK } from "./price_source.js";
 import { TIMER_FAST, TIMER_NORM } from "../../timer.js";
-import { EventFrame, getCurrentFrameStart, getSupportedFrames, waitFrameStart } from "../frame.js";
+import { EventFrame, getCurrentFrameStart, getFrameDurationMs, getSupportedFrames, waitFrameStartMsUntil } from "../frame.js";
 import { delay, roundTo, safeToNum } from "../../utils.js";
+import { logger } from "../../log.js";
 
 interface CoinPriceData {
     coin: Coin;          // e.g., 'btc'
     data: RtdsSymbolPriceData
 }
-type CoinTopic = { source: PriceSource, name: "crypto_prices" | "crypto_prices_chainlink"};
 
 interface FramePriceData {
     price: number | undefined;
     timestamp: number | undefined;
 }
 
+type CoinTopic = { source: PriceSource, name: "crypto_prices" | "crypto_prices_chainlink"};
+
+interface RtdsClient {
+    connect(): RtdsClient;
+    disconnect(): void;
+    subscribe(message: unknown): void;
+}
+
+type RtdsClientFactory = (args: RealTimeDataClientArgs) => RtdsClient;
+
+const createRtdsClient: RtdsClientFactory = args => new RealTimeDataClient(args);
+
 /**
  * Watches real‑time symbol prices using Polymarket's RTDS WebSocket.
  * Uses the official @polymarket/real-time-data-client SDK.
  */
 export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
-    private _rtdcClient: RealTimeDataClient;
+    private _rtdcClient: RtdsClient | undefined;
     private _priceTopic: CoinTopic;
     private _priceCoinData: CoinPriceData;
 
-   /** Cached start‑of‑frame prices. */
+    /** Cached start‑of‑frame prices. */
     private _framePrices: Map<EventFrame, FramePriceData> = new Map();
 
     /** Flags used to stop the background capture loops. */
     private _frameStopFlags: Map<EventFrame, boolean> = new Map();
+
+    private _disposed = false;
+    private _connectedAt = 0;
+    private _lastReceivedAt: number | undefined;
+    private _watchdog: ReturnType<typeof setInterval> | undefined;
+    private _hasConnected = false;
+    private readonly _connectionListeners = new Set<PriceConnectionListener>();
 
     public getSource(): PriceSource {
         return this._priceTopic.source;
@@ -56,10 +80,12 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
             // Compare symbols case‑insensitively
             if (payload && payload.symbol.toLowerCase() === this._priceCoinData.data.symbol) {
                 // Store the latest price and timestamp
-                    const price = safeToNum(payload.value);
-
+                const price = safeToNum(payload.value, Number.NaN);
+                const timestamp = safeToNum(payload.timestamp, Number.NaN);
+                if (!Number.isFinite(price) || !Number.isFinite(timestamp)) return;
                 this._priceCoinData.data.value = price;
-                this._priceCoinData.data.timestamp = payload.timestamp;
+                this._priceCoinData.data.timestamp = timestamp;
+                this._lastReceivedAt = Date.now();
             }
         }
     };
@@ -69,16 +95,11 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
      * @param coin - Crypto coin, e.g., 'btc', 'eth'
      * @param source - Price source: PS_BINANCE or PS_CHAINLINK.
      */
-    constructor(coin: Coin, source: PriceSource) {
-        // Map coin to symbol string based on source
-        const getSymbol = (coin: Coin, source: PriceSource): string => {
-            if (source === PS_BINANCE) {
-                return `${coin}usdt`;      // 'btcusdt', 'ethusdt', etc.
-            } else {
-                return `${coin}/usd`;      // 'btc/usd', 'eth/usd', etc.
-            }
-        };
-        const symbol = getSymbol(coin, source);
+    constructor(coin: Coin, source: PriceSource, private readonly clientFactory: RtdsClientFactory = createRtdsClient) {
+        if (source !== PS_BINANCE && source !== PS_CHAINLINK) {
+            throw new Error(`[CoinPriceWatcherRTDS] Unsupported price source: ${source}`);
+        }
+        const symbol = source === PS_BINANCE ? `${coin}usdt` : `${coin}/usd`;
 
         this._priceTopic = {
             source: source,
@@ -95,7 +116,6 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
             }
         };
 
-        // Initialise frame stop flags and start background capture loops
         for (const frame of getSupportedFrames()) {
             this._frameStopFlags.set(frame, false);
             this._framePrices.set(frame, { price: undefined, timestamp: 0 });
@@ -105,12 +125,19 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
          * Callback invoked when the WebSocket connection is established (or re‑established).
          * Subscribes to the topic with a filter for our specific symbol.
          */
-        const onConnect = (client: RealTimeDataClient): void => {
+        this.startClient();
+        this._initAfterFirstPrice();
+    }
+
+    private startClient(): void {
+        let client: RtdsClient;
+        const onConnect = (connectedClient: RealTimeDataClient): void => {
+            if (this._rtdcClient !== client) return;
             // IMPORTANT: The `filters` field must be a JSON string containing an object with the key "symbol".
             // Example: '{"symbol":"BTCUSDT"}'
             // https://github.com/Polymarket/real-time-data-client?tab=readme-ov-file#messages-hierarchy
-            const filters = JSON.stringify({ symbol: symbol.toLowerCase().trim() });
-            client.subscribe({
+            const filters = JSON.stringify({ symbol: this.getSymbol() });
+            connectedClient.subscribe({
                 subscriptions: [
                     {
                         topic: this._priceTopic.name,
@@ -120,14 +147,28 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
                 ],
             });
         };
-
-        // Create the SDK client and initiate the connection
-        this._rtdcClient = new RealTimeDataClient({
+        const onStatusChange = (status: ConnectionStatus): void => {
+            if (this._rtdcClient !== client || this._disposed) return;
+            if (status === ConnectionStatus.CONNECTED) {
+                this._connectedAt = Date.now();
+                this._lastReceivedAt = undefined;
+                this.emitConnectionEvent(this._hasConnected ? 'reconnect' : 'open', undefined);
+                this._hasConnected = true;
+                this.startWatchdog(client);
+            } else if (status === ConnectionStatus.DISCONNECTED) {
+                this.stopWatchdog();
+                this._priceCoinData.data.value = undefined;
+                this._priceCoinData.data.timestamp = undefined;
+                this.emitConnectionEvent('close', 'disconnected');
+            }
+        };
+        client = this.clientFactory({
             onMessage: this._onMessage,
             onConnect,
-        }).connect();
-
-        this._initAfterFirstPrice();
+            onStatusChange,
+        });
+        this._rtdcClient = client;
+        client.connect();
     }
 
     /**
@@ -150,7 +191,10 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
      * Returns the coin price of the last received price update at the given frame start.
      * @returns Coin price.
      */
-    public async getPriceByFrame(frame: EventFrame, timeoutMs: number = FRAME_PRICE_TIMEOUT_MS): Promise<number | undefined> {
+    public async getPriceByFrame(
+        frame: EventFrame,
+        timeoutMs: number = getPriceSourceConfig(this.getSource()).framePriceReadTimeoutMs,
+    ): Promise<number | undefined> {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
             const data = this._framePrices.get(frame);
@@ -188,7 +232,7 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
      * @returns PS_BINANCE for crypto_prices, PS_CHAINLINK for crypto_prices_chainlink.
      */
     public getPriceSource(): PriceSource {
-        return (this._priceTopic.name === "crypto_prices") ? PS_BINANCE : PS_CHAINLINK;
+        return this.getSource();
     }
 
     /**
@@ -210,13 +254,19 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
         return this._priceCoinData.coin;
     }
 
+    public subscribeConnectionEvents(_listener: PriceConnectionListener): () => void {
+        this._connectionListeners.add(_listener);
+        return () => this._connectionListeners.delete(_listener);
+    }
+
     /**
      * Gracefully closes the WebSocket connection and cleans up resources.
      */
     public disconnect(): void {
-        if (this._rtdcClient) {
-            this._rtdcClient.disconnect();
-        }
+        this._disposed = true;
+        this.stopWatchdog();
+        this._rtdcClient?.disconnect();
+        this._rtdcClient = undefined;
         // Stop background frame capture loops
         for (const frame of getSupportedFrames()) {
             this._frameStopFlags.set(frame, true);
@@ -224,8 +274,31 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
         this._framePrices.clear();
     }
 
+    private emitConnectionEvent(state: PriceConnectionEvent['state'], reason: string | undefined): void {
+        const event: PriceConnectionEvent = { timestamp: Date.now(), state, reason };
+        this._connectionListeners.forEach(listener => listener(event));
+    }
+
+    private startWatchdog(client: RtdsClient): void {
+        this.stopWatchdog();
+        const staleReconnectMs = getPriceSourceConfig(this.getSource()).staleReconnectMs;
+        this._watchdog = setInterval(() => {
+            if (this._disposed || this._rtdcClient !== client ||
+                !isPriceStreamStale(this._lastReceivedAt, this._connectedAt, Date.now(), staleReconnectMs)) return;
+            this._priceCoinData.data.value = undefined;
+            this._priceCoinData.data.timestamp = undefined;
+            this._lastReceivedAt = undefined;
+            this._rtdcClient = undefined;
+            this.emitConnectionEvent('stale', `no_price_update_for_${staleReconnectMs}ms`);
+            logger.warn(`[CoinPriceWatcherRTDS] No price update for ${staleReconnectMs}ms, reconnecting...`);
+            this.stopWatchdog();
+            client.disconnect();
+            this.startClient();
+        }, TIMER_FAST);
+    }
+
     private async _initAfterFirstPrice(): Promise<void> {
-        while (this.getCurrentPrice() === undefined) {
+        while (this.getCurrentPrice() === undefined && !this._disposed) {
             await delay(TIMER_FAST);
         }
 
@@ -234,17 +307,9 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
         }
     }
 
-    private _waitForStopFlag(frame: EventFrame): Promise<void> {
-        return new Promise(resolve => {
-            const check = () => {
-                if (this._frameStopFlags.get(frame)) {
-                    resolve();
-                } else {
-                    setTimeout(check, TIMER_FAST);
-                }
-            };
-            check();
-        });
+    private stopWatchdog(): void {
+        if (this._watchdog !== undefined) clearInterval(this._watchdog);
+        this._watchdog = undefined;
     }
 
     /**
@@ -255,11 +320,7 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
     private _startFrameCapture(frame: EventFrame): void {
         (async () => {
             while (true) {
-                await Promise.race([
-                    waitFrameStart(frame),
-                    this._waitForStopFlag(frame),
-                ]);
-
+                await waitFrameStartMsUntil(getFrameDurationMs(frame), () => this._frameStopFlags.get(frame) === true);
                 if (this._frameStopFlags.get(frame)) break;
 
                 const timestamp = getCurrentFrameStart(frame) * 1000;
@@ -273,9 +334,9 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
         const frameStartMs = getCurrentFrameStart(frame) * 1000;
         const prices: number[] = [];
         const startTime = Date.now();
-        const MAX_WAIT_MS = FRAME_PRICE_TIMEOUT_MS;
+        const maxWaitMs = getPriceSourceConfig(this.getSource()).framePriceCaptureTimeoutMs;
 
-        while (Date.now() - startTime < MAX_WAIT_MS) {
+        while (Date.now() - startTime < maxWaitMs) {
             const { value: price, timestamp } = this._priceCoinData.data;
 
             if (price !== undefined) {

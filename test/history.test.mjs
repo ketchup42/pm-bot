@@ -23,7 +23,10 @@ import {
 } from '../dist/app/core/history/history_frame.js';
 import { getSupportedCoins } from '../dist/market/coins.js';
 import { getSupportedFrames, waitFrameStartMsUntil } from '../dist/market/frame.js';
-import { getSupportedPriceSources, PS_CHAINLINK_TWAP_60 } from '../dist/market/price/price_source.js';
+import { getPriceSourceConfig, getSupportedPriceSources, PS_CHAINLINK_TWAP_60 } from '../dist/market/price/price_source.js';
+import { CoinPriceWatcherTWAP } from '../dist/market/price/CoinPriceWatcherTWAP.js';
+import { isPriceStreamStale } from '../dist/market/price/CoinPriceWatcher.js';
+import { CoinPriceWatcherRTDS } from '../dist/market/price/CoinPriceWatcherRTDS.js';
 
 const unzip = promisify(gunzip);
 const temporaryDirectories = [];
@@ -116,6 +119,125 @@ test('quality marks stopped frames incomplete and validator accepts the structur
     assert.ok(incomplete.data_quality.warnings.includes('collection_stopped_early'));
     assert.deepEqual(validateHistoryFrame(complete), []);
     assert.deepEqual(validateHistoryFrame(incomplete), []);
+});
+
+test('history accepts legacy CLOB connection events and validates their source when present', () => {
+    const frame = makeFrame(1_450);
+    frame.connection_events.push({ timestamp: 1, state: 'open', code: undefined, reason: undefined });
+    assert.deepEqual(validateHistoryFrame(frame), []);
+    frame.connection_events[0].source = 'invalid';
+    assert.ok(validateHistoryFrame(frame).includes('invalid_connection_event_source'));
+});
+
+test('TWAP watchdog identifies silence from either connection or last update time', () => {
+    assert.equal(isPriceStreamStale(undefined, 1_000, 15_000, 15_000), false);
+    assert.equal(isPriceStreamStale(undefined, 1_000, 16_001, 15_000), true);
+    assert.equal(isPriceStreamStale(10_000, 1_000, 24_999, 15_000), false);
+    assert.equal(isPriceStreamStale(10_000, 1_000, 25_001, 15_000), true);
+});
+
+test('every source keeps live reads fast while history capture has a longer timeout', () => {
+    for (const source of getSupportedPriceSources()) {
+        const config = getPriceSourceConfig(source);
+        assert.equal(config.framePriceReadTimeoutMs, 5_000);
+        assert.equal(config.framePriceCaptureTimeoutMs, 20_000);
+        assert.equal(config.staleReconnectMs, 25_000);
+    }
+});
+
+
+test('TWAP watchdog closes a silent subscription', async () => {
+    const handle = {
+        closeCalls: 0,
+        async close() { handle.closeCalls++; },
+        [Symbol.asyncIterator]() {
+            return { next: () => new Promise(() => {}) };
+        },
+    };
+    const realNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+        const watcher = new CoinPriceWatcherTWAP('btc', PS_CHAINLINK_TWAP_60, {
+            subscribe: async () => handle,
+        });
+        const events = [];
+        watcher.subscribeConnectionEvents(event => events.push(event));
+        await new Promise(resolve => setImmediate(resolve));
+        now = 26_001;
+        await new Promise(resolve => setTimeout(resolve, 60));
+
+        assert.equal(handle.closeCalls, 1);
+        assert.deepEqual(events.map(event => event.state), ['open', 'stale']);
+        watcher.disconnect();
+    } finally {
+        Date.now = realNow;
+    }
+});
+
+test('RTDS records connection lifecycle and clears a disconnected price', () => {
+    const clients = [];
+    let clientArgs;
+    const clientFactory = args => {
+        clientArgs = args;
+        const client = {
+            connect() { return client; },
+            disconnect() {},
+            subscribe() {},
+        };
+        clients.push(client);
+        return client;
+    };
+    const watcher = new CoinPriceWatcherRTDS('btc', 'binance', clientFactory);
+    const events = [];
+    const unsubscribe = watcher.subscribeConnectionEvents(event => events.push(event));
+
+    clientArgs.onStatusChange('CONNECTED');
+    clientArgs.onMessage(clients[0], {
+        topic: 'crypto_prices', type: 'update',
+        payload: { symbol: 'btcusdt', value: 60_000, timestamp: 1_000 },
+    });
+    assert.equal(watcher.getCurrentPrice(), 60_000);
+    clientArgs.onStatusChange('DISCONNECTED');
+
+    assert.deepEqual(events.map(event => event.state), ['open', 'close']);
+    assert.equal(watcher.getCurrentPrice(), undefined);
+    unsubscribe();
+    watcher.disconnect();
+});
+
+test('RTDS watchdog closes a silent stream and creates a replacement client', async () => {
+    const clients = [];
+    let clientArgs;
+    const clientFactory = args => {
+        clientArgs = args;
+        const client = {
+            disconnectCalls: 0,
+            connect() { return client; },
+            disconnect() { client.disconnectCalls++; },
+            subscribe() {},
+        };
+        clients.push(client);
+        return client;
+    };
+    const realNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+        const watcher = new CoinPriceWatcherRTDS('btc', 'binance', clientFactory);
+        const events = [];
+        watcher.subscribeConnectionEvents(event => events.push(event));
+        clientArgs.onStatusChange('CONNECTED');
+        now = 26_001;
+        await new Promise(resolve => setTimeout(resolve, 60));
+
+        assert.equal(clients[0].disconnectCalls, 1);
+        assert.equal(clients.length, 2);
+        assert.deepEqual(events.map(event => event.state), ['open', 'stale']);
+        watcher.disconnect();
+    } finally {
+        Date.now = realNow;
+    }
 });
 
 test('quality accepts one-sided and unchanged books while CLOB is connected', () => {
@@ -215,6 +337,27 @@ test('settlement confirms only the matching market in the matching event', () =>
 
 test('shared frame boundary helper supports cancellation', async () => {
     await waitFrameStartMsUntil(60_000, () => true);
+});
+
+test('shared frame boundary helper does not skip a boundary after a late poll', async () => {
+    const realNow = Date.now;
+    const realSetTimeout = global.setTimeout;
+    let now = 59_900;
+    let polls = 0;
+    Date.now = () => now;
+    global.setTimeout = callback => {
+        polls++;
+        now = 60_001;
+        queueMicrotask(callback);
+        return undefined;
+    };
+    try {
+        await waitFrameStartMsUntil(60_000, () => false);
+        assert.equal(polls, 1);
+    } finally {
+        Date.now = realNow;
+        global.setTimeout = realSetTimeout;
+    }
 });
 
 test('settlement enrichment atomically confirms a V2 gzip frame', async () => {

@@ -180,21 +180,36 @@ export async function fileWrite(
 }
 
 export type UnsubscribeHook = () => void;
+
+type KillSignal = 'SIGINT' | 'SIGTERM';
+
+interface KillSignalEmitter {
+    on(signal: KillSignal, handler: () => void): unknown;
+    off(signal: KillSignal, handler: () => void): unknown;
+}
+
 /**
  * Registers an async callback to be executed on SIGINT or SIGTERM signals.
+ * Repeated signals are ignored until the hook is unsubscribed.
  * 
  * @param callback - Async function to run when a shutdown signal is received.
  */
-export function killSignalsHook(callback: () => Promise<void>): UnsubscribeHook {
+export function killSignalsHook(
+    callback: () => Promise<void>,
+    signalEmitter: KillSignalEmitter = process,
+): UnsubscribeHook {
+    let handled = false;
     const handler = async () => {
+        if (handled) return;
+        handled = true;
         await callback();
     };
 
-    process.on('SIGINT', handler);
-    process.on('SIGTERM', handler); 
+    signalEmitter.on('SIGINT', handler);
+    signalEmitter.on('SIGTERM', handler);
 
     return () => {
-        process.off('SIGINT', handler);
-        process.off('SIGTERM', handler);
+        signalEmitter.off('SIGINT', handler);
+        signalEmitter.off('SIGTERM', handler);
     };
 }

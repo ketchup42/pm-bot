@@ -24,14 +24,26 @@ export interface HistorySnapshotV2 {
 }
 
 export type HistoryOutcomeV2 = MarketSide | 'tie' | 'unknown';
-export type HistoryConnectionStateV2 = 'open' | 'close' | 'error';
+export type HistoryConnectionStateV2 = 'open' | 'close' | 'error' | 'stale' | 'reconnect';
+export type HistoryConnectionSourceV2 = 'clob' | 'coin_price';
 export type HistoryGapSourceV2 = 'snapshots' | 'coin_price' | 'clob';
+export type HistoryQualityWarning =
+    | 'collection_stopped_early'
+    | 'missing_frame_start_price'
+    | 'missing_frame_end_price'
+    | 'no_snapshots'
+    | 'insufficient_snapshot_coverage'
+    | 'excessive_coin_data_gap'
+    | 'excessive_clob_disconnect'
+    | 'large_snapshot_gap';
 
 export interface HistoryConnectionEventV2 {
     timestamp: number;
     state: HistoryConnectionStateV2;
     code: number | undefined;
     reason: string | undefined;
+    /** Undefined in existing V2 files means CLOB. */
+    source: HistoryConnectionSourceV2 | undefined;
 }
 
 export interface HistoryDataGapV2 {
@@ -57,7 +69,7 @@ export interface HistoryDataQualityV2 {
     missing_coin_price_snapshots: number;
     coin_gap_snapshots: number;
     disconnected_book_snapshots: number;
-    warnings: string[];
+    warnings: HistoryQualityWarning[];
 }
 
 export interface HistoryFrameV2 {
@@ -168,7 +180,7 @@ export function buildHistoryQuality(
     const acceptableCoinData = coinGapSnapshots <= Math.ceil(Math.max(1, snapshots.length) * 0.02);
     const acceptableDisconnectedBooks = disconnectedBookSnapshots <= Math.ceil(Math.max(1, snapshots.length) * 0.02);
     const acceptableGap = maxSnapshotGapMs <= snapshotIntervalMs * 3;
-    const warnings: string[] = [];
+    const warnings: HistoryQualityWarning[] = [];
     if (stoppedEarly) warnings.push('collection_stopped_early');
     if (startPrice === undefined) warnings.push('missing_frame_start_price');
     if (endPrice === undefined) warnings.push('missing_frame_end_price');
@@ -219,6 +231,9 @@ export function validateHistoryFrame(frame: HistoryFrameV2): string[] {
     }
     if (frame.data_gaps.some(gap => gap.start_timestamp > gap.end_timestamp || gap.duration_ms !== gap.end_timestamp - gap.start_timestamp)) {
         errors.push('invalid_data_gap');
+    }
+    if (frame.connection_events.some(event => event.source !== undefined && event.source !== 'clob' && event.source !== 'coin_price')) {
+        errors.push('invalid_connection_event_source');
     }
     return errors;
 }
