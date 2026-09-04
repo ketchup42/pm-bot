@@ -1,191 +1,100 @@
-# Core Abstractions
+# Architecture
 
-Here's a quick tour of the main pieces and how they fit. Skim the
-[README](../README.md) first if you haven't.
+The project separates live execution from historical research. The separation is
+intentional: a public collector must not initialise a trading client, and an offline
+replay must not need any network connection.
 
-## Execution layer
+```text
+Live execution: price watcher + CLOB book → event watcher → strategy → wallet → CLOB
 
-### `ExecScheduler`
+Research:       price watcher + CLOB book → HistoryFrameV2 → settlement → replay report
+```
 
-`src/app/core/ExecScheduler.ts`
+## Canonical domain registries
 
-- Constructed with a list of `SchedulerTickInitType` handlers — async functions that
-  each return an `ExecManager`.
-- `start(alignMs, execTickMs)`:
-  1. waits until the next frame boundary (`waitFrameStartMs`),
-  2. registers a global SIGINT/SIGTERM shutdown hook,
-  3. loops: runs all init handlers, then runs every `ExecManager` concurrently.
-- On shutdown it stops managers, flushes the logger and exits.
+These files define the supported runtime values. Their exported types and validation
+helpers are derived from the registry, so change the registry rather than duplicating
+its lists elsewhere.
 
-### `ExecManager`
+| Type / registry      | Location                                  | Responsibility                                  |
+| -------------------- | ----------------------------------------- | ----------------------------------------------- |
+| `Coin`               | `market/coins.ts`                         | Coin symbols and price precision.               |
+| `EventFrame`         | `market/frame.ts`                         | Frame IDs, durations and boundary helpers.      |
+| `MarketSide`         | `market/side.ts`                          | The `up` and `down` token sides.                |
+| `PriceSource`        | `market/price/price_source.ts`            | Source IDs and stream-quality timeouts.         |
+| Replay preset        | `app/core/backtest/replay_presets.ts`     | Single replay and matrix strategy registry.     |
 
-`src/app/core/ExecManager.ts`
+`getSupportedCoins()`, `getSupportedFrames()` and `getSupportedPriceSources()` feed
+the collector CLI. `waitFrameStartMsUntil()` centralises cancellable waits for frame
+boundaries.
 
-- Holds a `ClobClient`, a list of `EventWatcher`s and a list of `EventStrategy`s.
-- `start(tick)`: loops while no watcher is finished; each iteration runs every
-  strategy's `execute()` and then waits `tick` ms.
-- The constructor's `debug` flag (`ExecManager(..., true)`) makes it dump each
-  watcher's up/down history to JSON on shutdown (see [`env.md`](env.md#data-persistence)).
+## Live execution layer
 
-### `ExecTarget`
+| Component                       | Location                                           | Responsibility                                          |
+| ------------------------------- | -------------------------------------------------- | ------------------------------------------------------- |
+| `ExecScheduler`                 | `app/core/ExecScheduler.ts`                        | Aligns work to frame boundaries and manages managers.   |
+| `ExecManager`                   | `app/core/ExecManager.ts`                          | Runs strategies against active event watchers.          |
+| `CoinFrameEventTimerWatcher`    | `app/core/events/CoinFrameEventTimerWatcher.ts`    | Captures a live coin frame and its two token books.     |
+| `EventStrategy`                 | `app/core/events/strategy/EventStrategy.ts`        | Contract implemented by live strategies.                |
+| `OrderWallet`                   | `market/orders/OrderWallet.ts`                     | Virtual balance, order lifecycle and exchange limits.   |
 
-`src/app/core/exec_targets.ts`
+The live entry point is `src/app/index.ts`. It creates an authenticated client and
+is therefore separate from `collect`, `history:settle` and replay commands.
 
-- Type alias for the data produced by watchers and consumed by strategies. Currently
-  `CoinFrameEventMarketData`.
+## Market data watchers
 
-## Domain types
+| Component                     | Location                                                  | Responsibility                                                       |
+| ----------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
+| `CoinPriceWatcher`            | `market/price/CoinPriceWatcher.ts`                        | Coin price, timestamp, frame-boundary capture and connection events. |
+| `CoinPriceWatcherRTDS`        | `market/price/CoinPriceWatcherRTDS.ts`                    | RTDS implementation for regular price sources.                       |
+| `CoinPriceWatcherTWAP`        | `market/price/CoinPriceWatcherTWAP.ts`                    | Chainlink 30s/60s TWAP implementation.                               |
+| `PriceWatcherFactory`         | `market/price/PriceWatcherFactory.ts`                     | Cached watcher per `(coin, source)`.                                 |
+| `CoinMarketOrderBooksWatcher` | `market/orderbook/watcher/CoinMarketOrderBooksWatcher.ts` | Resolves a slug and watches paired up/down CLOB books.               |
+| `WSSubscriptionManager`       | `market/orderbook/manager/WSSubscriptionManager.ts`       | CLOB subscriptions, routing and reconnects.                          |
 
-| Type | Location | Description |
-| --- | --- | --- |
-| `Coin` | `market/coins.ts` | Derived from the canonical `COIN_CONFIGS` registry |
-| `EventFrame` | `market/frame.ts` | Derived from the canonical `FRAME_CONFIGS` registry |
-| `MarketSide` | `market/side.ts` | Derived from the canonical `MARKET_SIDES` registry |
+`getPriceByFrame()` supplies the start/end price captured at a precise frame
+boundary. It is not a generic "latest price" lookup. Books expose bids, asks,
+midpoint, spread, liquidity and market constraints for both token sides.
 
-Frame helpers in `market/frame.ts`:
+## History V2 and settlement
 
-- `FRAME_5M_MS`/`FRAME_15M_MS`, `FRAME_5M_SEC`/`FRAME_15M_SEC`
-- `getCurrentFrameStart(frame)`, `getFrameDuration(frame)`
-- `getCoinSlug(coin, frame)` — deterministic market slug, e.g.
-  `doge-updown-5m-1742227200`
-- `waitFrameStart(frame)` / `waitFrameStartMs(ms)`
+`HistoryFrameV2` is the research data contract. Each file contains the selected
+coin/frame/source, exact frame boundaries, paired order-book snapshots, captured
+start/end coin prices, connection events, data gaps, market metadata, settlement
+and a data-quality verdict.
 
-### `CoinFrameEventMarketData`
+| Field group                      | Why it matters                                              |
+| -------------------------------- | ----------------------------------------------------------- |
+| `snapshots`                      | Timestamped coin price and best-depth CLOB books.           |
+| `coin_frame_*_price`             | Price captured at the actual beginning/end of the frame.    |
+| `connection_events`, `data_gaps` | Evidence for stream interruptions and stale observations.   |
+| `data_quality`                   | Whether coverage and connection criteria permit normal use. |
+| `settlement`                     | Derived outcome plus later-confirmed market result.         |
 
-`src/app/core/history/coin_frame.ts`
+`complete=true` is a collection-quality label. `history:settle` independently
+fetches the event again and writes `confirmed_outcome` once the market is closed.
+The legacy live scheduler dumps are retained for external analysis but are not
+`HistoryFrameV2` and are not replay inputs.
 
-The per-side history object produced by `CoinFrameEventTimerWatcher`:
+## Offline replay
 
-- `event_slug`, `eventId`, `marketId`
-- `coin`, `side`
-- `start_time`, `end_time` (unix seconds)
-- `coin_frame_start_price`, `coin_frame_end_price`
-- `side_token_market_snapshots: MarketTokenSnapshot[]`
+| Component           | Location                             | Responsibility                                               |
+| ------------------- | ------------------------------------ | ------------------------------------------------------------ |
+| `ReplayStrategy`    | `app/core/backtest/replay.ts`        | Pure per-snapshot trading decision contract.                 |
+| `simulateTakerFill` | `app/core/backtest/replay.ts`        | Applies book depth, fee, balance and token constraints.      |
+| `runReplay`         | `app/core/backtest/replay.ts`        | Calculates fills, settlement value, PnL and risk metrics.    |
+| `runReplayMatrix`   | `app/core/backtest/replay_matrix.ts` | Replays every preset over the same eligible frame set.       |
 
-`MarketTokenSnapshot` holds one tick's data: `coin_price`, `timestamp`, `asks`,
-`bids`, `price`, `midpoint`, `spread`, optional `opt_price`.
+The report separates theoretical PnL before execution costs, PnL before fees, and
+net PnL. Fees, spread crossing and book-walk slippage are reported independently,
+so no single gross number hides execution cost.
 
-This is the live scheduler's legacy dump contract. It remains available for
-external analysis but is not consumed by the offline replay. The dedicated
-collector writes `HistoryFrameV2` from `src/app/core/history/history_frame.ts`,
-including paired books, source timestamps, connection gaps and settlement.
+## REST and utilities
 
-## Event watchers
-
-### `EventWatcher<EventDataType>`
-
-`src/app/core/events/EventWatcher.ts`
-
-Anything the scheduler hands to strategies:
-
-- `getEventId()`, `getMarketOrderBooksWatchers()`
-- `getWatcherHistoryUp()`, `getWatcherHistoryDown()`
-- `isActive()`, `isWatching()`, `isFinished()`, `dispose()`
-
-### `CoinFrameEventTimerWatcher`
-
-`src/app/core/events/CoinFrameEventTimerWatcher.ts`
-
-The usual one is:
-
-- Created via `CoinFrameEventTimerWatcher.create(coin, frame, tick, priceWatcher)`.
-- Creates a `CoinMarketOrderBooksWatcher` for the coin's slug, records the frame
-  start price, then on every `tick` pushes an up/down `MarketTokenSnapshot`.
-- When the order book watcher reports the frame finished, it records the end price
-  and sets `isFinished()`.
-
-## Price watchers
-
-| Type                   | Location                               | Notes                                                                                 |
-| ------------------------| ----------------------------------------| ---------------------------------------------------------------------------------------|
-| `PriceWatcher`         | `market/price/PriceWatcher.ts`         | Base contract: `getSymbol`, `getCurrentPrice`, `getTimeStamp`, `warmUp`, `disconnect` |
-| `CoinPriceWatcher`     | `market/price/CoinPriceWatcher.ts`     | Adds `getCoin`, `getCoinPrice`, `getPriceByFrame`                                     |
-| `CoinPriceWatcherRTDS` | `market/price/CoinPriceWatcherRTDS.ts` | RTDS implementation; captures per-frame prices                                        |
-| `PriceWatcherFactory`  | `market/price/PriceWatcherFactory.ts`  | Singleton cache per `(coin, source)`                                                  |
-
-- `PriceSource` (`market/price/price_source.ts`): `'binance'` (`PS_BINANCE`) or
-  `'chainlink'` (`PS_CHAINLINK`).
-- `getCoinPrice()` returns the RTDS price rounded to the coin's precision
-  (`coin_precis`).
-- `getPriceByFrame(frame, timeoutMs)` waits for the captured start-of-frame price.
-
-## Order book watchers
-
-| Type | Location | Notes |
-| --- | --- | --- |
-| `MarketOrderBooksWatcher` | `market/orderbook/watcher/MarketOrderBooksWatcher.ts` | Interface + `EventMarketData`/`TokenMarketData`/`LiquidityInfo` |
-| `LiveMarketOrderBooksWatcher` | `market/orderbook/watcher/LiveMarketOrderBooksWatcher.ts` | Generic implementation over `WSSubscriptionManager` |
-| `CoinMarketOrderBooksWatcher` | `market/orderbook/watcher/CoinMarketOrderBooksWatcher.ts` | `create(slug)` → fetches event by slug, subscribes to up/down token books |
-
-Under the hood:
-
-- `WSSubscriptionManager` — one WebSocket connection, subscription tracking,
-  reconnection, event routing (`onBook`, `onPriceChange`, `onLastTradePrice`,
-  `onTickSizeChange`, `onPolymarketPriceUpdate`).
-- `OrderBookCache` — per-asset `bids`/`asks` + derived `price`/`midpoint`/`spread`.
-
-Sorting matters for best-price math: **bids ascending, asks descending**, so the
-best bid/ask is always the *last* element of its array.
-
-Key methods on `MarketOrderBooksWatcher`:
-
-- `getBidsUp/getAsksUp/getBidsDown/getAsksDown`, `getBestBid(side)`, `getBestAsk(side)`
-- `getUpPrice/getDownPrice`, `getUpMidpoint/getDownMidpoint`, `getUpSpread/getDownSpread`
-- `getUpBidLiquidity` and friends → `LiquidityInfo { total_size, total_cost, average_price }`
-- `getMarketData()` → `EventMarketData` (tick size, min order size, fees, rewards,
-  up/down token ids)
-- `isActive()`, `isWatching()`, `isFinished()`, `isUpBooked()`, `isDownBooked()`
-
-## Orders watchers
-
-| Type | Location | Notes |
-| --- | --- | --- |
-| `OrdersWatcher` | `market/orders/watcher/OrdersWatcher.ts` | Interface + `OrderStatus`, `OrderUpdateHandler` |
-| `LiveOrdersWatcherRTDS` | `market/orders/watcher/LiveOrdersWatcherRTDS.ts` | User-channel WebSocket, syncs open orders on connect |
-
-`OrderStatus` fields: `id`, `token_id`, `market`, `original_size`, `size_matched`,
-`price`, `side`, plus derived flags `has_size_matched`, `has_size_matched_partial`,
-`is_live`, `has_canceled`.
-
-Wallets register an `OrderUpdateHandler` per order and get called on every fill
-update, see [`wallets.md`](wallets.md).
-
-## Wallets
-
-`src/market/orders/`
-
-- `OrderWallet` (`OrderWallet.ts`) defines the common contract: `buy`, `sell`,
-  `cancel_order`, `cancel_all`, balance/tokens getters and `dispose`. Also exports
-  `OrderWalletState` and `OrderWalletParams`.
-- `PairOrderWallet` keeps one buy order and one sell order at a time.
-- `LiveOrderWallet` can hold many orders and reserves balance/tokens
-  (`getAvailableBalance`, `getAvailableTokens`). This is the one you want for
-  strategies.
-- `MultiOrderWallet` extends `OrderWallet` with the available-balance getters.
-
-Wallets are covered in detail in [`docs/wallets.md`](wallets.md).
-
-## REST layer
-
-`src/rest/`
-
-- `client-env.ts` — `getTradingClient()` (authenticated `ClobClient`),
-  `getPublicClient()`, `getEnvApiKeyCreds()`, plus env validation and a geo-block
-  check.
-- `scan.ts` — Gamma API: `fetchEventBySlug`, `fetchMarketById`, `EventRaw`/`MarketRaw`.
-- `orders.ts` — `placeMakerOrder`, `cancelOrder`, `placeFokMarketOrderBuy`,
-  `getUSDBalance`, and the size/value constants (`DEFAULT_ORDER_MIN_SIZE`,
-  `DEFAULT_BUY_ORDER_MIN_VALUE`, `DEFAULT_ORDER_AMOUNT_FRACTION`).
-- `orders-price.ts` — `tick_price` (rounds buys down, sells up, clamps to
-  `[tick, 1 - tick]`) and `valid_quantity_safe/unsafe`.
-- `price.ts` — order book helpers like `getPriceByTokenId` and `isBidsEmpty`.
-- `fees.ts`, `block.ts`, `hosts.ts` — fees, geo-blocking, host constants.
-
-## Infrastructure utilities
-
-| Module         | Purpose                                                                                                                   |
-| ----------------| ---------------------------------------------------------------------------------------------------------------------------|
-| `src/timer.ts` | `TickTimer` + `TIMER_SLOW`/`TIMER_NORM`/`TIMER_FAST` (100/50/25 ms)                                                       |
-| `src/log.ts`   | Winston `logger` + `logger_shutdown`; console/file transports driven by env vars                                          |
-| `src/dump.ts`  | Rotating JSON `dumper` for history snapshots                                                                              |
-| `src/utils.ts` | `delay`, `retry`, `safeToNum`, `safeFloat`, `roundTo`, `isValid`, `error_str`, `fileWrite`, `killSignalsHook`, timestamps |
+| Module               | Responsibility                                                   |
+| -------------------- | ---------------------------------------------------------------- |
+| `rest/scan.ts`       | Reads Gamma events/markets and normalises optional API fields.   |
+| `rest/fees.ts`       | Fee-rate and taker-fee calculation.                              |
+| `rest/client-env.ts` | Validates live credentials and builds CLOB clients.              |
+| `utils.ts`           | Shared conversion, retry, file-write, error and signal helpers.  |
+| `log.ts`             | Winston logger and orderly shutdown.                             |

@@ -1,171 +1,82 @@
-# Adding & Debugging Strategies
+# Strategy guide
 
-How a strategy lives through a frame, plus how to write and debug your own. The
-pieces it uses are described in [`docs/abstractions.md`](abstractions.md).
+Strategies have two separate homes:
 
-## What a strategy looks like
+| Kind                   | Location                                   | Purpose                                      |
+| ---------------------- | ------------------------------------------ | -------------------------------------------- |
+| Live event strategy    | `src/app/core/events/strategy/`            | Observes live watchers and may place orders. |
+| Trend-line strategy    | `src/app/core/events/strategy/trend-line/` | The grouped V1/V2 live implementation.       |
+| Replay strategy        | `src/app/core/backtest/strategy/`          | Makes deterministic offline decisions.       |
+| Replay preset registry | `src/app/core/backtest/replay_presets.ts`  | Exposes presets to CLI and matrix replay.    |
 
-`src/app/core/events/strategy/EventStrategy.ts`:
+Do not use a live strategy as evidence of profitability without replaying it on
+settled data. The replay adapter and the live implementation may share decision
+rules, but order submission remains outside the pure replay strategy.
 
-```ts
-export interface EventStrategy<EventDataType> {
-    execute(client: ClobClient, watchers: readonly EventWatcher<EventDataType>[]): Promise<boolean>;
-    cancel(client: ClobClient, watchers: readonly EventWatcher<EventDataType>[], isSignal: boolean): Promise<boolean>;
-}
+## Live lifecycle
+
+An `EventStrategy` implements `execute()` and `cancel()`.
+
+1. `ExecScheduler` waits for the selected frame boundary.
+2. The scheduler creates an `ExecManager`, its event watcher and its strategies.
+3. While the frame is active, `ExecManager` calls `execute(client, watchers)` on
+   each strategy at its configured tick interval.
+4. At natural frame end, shutdown, or an error, it calls
+   `cancel(client, watchers, isSignal)` and disposes the watchers.
+
+`isSignal=false` means a natural frame completion. `isSignal=true` means shutdown
+or an abnormal stop; strategies must make their position-handling decision
+explicitly for that case.
+
+## Add a live strategy
+
+1. Implement `EventStrategy<CoinFrameEventMarketData>` in the appropriate strategy
+   directory. Keep per-frame state in the instance.
+2. In `execute`, find the matching event watcher by `eventId`, then read the market
+   watcher and current best bid/ask. Treat unavailable data as `undefined`, not as
+   zero.
+3. Create a wallet only after market metadata is available. Use the supplied token
+   ID, tick size and minimum order constraints; see [wallets.md](wallets.md).
+4. Add the strategy explicitly to the `ExecManager` in `src/app/index.ts` or the
+   relevant scheduler composition.
+5. In `cancel`, release orders, dispose the wallet and reset every per-frame field.
+
+## Safe order decisions
+
+| Condition                                | Required behaviour                                     |
+| ---------------------------------------- | ------------------------------------------------------ |
+| No best bid or ask yet                   | Return without trading.                                |
+| Stale/missing price or disconnected book | Return without trading.                                |
+| Order below size or value minimum        | Do not submit it.                                      |
+| Insufficient virtual balance/tokens      | Do not submit it.                                      |
+| Frame nearly over                        | Apply an explicit entry cutoff or avoid new positions. |
+| Shutdown                                 | Use a deliberate `dispose(true/false)` policy.         |
+
+## Replay presets and matrix
+
+The replay contract receives only information available at the current snapshot and
+returns `hold`, `skip`, `buy`, or `sell` with a reason code. It must not read future
+snapshots or settlement before making a decision.
+
+Register a new preset once in `REPLAY_STRATEGY_PRESETS`. Both commands then see it:
+
+```bash
+# Run one named preset. `no-trade` is the neutral default.
+npm run backtest -- --history history/frames --strategy your-preset
+
+# Run every registered preset under identical execution assumptions.
+npm run backtest:matrix -- --history history/frames
 ```
 
-- `execute` is called on **every tick** by `ExecManager` while the frame is active.
-  Return `true` if something was done, `false` otherwise.
-- `cancel` is called once at the end of the frame (or on shutdown) to roll back
-  state and dispose resources. `isSignal` is `true` when the cancel was triggered by
-  an external signal (keyboard/SIGINT/SIGTERM) or an error, and `false` on the
-  natural end of the frame (time). Anything that is not a natural frame end is a
-  signal.
+`--balance`, `--latency` (`0` or `1` snapshots) and `--minimum-order-value` apply
+to both commands. Matrix replay includes only complete frames with a confirmed
+settlement and records excluded frames in its manifest.
 
-### Lifecycle
+## Before changing live behaviour
 
-1. `ExecScheduler.start` waits for the next frame boundary and creates the
-   `ExecManager` via the init handler.
-2. `ExecManager.start` runs `strategy.execute(...)` every `tick` ms until the watcher
-   reports `isFinished()`.
-3. On finish, `ExecManager.die()` calls `strategy.cancel(...)` and then disposes the
-   watchers (dumping history first if the manager is in debug mode).
-
-## Step-by-step: add a new strategy
-
-### 1. Create the file
-
-```ts
-import { ClobClient } from "@polymarket/clob-client-v2";
-import { EventStrategy } from "./EventStrategy.js";
-import { CoinFrameEventMarketData } from "../../history/coin_frame.js";
-import { EventWatcher } from "../EventWatcher.js";
-import { logger } from "../../../../log.js";
-
-export class MyStrategy implements EventStrategy<CoinFrameEventMarketData> {
-    // ...
-}
-```
-
-### 2. Constructor + factory
-
-```ts
-private constructor(eventId: string, coin: Coin, side: MarketSide) { /* store */ }
-
-public static async create(eventId: string, coin: Coin, side: MarketSide): Promise<MyStrategy> {
-    return new MyStrategy(eventId, coin, side);
-}
-```
-
-Store `_eventId` (used to find your watcher), the `coin` and `side` you trade.
-
-### 3. Find your watchers inside `execute`
-
-```ts
-if (!this._event)   this._event   = watchers.find(w => w.getEventId() === this._eventId);
-if (!this._market)  this._market  = this._event?.getMarketOrderBooksWatchers()?.[0];
-if (!this._frameTime) { /* read start_time/end_time from getWatcherHistoryUp/Down()[0] */ }
-```
-
-### 4. Create a virtual wallet once
-
-```ts
-if (!this._wallet) {
-    const marketData = this._market.getMarketData();
-    const sideData = this._side === 'up' ? this._market.getUpMarketData() : this._market.getDownMarketData();
-    this._wallet = await LiveOrderWallet.create(client, {
-        token_id: sideData.tokenId,
-        balance: 5,
-        tick_size: marketData.tick_size,
-        min_order_size: marketData.min_order_size,
-        min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE,
-    }, await LiveOrdersWatcherRTDS.create(marketData.conditionId, client, client!.creds));
-}
-```
-
-### 5. Trading rules
-
-Read the book with `getBestAsk(side)` / `getBestBid(side)` and place orders:
-
-```ts
-const ask = this._market.getBestAsk(this._side);
-const bid = this._market.getBestBid(this._side);
-if (ask === undefined || bid === undefined) return false;
-
-// Taker entry: buy at the best ask (fills instantly on a tick-aligned book).
-// To guarantee crossing regardless, use ask + this._wallet.getTick() instead.
-await this._wallet.buy(ask, 5);
-
-// Taker exit: sell at the best bid (fills instantly on a tick-aligned book).
-// To guarantee crossing regardless, use bid - this._wallet.getTick() instead.
-await this._wallet.sell(bid, this._wallet.getTokensQuantity());
-```
-
-- `wallet.buy/sell` internally apply `tick_price` (rounds buy down, sell up) and
-  clamp to `[tick, 1 - tick]`.
-- A crossing order is posted with `postOnly=false`, so it fills right away
-  (`fast_full_trade`); the wallet records the actual fill price from the trade data.
-- Track order references and clear them when `!wallet.isLive(id)`.
-
-### 6. `cancel()`
-
-```ts
-public async cancel(client, watchers, isSignal): Promise<boolean> {
-    // isSignal=true (keyboard/SIGINT/SIGTERM/error): sell remaining tokens (dispose(true)).
-    // isSignal=false (natural frame end): keep the position, just cancel orders (dispose(false)).
-    if (this._wallet) await this._wallet.dispose(isSignal);
-    // reset all per-frame state
-    this._wallet = undefined;
-    this._event = undefined;
-    this._market = undefined;
-    this._frameTime = undefined;
-    return true;
-}
-```
-
-`dispose(true)` liquidates the remaining position (market sell at the tick floor);
-`dispose(false)` cancels orders and keeps the tokens. Pass the `isSignal` flag
-through so signal-driven cancels sell, while natural frame ends keep the position.
-
-### 7. Wire it into `index.ts`
-
-```ts
-const client = await getTradingClient();
-const coin_watcher = await PriceWatcherFactory.getCoinWatcher('doge', PS_CHAINLINK).warmUp(TIMER_FAST);
-
-const scheduler = new ExecScheduler([
-    async () => {
-        const watcher = await CoinFrameEventTimerWatcher.create('doge', '5m', TIMER_FAST, coin_watcher);
-        const strategy = await MyStrategy.create(watcher.getEventId(), 'doge', 'up');
-        return new ExecManager(client, [watcher], [strategy], true);
-    }
-]);
-
-await scheduler.start(FRAME_5M_MS, TIMER_NORM);
-```
-
-## Debugging
-
-- **Verbose logs**: set `LOG_LEVEL=debug` (console) and/or `LOG_FILE` +
-  `LOG_FILE_LEVEL=debug` for a file. See [`docs/env.md`](env.md).
-- **History dumps**: set `DUMPS_DIR=history` and pass `debug = true` to
-  `ExecManager`. On frame end it writes each watcher's up/down history to JSON,
-  which you can inspect (or replay later).
-- **No-op strategy**: `LogCoinEventStrategy` just logs `execute`/`cancel` calls —
-  useful to verify the pipeline before adding real logic.
-
-### Common pitfalls
-
-- **Book not booked yet**: `getBestAsk/getBestBid` return `undefined` until the first
-  snapshot arrives. Guard with `if (ask === undefined || bid === undefined) return false;`.
-- **Taker price clamping**: buying `ask + tick` near `1.0` gets clamped to
-  `1 - tick`; the order may rest instead of filling. Same for selling near the tick
-  floor.
-- **Forced liquidation**: with `dispose(true)` (signal-driven cancel), a position is
-  sold at the tick floor (market). On a natural frame end (`isSignal=false`) tokens
-  are kept. Use an end-of-frame cutoff (e.g. stop entering after `progress > 0.9`)
-  to avoid opening positions right before the frame ends.
-- **Min order size / value**: the wallet rejects orders below `min_order_size` or
-  `min_buy_order_value`; check the values from `getMarketData()`.
-- **Insufficient balance**: `wallet.buy` returns `undefined` when the order value
-  exceeds the virtual balance.
+- Add or update replay tests for the rule and its rejected-order edge cases.
+- Run the preset matrix on the same confirmed frame set before comparing results.
+- Inspect net PnL together with fees, spread, slippage, drawdown and rejected-order
+  reasons. A positive gross PnL is not enough.
+- Keep strategy identifiers and defaults in their central registries; do not copy
+  names or instrument lists into a new caller.

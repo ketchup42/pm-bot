@@ -1,46 +1,41 @@
-## How to start?
+# Minimal live integration
 
-A minimal start-to-run example wiring a single strategy for `doge` on the 5-minute
-frame.
+This example shows how the live scheduler is assembled. It needs valid local
+credentials because `getTradingClient()` can submit orders. For data collection and
+backtesting, use the safer commands in the [README](../README.md) instead.
 
-```typescript
-import { getTradingClient } from "../rest/client-env.js";
-import { PriceWatcherFactory } from "../market/price/PriceWatcherFactory.js";
-import { PS_CHAINLINK } from "../market/price/price_source.js";
-import { FRAME_5M_MS } from "../market/frame.js";
-import { TIMER_FAST, TIMER_NORM } from "../timer.js";
-import { CoinFrameEventTimerWatcher } from "./core/events/CoinFrameEventTimerWatcher.js";
-import { MyStrategy } from "./core/events/strategy/MyStrategy.js";
-import { ExecScheduler } from "./core/ExecScheduler.js";
-import { ExecManager } from "./core/ExecManager.js";
+```ts
+import { getTradingClient } from '../rest/client-env.js';
+import { FRAME_5M_MS } from '../market/frame.js';
+import { PS_CHAINLINK_TWAP_60 } from '../market/price/price_source.js';
+import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
+import { TIMER_FAST, TIMER_NORM } from '../timer.js';
+import { CoinFrameEventTimerWatcher } from './core/events/CoinFrameEventTimerWatcher.js';
+import { ExecManager } from './core/ExecManager.js';
+import { ExecScheduler } from './core/ExecScheduler.js';
+import { LogCoinStrategy } from './core/events/strategy/LogCoinEventStrategy.js';
 
-// 1. Authenticated CLOB client (reads PRIVATE_KEY / API_* / FUNDER_ADDRESS / SIGNATURE_TYPE)
 const client = await getTradingClient();
-
-// 2. Coin price watcher (Chainlink source), warmed up so a price is available
-const coin_watcher = await PriceWatcherFactory.getCoinWatcher('doge', PS_CHAINLINK).warmUp(TIMER_FAST);
+const priceWatcher = await PriceWatcherFactory
+    .getCoinWatcher('btc', PS_CHAINLINK_TWAP_60)
+    .warmUp(TIMER_FAST);
 
 const scheduler = new ExecScheduler([
     async () => {
-        // 3. Frame watcher: snapshots price + order book every TIMER_FAST ms
-        const watcher = await CoinFrameEventTimerWatcher.create('doge', '5m', TIMER_FAST, coin_watcher);
-
-        // 4. Strategy trading the 'up' side
-        const strategy = await MyStrategy.create(watcher.getEventId(), 'doge', 'up');
-
-        // 5. One ExecManager per frame; debug=true dumps history on finish
-        return new ExecManager(client, [watcher], [strategy], true);
-    }
+        const watcher = await CoinFrameEventTimerWatcher.create(
+            'btc', '5m', TIMER_FAST, priceWatcher,
+        );
+        const strategy = new LogCoinStrategy();
+        return new ExecManager(client, [watcher], [strategy], false);
+    },
 ]);
 
-// 6. Start the scheduler:
-//    - align to 5-minute boundaries (FRAME_5M_MS)
-//    - each ExecManager executes strategies every TIMER_NORM ms
 await scheduler.start(FRAME_5M_MS, TIMER_NORM);
 ```
 
-> `MyStrategy` is a placeholder — replace it with your own `EventStrategy`
-> implementation before running.
+The scheduler aligns to the next 5-minute boundary. For every frame, it creates an
+event watcher, invokes `strategy.execute()` every `TIMER_NORM` milliseconds, then
+calls `strategy.cancel()` and disposes the watcher at the end.
 
-See [`strategies.md`](strategies.md) for a full guide and [`abstractions.md`](abstractions.md)
-for the layer details.
+Replace `LogCoinStrategy` only after validating the strategy in offline replay and
+reviewing the trading lifecycle in [strategies.md](strategies.md).
