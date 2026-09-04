@@ -3,26 +3,38 @@ import { Coin } from '../../../market/coins.js';
 import { EventFrame } from '../../../market/frame.js';
 import { getPriceSourceConfig, PriceSource } from '../../../market/price/price_source.js';
 import { EventMarketData } from '../../../market/orderbook/watcher/MarketOrderBooksWatcher.js';
-import { calculateTakerFee } from '../../../rest/fees.js';
-import { fileWrite, safeToNum } from '../../../utils.js';
+import { calculateTakerFee, feeRateBpsToDecimal } from '../../../rest/fees.js';
+import { csvValue, fileWrite, safeToNum } from '../../../utils.js';
 import { HistoryFrameV2, HistorySnapshotV2 } from '../history/history_frame.js';
+import { REPLAY_STRATEGY_NO_TRADE } from '../../defaults.js';
 
 export type ReplayOrderAction = 'buy' | 'sell';
 export type ReplayDecisionAction = ReplayOrderAction | 'hold' | 'skip';
 export type ReplayFillStatus = 'filled' | 'partial' | 'rejected';
 
-export interface ReplayOrder {
-    action: ReplayOrderAction;
+export interface ReplayOrder<Action extends ReplayOrderAction = ReplayOrderAction> {
+    action: Action;
     side: MarketSide;
     quantity: number;
     limit_price: number;
 }
 
-export interface ReplayDecision {
-    action: ReplayDecisionAction;
+interface ReplayOrderDecision<Action extends ReplayOrderAction> {
+    action: Action;
     reason_code: string;
-    order: ReplayOrder | undefined;
+    order: ReplayOrder<Action>;
 }
+
+interface ReplayNoOrderDecision {
+    action: 'hold' | 'skip';
+    reason_code: string;
+    order: undefined;
+}
+
+export type ReplayDecision =
+    | ReplayOrderDecision<'buy'>
+    | ReplayOrderDecision<'sell'>
+    | ReplayNoOrderDecision;
 
 export interface ReplayStrategyContext {
     frame: ReplayFrameContext;
@@ -43,12 +55,15 @@ export interface ReplayFrameContext {
     start_time: number;
     end_time: number;
     snapshot_interval_ms: number;
+    coin_frame_start_price: number | undefined;
     market_data: EventMarketData;
 }
 
 export interface ReplayStrategy {
     readonly name: string;
     decide(context: Readonly<ReplayStrategyContext>): ReplayDecision;
+    decideAll?(context: Readonly<ReplayStrategyContext>): readonly ReplayDecision[];
+    onFill?(fill: Readonly<ReplayFill>): void;
 }
 
 export interface ReplayExecutionConfig {
@@ -77,7 +92,10 @@ export interface ReplayMetrics {
     strategy: string;
     initial_balance: number;
     final_balance: number;
+    /** PnL from actual fill prices before taker fees. */
     gross_pnl: number;
+    /** Theoretical PnL before fees, spread crossing and book-walk slippage. */
+    pre_execution_cost_pnl: number;
     net_pnl: number;
     fees: number;
     spread_cost: number;
@@ -95,9 +113,12 @@ export interface ReplayMetrics {
     top_10_percent_profit_share: number | undefined;
     pnl_by_utc_hour: Record<string, number>;
     trade_count: number;
+    /** Frames in which the strategy held a non-zero token position. */
+    position_frames: number;
     filled_orders: number;
     partial_orders: number;
     rejected_orders: number;
+    rejected_orders_by_reason: Record<string, number>;
     frames: number;
     skipped_frames: number;
     confirmed_settlements: number;
@@ -108,14 +129,14 @@ export interface ReplayMetrics {
 }
 
 export interface ReplayResult {
-    config: ReplayExecutionConfig;
+    config: ReplayExecutionConfig & { strategy: string };
     metrics: ReplayMetrics;
     fills: ReplayFill[];
     equity_curve: Array<{ timestamp: number; equity: number }>;
 }
 
 export class NoTradeReplayStrategy implements ReplayStrategy {
-    public readonly name = 'no-trade';
+    public readonly name = REPLAY_STRATEGY_NO_TRADE;
 
     public decide(): ReplayDecision {
         return { action: 'hold', reason_code: 'baseline_no_trade', order: undefined };
@@ -175,7 +196,9 @@ export function simulateTakerFill(
         if (!executable) break;
         const quantity = Math.min(remaining, level.size);
         grossValue += quantity * level.price;
-        if (frame.market_data.fees_enabled) fee += calculateTakerFee(quantity, level.price, frame.market_data.taker_base_fee);
+        if (frame.market_data.fees_enabled) {
+            fee += calculateTakerFee(quantity, level.price, feeRateBpsToDecimal(frame.market_data.taker_base_fee));
+        }
         remaining -= quantity;
         if (remaining <= 1e-9) break;
     }
@@ -229,6 +252,7 @@ export function runReplay(
     let negativeFramePnl = 0;
     let losingStreak = 0;
     let maxLosingStreak = 0;
+    let positionFrames = 0;
     const framePnls: number[] = [];
     const frameReturns: number[] = [];
     const pnlByUtcHour: Record<string, number> = {};
@@ -253,6 +277,7 @@ export function runReplay(
         const frameStartCash = cash;
         let upQuantity = 0;
         let downQuantity = 0;
+        let hadPosition = false;
         const strategyFrame: ReplayFrameContext = {
             source: frame.source,
             coin: frame.coin,
@@ -261,11 +286,12 @@ export function runReplay(
             start_time: frame.start_time,
             end_time: frame.end_time,
             snapshot_interval_ms: frame.snapshot_interval_ms,
+            coin_frame_start_price: frame.coin_frame_start_price,
             market_data: frame.market_data,
         };
         for (let index = 0; index < frame.snapshots.length; index++) {
             const snapshot = frame.snapshots[index]!;
-            const decision = strategy.decide({
+            const context: ReplayStrategyContext = {
                 frame: strategyFrame,
                 snapshot,
                 snapshot_index: index,
@@ -273,34 +299,40 @@ export function runReplay(
                 cash,
                 up_quantity: upQuantity,
                 down_quantity: downQuantity,
-            });
-            if (!decision.reason_code) throw new Error(`missing_reason_code: ${strategy.name} at ${snapshot.timestamp}`);
-            if ((decision.action === 'buy' || decision.action === 'sell') &&
-                (decision.order === undefined || decision.order.action !== decision.action)) {
-                throw new Error(`invalid_order_decision: ${strategy.name} at ${snapshot.timestamp}`);
-            }
-            if ((decision.action !== 'buy' && decision.action !== 'sell') || decision.order === undefined) continue;
-            const executionIndex = index + config.latency_snapshots;
-            const executionSnapshot = frame.snapshots[executionIndex];
-            if (!executionSnapshot) continue;
-            const tokens = decision.order.side === 'up' ? upQuantity : downQuantity;
-            const fill = simulateTakerFill(frame, executionSnapshot, decision.order, cash, tokens, config);
-            fills.push(fill);
-            if (fill.status === 'rejected') continue;
-            fees += fill.fee;
-            spreadCost += fill.spread_cost;
-            slippageCost += fill.slippage_cost;
-            if (fill.action === 'buy') {
-                cash -= fill.gross_value + fill.fee;
-                if (fill.side === 'up') upQuantity += fill.filled_quantity;
-                else downQuantity += fill.filled_quantity;
-            } else {
-                cash += fill.gross_value - fill.fee;
-                if (fill.side === 'up') upQuantity -= fill.filled_quantity;
-                else downQuantity -= fill.filled_quantity;
+            };
+            const decisions = strategy.decideAll?.(context) ?? [strategy.decide(context)];
+            for (const decision of decisions) {
+                if (!decision.reason_code) throw new Error(`missing_reason_code: ${strategy.name} at ${snapshot.timestamp}`);
+                if (decision.action === 'hold' || decision.action === 'skip') continue;
+                const order = decision.order as ReplayOrder | undefined;
+                if (order === undefined || order.action !== decision.action) {
+                    throw new Error(`invalid_order_decision: ${strategy.name} at ${snapshot.timestamp}`);
+                }
+                const executionIndex = index + config.latency_snapshots;
+                const executionSnapshot = frame.snapshots[executionIndex];
+                if (!executionSnapshot) continue;
+                const tokens = order.side === 'up' ? upQuantity : downQuantity;
+                const fill = simulateTakerFill(frame, executionSnapshot, order, cash, tokens, config);
+                fills.push(fill);
+                strategy.onFill?.(fill);
+                if (fill.status === 'rejected') continue;
+                fees += fill.fee;
+                spreadCost += fill.spread_cost;
+                slippageCost += fill.slippage_cost;
+                if (fill.action === 'buy') {
+                    cash -= fill.gross_value + fill.fee;
+                    if (fill.side === 'up') upQuantity += fill.filled_quantity;
+                    else downQuantity += fill.filled_quantity;
+                } else {
+                    cash += fill.gross_value - fill.fee;
+                    if (fill.side === 'up') upQuantity -= fill.filled_quantity;
+                    else downQuantity -= fill.filled_quantity;
+                }
+                if (upQuantity > 0 || downQuantity > 0) hadPosition = true;
             }
         }
         cash += outcome === 'up' ? upQuantity : downQuantity;
+        if (hadPosition) positionFrames++;
         const framePnl = cash - frameStartCash;
         framePnls.push(framePnl);
         if (frameStartCash > 0) frameReturns.push(framePnl / frameStartCash);
@@ -320,6 +352,8 @@ export function runReplay(
     }
 
     const netPnl = cash - config.initial_balance;
+    const grossPnl = netPnl + fees;
+    const preExecutionCostPnl = grossPnl + spreadCost + slippageCost;
     const wins = framePnls.filter(value => value > 0);
     const losses = framePnls.filter(value => value < 0);
     const tradedFrames = wins.length + losses.length;
@@ -338,13 +372,20 @@ export function runReplay(
         return [...wins].sort((left, right) => right - left).slice(0, count)
             .reduce((sum, value) => sum + value, 0) / positiveFramePnl;
     };
+    const rejectedOrdersByReason: Record<string, number> = {};
+    for (const fill of fills) {
+        if (fill.status === 'rejected') {
+            rejectedOrdersByReason[fill.reason_code] = (rejectedOrdersByReason[fill.reason_code] ?? 0) + 1;
+        }
+    }
     return {
-        config: { ...config },
+        config: { ...config, strategy: strategy.name },
         metrics: {
             strategy: strategy.name,
             initial_balance: config.initial_balance,
             final_balance: cash,
-            gross_pnl: netPnl + fees + spreadCost + slippageCost,
+            gross_pnl: grossPnl,
+            pre_execution_cost_pnl: preExecutionCostPnl,
             net_pnl: netPnl,
             fees,
             spread_cost: spreadCost,
@@ -362,9 +403,11 @@ export function runReplay(
             top_10_percent_profit_share: profitConcentration(0.10),
             pnl_by_utc_hour: pnlByUtcHour,
             trade_count: fills.filter(fill => fill.status !== 'rejected').length,
+            position_frames: positionFrames,
             filled_orders: fills.filter(fill => fill.status === 'filled').length,
             partial_orders: fills.filter(fill => fill.status === 'partial').length,
             rejected_orders: fills.filter(fill => fill.status === 'rejected').length,
+            rejected_orders_by_reason: rejectedOrdersByReason,
             frames: frames.length,
             skipped_frames: skippedFrames,
             confirmed_settlements: confirmedSettlements,
@@ -376,10 +419,6 @@ export function runReplay(
         fills,
         equity_curve: equityCurve,
     };
-}
-
-function csvValue(value: unknown): string {
-    return value === undefined ? '' : String(value);
 }
 
 function makeEquitySvg(points: readonly { timestamp: number; equity: number }[]): string {
@@ -404,10 +443,13 @@ export async function writeReplayReport(result: ReplayResult, directory: string)
             fill.requested_quantity, fill.filled_quantity, fill.average_price, fill.gross_value, fill.fee, fill.spread_cost, fill.slippage_cost]),
     ];
     const markdown = `# Backtest report\n\nStrategy: ${result.metrics.strategy}\n\n` +
-        `- Net PnL: ${result.metrics.net_pnl}\n- Gross PnL: ${result.metrics.gross_pnl}\n` +
+        `- Net PnL: ${result.metrics.net_pnl}\n- Gross PnL before fees: ${result.metrics.gross_pnl}\n` +
+        `- PnL before execution costs: ${result.metrics.pre_execution_cost_pnl}\n` +
         `- Fees: ${result.metrics.fees}\n- Spread cost: ${result.metrics.spread_cost}\n` +
         `- Slippage cost: ${result.metrics.slippage_cost}\n- Max drawdown: ${result.metrics.max_drawdown}\n` +
-        `- Trades: ${result.metrics.trade_count}\n- Frames: ${result.metrics.frames}\n`;
+        `- Trades: ${result.metrics.trade_count}\n- Position frames: ${result.metrics.position_frames}\n` +
+        `- Rejections by reason: ${JSON.stringify(result.metrics.rejected_orders_by_reason)}\n` +
+        `- Frames: ${result.metrics.frames}\n`;
     await Promise.all([
         fileWrite(`${directory}/config.json`, `${JSON.stringify(result.config, undefined, 2)}\n`),
         fileWrite(`${directory}/metrics.json`, `${JSON.stringify(result.metrics, undefined, 2)}\n`),

@@ -1,5 +1,12 @@
 import { ClobClient } from "@polymarket/clob-client-v2";
 
+export const BASIS_POINTS_PER_UNIT = 10_000;
+
+/** Converts the CLOB fee metadata unit (basis points) into a decimal rate. */
+export function feeRateBpsToDecimal(feeRateBps: number): number {
+    return feeRateBps / BASIS_POINTS_PER_UNIT;
+}
+
 /**
  * [DEPRECATED V1]
  * 

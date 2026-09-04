@@ -93,6 +93,17 @@ export function safeToNum(value: unknown, fallback: number = 0): number {
     return isNaN(converted) ? fallback : converted;
 }
 
+/** Converts an optional report value to text without serializing undefined as a literal. */
+export function stringValue(value: unknown): string {
+    return value === undefined ? '' : String(value);
+}
+
+/** Escapes one RFC 4180-compatible CSV cell. */
+export function csvValue(value: unknown): string {
+    const text = stringValue(value);
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
 export function safeFloat(value: number, digits: number): number {
     return safeToNum(value.toFixed(digits));
 }

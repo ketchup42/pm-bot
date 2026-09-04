@@ -15,7 +15,9 @@ export interface EventMarketData
   min_order_size: number
 
   fees_enabled: boolean;
+  /** CLOB base fee in basis points. */
   maker_base_fee: number;
+  /** CLOB base fee in basis points. */
   taker_base_fee: number;
   rewards_max_spread: number;
   rewards_min_size: number;

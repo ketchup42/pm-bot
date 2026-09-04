@@ -1,28 +1,26 @@
 import { readHistoryFrames } from './core/history/HistoryFrameReader.js';
-import { NoTradeReplayStrategy, ReplayExecutionConfig, runReplay, writeReplayReport } from './core/backtest/replay.js';
-import { safeToNum } from '../utils.js';
-
-function readArgument(name: string): string | undefined {
-    const prefix = `--${name}=`;
-    const inline = process.argv.find(argument => argument.startsWith(prefix));
-    if (inline) return inline.slice(prefix.length);
-    const index = process.argv.indexOf(`--${name}`);
-    return index >= 0 ? process.argv[index + 1] : undefined;
-}
+import {
+    runReplay,
+    writeReplayReport,
+} from './core/backtest/replay.js';
+import { getReplayStrategyPreset, REPLAY_STRATEGY_PRESETS } from './core/backtest/replay_presets.js';
+import { readArgument, readReplayExecutionConfig } from './backtest_args.js';
+import {
+    DEFAULT_BACKTEST_OUTPUT_DIRECTORY,
+    DEFAULT_HISTORY_DIRECTORY,
+    DEFAULT_REPLAY_STRATEGY,
+} from './defaults.js';
 
 async function main(): Promise<void> {
-    const input = readArgument('history') ?? 'history/frames';
-    const output = readArgument('output') ?? 'history/reports/latest';
-    const latency = safeToNum(readArgument('latency') ?? '0', Number.NaN);
-    if (latency !== 0 && latency !== 1) throw new Error(`latency must be 0 or 1, got ${latency}`);
-    const config: ReplayExecutionConfig = {
-        initial_balance: safeToNum(readArgument('balance') ?? '100'),
-        latency_snapshots: latency,
-        minimum_order_value: safeToNum(readArgument('minimum-order-value') ?? '1'),
-    };
+    const input = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
+    const output = readArgument('output') ?? DEFAULT_BACKTEST_OUTPUT_DIRECTORY;
+    const strategyName = readArgument('strategy') ?? DEFAULT_REPLAY_STRATEGY;
+    const config = readReplayExecutionConfig();
+    const preset = getReplayStrategyPreset(strategyName);
+    if (!preset) throw new Error(`strategy must be one of: ${REPLAY_STRATEGY_PRESETS.map(value => value.id).join(', ')}`);
     const frames = [];
     for await (const frame of readHistoryFrames(input)) frames.push(frame);
-    const result = runReplay(frames, new NoTradeReplayStrategy(), config);
+    const result = runReplay(frames, preset.create(), config);
     await writeReplayReport(result, output);
     console.log(JSON.stringify(result.metrics, undefined, 2));
 }
