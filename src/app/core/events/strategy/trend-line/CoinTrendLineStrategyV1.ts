@@ -1,21 +1,19 @@
 import { ClobClient } from "@polymarket/clob-client-v2";
-import { EventStrategy } from "./EventStrategy.js";
-import { CoinFrameEventMarketData } from "../../history/coin_frame.js";
-import { EventWatcher } from "../EventWatcher.js";
-import { logger } from "../../../../log.js";
-import { error_str, safeFloat } from "../../../../utils.js";
-import { DEFAULT_BUY_ORDER_MIN_VALUE } from "../../../../rest/orders.js";
-import { MarketSide } from "../../../../market/side.js";
-import { MarketOrderBooksWatcher } from "../../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
-import { Coin } from "../../../../market/coins.js";
-import { ORDER_WALLET_FRACTION, OrderWalletParams, OrderWalletState } from "../../../../market/orders/OrderWallet.js";
-import { MultiOrderWallet } from "../../../../market/orders/MultiOrderWallet.js";
-import { LiveOrdersWatcherRTDS } from "../../../../market/orders/watcher/LiveOrdersWatcherRTDS.js";
-import { LiveOrderWallet } from "../../../../market/orders/LiveOrderWallet.js";
-import { VirtualTakerLiveOrderWallet } from "../../../../market/orders/VirtualTakerLiveOrderWallet.js";
-import { CoinPriceWatcher } from "../../../../market/price/CoinPriceWatcher.js";
-import { PriceWatcherFactory } from "../../../../market/price/PriceWatcherFactory.js";
-import { PS_CHAINLINK_TWAP_60 } from "../../../../market/price/price_source.js";
+import { EventStrategy } from "../EventStrategy.js";
+import { CoinFrameEventMarketData } from "../../../history/coin_frame.js";
+import { EventWatcher } from "../../EventWatcher.js";
+import { logger } from "../../../../../log.js";
+import { error_str, safeFloat } from "../../../../../utils.js";
+import { DEFAULT_BUY_ORDER_MIN_VALUE } from "../../../../../rest/orders.js";
+import { MarketSide } from "../../../../../market/side.js";
+import { MarketOrderBooksWatcher } from "../../../../../market/orderbook/watcher/MarketOrderBooksWatcher.js";
+import { Coin } from "../../../../../market/coins.js";
+import { ORDER_WALLET_FRACTION, OrderWalletParams, OrderWalletState } from "../../../../../market/orders/OrderWallet.js";
+import { MultiOrderWallet } from "../../../../../market/orders/MultiOrderWallet.js";
+import { LiveOrdersWatcherRTDS } from "../../../../../market/orders/watcher/LiveOrdersWatcherRTDS.js";
+import { LiveOrderWallet } from "../../../../../market/orders/LiveOrderWallet.js";
+import { VirtualTakerLiveOrderWallet } from "../../../../../market/orders/VirtualTakerLiveOrderWallet.js";
+import { COIN_TREND_LINE_V1_CONFIG } from './TrendLineStrategyConfig.js';
 
 /** Start/end timestamps of the current trading frame (in seconds). */
 interface FrameTime { startTime: number; endTime: number; }
@@ -26,44 +24,21 @@ interface FrameTime { startTime: number; endTime: number; }
  * - Entry line (mirror off): _PRICE_BUY_START -> _PRICE_BUY_END over the frame (progress-driven).
  * - Entry line (mirror on): _PRICE_BUY_START_MIRROR -> _PRICE_BUY_END over the frame (progress-driven).
  * - Mirror line: _MIRROR_LINE_START -> 0.0 over the frame (progress-driven).
- * - Entry: ask crosses above the entry line, position < order volume, buy price <= _MAX_BUY_PRICE.
+ * - Entry: ask crosses above the entry line, position < order volume.
  * - Exit A: mirror off and bid below _PRICE_SELL_LEVEL (horizontal level).
  * - Exit B: mirror on and bid below _MIRROR_EXIT_LEVEL (horizontal level).
- * - Exit C: bid above _MAX_BUY_PRICE or _MIRROR_MAX_BUY_PRICE and frame progress < _EXIT_C_TIME_FACTOR -> taker sell at _MAX_BUY_PRICE or _MIRROR_MAX_BUY_PRICE (profit).
  *
  * Trades a single side ('up' or 'down'), selected at creation time.
  */
-export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMarketData> {
+export class CoinTrendLineStrategyV1 implements EventStrategy<CoinFrameEventMarketData> {
     private readonly _eventId: string;
     private readonly _coin: Coin;
     private readonly _side: MarketSide;
 
-    // ====================== STRATEGY PARAMETERS ========================
-    private readonly _ORDER_VOLUME: number = 5;             /** Position size in tokens (per trade). */
-    private readonly _INITIAL_BALANCE: number = 6;          /** Virtual USD balance. */
-
-    private readonly _PRICE_BUY_START: number = 0.55;        /** Standard entry line start (mirror off); interpolates to _PRICE_BUY_END. */
-    private readonly _PRICE_BUY_START_MIRROR: number = 0.51; /** Mirror-mode entry line start; interpolates to _PRICE_BUY_END. */
-    private readonly _PRICE_BUY_END: number = 1.0;           /** Entry line end (shared for both mirror states). */
-
-    private readonly _MIRROR_LINE_START: number = 0.45;   /** Mirror line start; interpolates to 0.0 by frame progress. */
-
-    private readonly _PRICE_SELL_LEVEL: number = 0.46;    /** Normal exit level (horizontal). */
-    private readonly _MIRROR_EXIT_LEVEL: number = 0.295;  /** Mirror-mode exit level (horizontal). BASE: 0.1 */
-
-    private readonly _MAX_BUY_PRICE: number = 0.71;         /** Max buy price cap; entry blocked above it. */
-    private readonly _MIRROR_MAX_BUY_PRICE: number = 0.635; /** Max buy price cap for the mirrored side. */
-    private readonly _EXIT_C_TIME_FACTOR: number = 0.75;    /** Frame fraction until which Exit C is allowed (0..1). */
-
-    private readonly _START_INTERVAL_FACTOR: number = 0.01;  /** Fraction of the frame duration before which we do not enter new positions. */
-    private readonly _START_DIFF_PRICE_FACTOR: number = 5.1; /** Coin price deviation needed to start (configured for BTC). */
-
-    private readonly _END_INTERVAL_FACTOR: number = 0.9725;  /** Fraction of the frame duration at which we stop entering new positions. */
-    // ===================================================================
+    private readonly _params = COIN_TREND_LINE_V1_CONFIG;
 
     // ========================= TRADING STATE ===========================
     private _mirror: boolean = false;
-    private _hasStarted: boolean = false;
     private _hasExited: boolean = false;
     private _wasInPosition: boolean = false;
     private _didAction: boolean = false;
@@ -75,7 +50,6 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
     private _isDebug: boolean;
     private _event: EventWatcher<CoinFrameEventMarketData> | undefined = undefined;
     private _market: MarketOrderBooksWatcher | undefined = undefined;
-    private _coinWatcher: CoinPriceWatcher | undefined = undefined;
     private _frameTime: FrameTime | undefined = undefined;
     // ================================================================
 
@@ -84,11 +58,10 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
         this._coin = coin;
         this._side = side;
         this._isDebug = isDebug;
-        this._coinWatcher = PriceWatcherFactory.getCoinWatcher(this._coin, PS_CHAINLINK_TWAP_60);
     }
 
-    public static async create(eventId: string, coin: Coin, side: MarketSide, isDebug: boolean = false): Promise<CoinTrendLineStrategyV2> {
-        return new CoinTrendLineStrategyV2(eventId, coin, side, isDebug);
+    public static async create(eventId: string, coin: Coin, side: MarketSide, isDebug: boolean = false): Promise<CoinTrendLineStrategyV1> {
+        return new CoinTrendLineStrategyV1(eventId, coin, side, isDebug);
     }
 
     /**
@@ -105,7 +78,7 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
     }
 
     private log(msg: string): void {
-        logger.info(`[CoinTrendLineV2][${this._eventId}][${this._coin}][${this._side}] ${msg}`);
+        logger.info(`[CoinTrendLineV1][${this._eventId}][${this._coin}][${this._side}] ${msg}`);
     }
 
     // ---------------------------- HELPERS ----------------------------
@@ -138,16 +111,16 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
     private isStartOfFrame(currentTime: number): boolean {
         if (!this._frameTime) return false;
         const timeFromStart = currentTime - this._frameTime.startTime;
-        const starttime = (this._frameTime.endTime - this._frameTime.startTime) * this._START_INTERVAL_FACTOR;
-        return timeFromStart >= starttime;
+        const startOffset = (this._frameTime.endTime - this._frameTime.startTime) * this._params.startIntervalFactor;
+        return timeFromStart >= startOffset;
     }
 
     /** Whether the current time is past the entry cutoff (no new positions allowed). */
     private isEndOfFrame(currentTime: number): boolean {
         if (!this._frameTime) return false;
         const timeFromStart = currentTime - this._frameTime.startTime;
-        const lasttime = (this._frameTime.endTime - this._frameTime.startTime) * this._END_INTERVAL_FACTOR;
-        return timeFromStart >= lasttime;
+        const endOffset = (this._frameTime.endTime - this._frameTime.startTime) * this._params.endIntervalFactor;
+        return timeFromStart >= endOffset;
     }
 
     // ---------------------------- MAIN EXECUTION ----------------------------
@@ -173,14 +146,14 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
             try {
                 const params: OrderWalletParams = {
                     token_id: sideMarketData.tokenId,
-                    balance: this._INITIAL_BALANCE,
+                    balance: this._params.initialBalance,
                     tick_size: marketData.tick_size,
                     min_order_size: marketData.min_order_size,
                     min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE
                 };
                 this._wallet = await this.createWallet(client, params, marketData.conditionId);
 
-                this.log(`Wallet created, token=${this._wallet.getTokenId()}, balance=${this._INITIAL_BALANCE}`);
+                this.log(`Wallet created, token=${this._wallet.getTokenId()}, balance=${this._params.initialBalance}`);
             } catch (error) {
                 logger.error(`[CoinTrendLine][${this._eventId}] Wallet creation failed: ${error_str(error)}`);
                 return false;
@@ -193,24 +166,9 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
         const isStartPeriod = this.isStartOfFrame(nowSec);
         const isEndPeriod = this.isEndOfFrame(nowSec);
 
-        const progress = this.getFrameProgress(nowSec);
-
-        const history = this._side === 'up'? this._event.getWatcherHistoryUp()[0]: this._event.getWatcherHistoryDown()[0];
-        if (!history || !history?.coin_frame_start_price || !this._coinWatcher?.getCoinPrice()) return false;
-
-        // Signed deviation: positive when the coin price rose above the frame start price.
-        const coinPriceDeviation = Math.abs((this._coinWatcher!.getCoinPrice() ?? 0) - (history.coin_frame_start_price ?? 0));
-
-        if (!this._hasStarted) {
-            if (!isStartPeriod) return false; 
-            const started = (coinPriceDeviation >= this._START_DIFF_PRICE_FACTOR);
-            if (!started) return false; // deviation too small - keep waiting
-            this._hasStarted = true;    // latched for the rest of the frame
-        }
-
         // Mirror line: _MIRROR_LINE_START -> 0.0 over the frame
         const mirrorLine = safeFloat(
-            this._MIRROR_LINE_START * (1 - progress),
+            this._params.mirrorLineStart * (1 - this.getFrameProgress(nowSec)),
             ORDER_WALLET_FRACTION
         );
 
@@ -225,14 +183,11 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
         if (bid < mirrorLine) this._mirror = true;
 
         // Entry line depends on mirror state: interpolates start -> _PRICE_BUY_END
-        const buyStart = this._mirror ? this._PRICE_BUY_START_MIRROR : this._PRICE_BUY_START;
+        const buyStart = this._mirror ? this._params.priceBuyStartMirror : this._params.priceBuyStart;
         const priceBuyCurr = safeFloat(
-            buyStart + (this._PRICE_BUY_END - buyStart) * progress,
+            buyStart + (this._params.priceBuyEnd - buyStart) * this.getFrameProgress(nowSec),
             ORDER_WALLET_FRACTION
         );
-
-        // Effective max buy price depends on the mirror state
-        const effectiveMaxBuyPrice = this._mirror ? this._MIRROR_MAX_BUY_PRICE : this._MAX_BUY_PRICE;
 
         // Clean up stale order references
         if (this._buyOrder && !this._wallet.isLive(this._buyOrder.id)) this._buyOrder = undefined;
@@ -240,44 +195,32 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
 
         const positionSize = this._wallet.getTokensQuantity();
 
-        // Entry: no open orders, position below target, ask crossed above the line, buy price under cap.
+        // Entry: no open orders, position below target, ask crossed above the line.
         // Taker entry: cross the ask by one tick so the buy fills instantly.
-        if (this._hasStarted && isStartPeriod && !isEndPeriod && !this._hasExited && !this._wasInPosition &&
-            !this._buyOrder && !this._sellOrder && positionSize < this._ORDER_VOLUME && ask > priceBuyCurr) {
+        if (isStartPeriod && !isEndPeriod && !this._hasExited && !this._wasInPosition &&
+            !this._buyOrder && !this._sellOrder && positionSize < this._params.orderVolume && ask > priceBuyCurr) {
 
             const tick = this._wallet.getTick();
             const buyPrice = safeFloat(ask + tick, ORDER_WALLET_FRACTION);
-
-            // The _MAX_BUY_PRICE cap applies only within the Exit C window (progress < _EXIT_C_TIME_FACTOR);
-            // after that interval the cap is lifted.
-
-            // TODO: IN BASE OLD PRIFIT VERSION ONLY - "buyPrice <= this._MAX_BUY_PRICE"
-            if (progress >= this._EXIT_C_TIME_FACTOR || buyPrice <= effectiveMaxBuyPrice) {
-                const state = await this._wallet.buy(buyPrice, this._ORDER_VOLUME);
-                if (state) {
-                    this._buyOrder = state;
-                    this._wasInPosition = true;
-                    this._didAction = true;
-                    this.log(`BUY ${this._ORDER_VOLUME} @ ${buyPrice} (ask=${ask}, line1=${priceBuyCurr})`);
-                } else {
-                    this.log(`BUY failed: ask=${ask} line1=${priceBuyCurr}`);
-                }
+            const state = await this._wallet.buy(buyPrice, this._params.orderVolume);
+            if (state) {
+                this._buyOrder = state;
+                this._wasInPosition = true;
+                this._didAction = true;
+                this.log(`BUY ${this._params.orderVolume} @ ${buyPrice} (ask=${ask}, line1=${priceBuyCurr})`);
+            } else {
+                this.log(`BUY failed: ask=${ask} line1=${priceBuyCurr}`);
             }
         }
 
-        // Exits are mutually exclusive per tick (else-if): A (normal low) -> B (mirror low) -> C (spike high).
         // Exit A: flag off, bid below _PRICE_SELL_LEVEL
-        if (positionSize >= this._ORDER_VOLUME && !this._sellOrder && bid < this._PRICE_SELL_LEVEL && !this._mirror) {
-            await this.exitAtBid(bid, positionSize, `exitA bid=${bid}<${this._PRICE_SELL_LEVEL}`);
+        if (positionSize >= this._params.orderVolume && !this._sellOrder && bid < this._params.priceSellLevel && !this._mirror) {
+            await this.exitAtBid(bid, positionSize, `exitA bid=${bid}<${this._params.priceSellLevel}`);
         }
+
         // Exit B: flag on, bid below _MIRROR_EXIT_LEVEL
-        else if (positionSize >= this._ORDER_VOLUME && !this._sellOrder && bid < this._MIRROR_EXIT_LEVEL && this._mirror) {
-            await this.exitAtBid(bid, positionSize, `exitB bid=${bid}<${this._MIRROR_EXIT_LEVEL}`);
-        }
-        // Exit C: real sell price (bid) above buy cap -> sell at effectiveMaxBuyPrice for profit,
-        // only before the time factor; blocks further entries (volatility signal).
-        else if (positionSize >= this._ORDER_VOLUME && !this._sellOrder && bid > effectiveMaxBuyPrice && progress < this._EXIT_C_TIME_FACTOR) {
-            await this.exitC(bid, positionSize, effectiveMaxBuyPrice, `exitC bid=${bid}>${effectiveMaxBuyPrice}`);
+        if (positionSize >= this._params.orderVolume && !this._sellOrder && bid < this._params.mirrorExitLevel && this._mirror) {
+            await this.exitAtBid(bid, positionSize, `exitB bid=${bid}<${this._params.mirrorExitLevel}`);
         }
 
         return this._didAction;
@@ -302,21 +245,6 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
         }
     }
 
-    /** Sells at the buy-cap price; crosses the book when bid > cap, filling at ~bid for a profit. */
-    private async exitC(bid: number, tokens: number, capPrice: number, reason: string): Promise<void> {
-        const wallet = this._wallet;
-        if (!wallet) return;
-        const state = await wallet.sell(capPrice, tokens);
-        if (state) {
-            this._sellOrder = state;
-            this._hasExited = true;
-            this._didAction = true;
-            this.log(`SELL ${tokens} @ ${capPrice} (bid=${bid}) -> ${reason}`);
-        } else {
-            this.log(`SELL failed: ${reason}`);
-        }
-    }
-
     // ---------------------------- CANCEL ----------------------------
     public async cancel(client: ClobClient, watchers: readonly EventWatcher<CoinFrameEventMarketData>[], isSignal: boolean): Promise<boolean> {
         // ===================== WALLET CLOSE =====================
@@ -329,11 +257,10 @@ export class CoinTrendLineStrategyV2 implements EventStrategy<CoinFrameEventMark
         }
         // =========================================================
 
-        const finalBalance = this._wallet?.getBalance() ?? this._INITIAL_BALANCE;
+        const finalBalance = this._wallet?.getBalance() ?? this._params.initialBalance;
         this.log(`Strategy cancelled. Final balance: ${finalBalance.toFixed(2)}`);
 
         this._mirror = false;
-        this._hasStarted = false;
         this._hasExited = false;
         this._wasInPosition = false;
         this._didAction = false;

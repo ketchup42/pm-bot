@@ -7,8 +7,8 @@ import { CoinFrameEventTimerWatcher } from "./core/events/CoinFrameEventTimerWat
 import { ExecScheduler } from "./core/ExecScheduler.js";
 import { ExecManager } from "./core/ExecManager.js";
 import { PriceWatcherFactory } from "../market/price/PriceWatcherFactory.js";
-import { CoinTrendLineStrategyV1 } from "./core/events/strategy/CoinTrendLineStrategyV1.js";
-import { CoinTrendLineStrategyV2 } from "./core/events/strategy/CoinTrendLineStrategyV2.js";
+import { CoinTrendLineStrategyV1 } from "./core/events/strategy/trend-line/CoinTrendLineStrategyV1.js";
+import { CoinTrendLineStrategyV2 } from "./core/events/strategy/trend-line/CoinTrendLineStrategyV2.js";
 import { globalDie } from "../die.js";
 import { CoinCrossingPauseStrategy } from "./core/events/strategy/CoinCrossingPauseStrategy.js";
 
