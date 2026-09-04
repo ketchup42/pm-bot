@@ -1,4 +1,4 @@
-import { retry, getISOTimestamp, safeToNum, error_str } from "../utils.js";
+import { retry, getISOTimestamp, safeToNum } from "../utils.js";
 import { REST_DEFAULT_HOST_GAMMA } from "./hosts.js";
 
 export interface MarketRaw {
@@ -30,7 +30,8 @@ export interface EventRaw {
   slug: string;
   startTime: string;
   endDate: string;
-  conditionId: string;
+  // There is no such data field in the Gamma API
+  // conditionId: string;
   markets: MarketRaw[];
 }
 
@@ -80,6 +81,59 @@ async function fetchJson(url: string): Promise<any> {
   }
 }
 
+type GammaRecord = Record<string, unknown>;
+
+interface MarketOutcomes {
+  outcomes: string[];
+  outcomePrices: number[];
+}
+
+function requireNonEmptyString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`Invalid ${field}: expected a non-empty string`);
+  }
+  return value;
+}
+
+function asGammaRecord(value: unknown, context: string): GammaRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Invalid ${context}: expected an object`);
+  }
+  return value as GammaRecord;
+}
+
+function parseArrayOrEmpty(value: unknown): unknown[] {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseMarketOutcomes(market: GammaRecord): MarketOutcomes {
+  return {
+    outcomes: parseArrayOrEmpty(market.outcomes) as string[],
+    outcomePrices: parseArrayOrEmpty(market.outcomePrices).map(value => safeToNum(value)),
+  };
+}
+
+function parseClobTokenIds(market: GammaRecord): string[] {
+  return parseArrayOrEmpty(market.clobTokenIds) as string[];
+}
+
+function parseMarket(marketValue: unknown): MarketRaw {
+  const market = asGammaRecord(marketValue, 'market');
+  const id = requireNonEmptyString(market.id, 'market.id');
+  requireNonEmptyString(market.conditionId, `market ${id}.conditionId`);
+
+  return {
+    ...market,
+    ...parseMarketOutcomes(market),
+    clobTokenIds: parseClobTokenIds(market),
+  } as MarketRaw;
+}
+
 /**
  * Fetches event data from Polymarket's Gamma API by event slug.
  *
@@ -94,52 +148,23 @@ export async function fetchEventBySlug(slug: string): Promise<EventRaw> {
   const url = `${REST_DEFAULT_HOST_GAMMA}/events/slug/${slug}`;
   const rawData = await retry(() => fetchJson(url));
 
-  if (!rawData || typeof rawData !== 'object') {
-    throw new Error(`[${getISOTimestamp()}] Invalid event by slug response!`);
-  }
-  if (rawData.slug !== slug) {
+  const event = asGammaRecord(rawData, 'event by slug response');
+  const eventId = requireNonEmptyString(event.id, 'event.id');
+  const returnedSlug = requireNonEmptyString(event.slug, `event ${eventId}.slug`);
+  if (returnedSlug !== slug) {
     throw new Error(
-      `[${getISOTimestamp()}] Returned slug (${rawData.slug}) does not match requested (${slug})`
+      `[${getISOTimestamp()}] Returned slug (${returnedSlug}) does not match requested (${slug})`
     );
   }
-  if (!Array.isArray(rawData.markets)) {
+  if (!Array.isArray(event.markets)) {
     throw new Error(
       `Invalid response to event by slug data: markets is not an array!`
     );
   }
 
-  const markets = rawData.markets.map((market: any) => {
-    // clobTokenIds can be a JSON string or already an array
-    let clobTokenIds: string[];
-    try {
-      clobTokenIds = Array.isArray(market.clobTokenIds)
-        ? market.clobTokenIds
-        : JSON.parse(market.clobTokenIds ?? '[]');
-    } catch {
-      clobTokenIds = [];
-    }
+  const markets = event.markets.map(parseMarket);
 
-    // outcomes and outcomePrices are always JSON strings
-    let outcomes: string[] = [];
-    let outcomePrices: number[] = [];
-    try {
-      outcomes = JSON.parse(market.outcomes);
-      outcomePrices = JSON.parse(market.outcomePrices).map(safeToNum);
-    } catch (error) {
-      throw new Error(
-        `Failed to parse outcomes/prices for market ${market.id}: ${error_str(error)}`
-      );
-    }
-
-    return {
-      ...market,
-      outcomes,
-      outcomePrices,
-      clobTokenIds,
-    };
-  });
-
-  return { ...rawData, markets };
+  return { ...event, markets } as EventRaw;
 }
 
 /**
@@ -159,52 +184,5 @@ export async function fetchMarketById(marketId: string): Promise<MarketRaw> {
   if (!Array.isArray(rawData) || rawData.length === 0) {
     throw new Error(`No market found for id ${marketId}`);
   }
-  const marketData = rawData[0];
-
-  // Parse clobTokenIds
-  let clobTokenIds: string[];
-  if (typeof marketData.clobTokenIds === 'string') {
-    try {
-      clobTokenIds = JSON.parse(marketData.clobTokenIds);
-    } catch {
-      clobTokenIds = [];
-    }
-  } else if (Array.isArray(marketData.clobTokenIds)) {
-    clobTokenIds = marketData.clobTokenIds;
-  } else {
-    clobTokenIds = [];
-  }
-
-  // Parse outcomes and outcomePrices
-  let outcomes: string[] = [];
-  let outcomePrices: number[] = [];
-  try {
-    outcomes = JSON.parse(marketData.outcomes);
-    outcomePrices = JSON.parse(marketData.outcomePrices).map(safeToNum);
-  } catch (error) {
-    throw new Error(
-      `[${getISOTimestamp()}] Failed to parse market ${marketId}: ${error_str(error)}`
-    );
-  }
-
-  return {
-    id: marketData.id,
-    conditionId: marketData.conditionId,
-    clobTokenIds,
-    liquidity: marketData.liquidity,
-    fee: marketData.fee,
-    volume: marketData.volume,
-    active: marketData.active,
-    closed: marketData.closed,
-    enableOrderBook: marketData.enableOrderBook,
-    feesEnabled: marketData.feesEnabled,
-    makerBaseFee: marketData.makerBaseFee,
-    takerBaseFee: marketData.takerBaseFee,
-    rewardsMaxSpread: marketData.rewardsMaxSpread,
-    rewardsMinSize: marketData.rewardsMinSize,
-    orderMinSize: marketData.orderMinSize,
-    orderPriceMinTickSize: marketData.orderPriceMinTickSize,
-    outcomes,
-    outcomePrices,
-  };
+  return parseMarket(rawData[0]);
 }
