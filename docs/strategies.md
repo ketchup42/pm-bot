@@ -2,12 +2,13 @@
 
 Strategies have two separate homes:
 
-| Kind                   | Location                                   | Purpose                                      |
-| ---------------------- | ------------------------------------------ | -------------------------------------------- |
-| Live event strategy    | `src/app/core/events/strategy/`            | Observes live watchers and may place orders. |
-| Trend-line strategy    | `src/app/core/events/strategy/trend-line/` | The grouped V1/V2 live implementation.       |
-| Replay strategy        | `src/app/core/backtest/strategy/`          | Makes deterministic offline decisions.       |
-| Replay preset registry | `src/app/core/backtest/replay_presets.ts`  | Exposes presets to CLI and matrix replay.    |
+| Kind                   | Location                                      | Purpose                                      |
+| ---------------------- | --------------------------------------------- | -------------------------------------------- |
+| Live event strategy    | `src/app/core/events/strategy/`               | Observes live watchers and may place orders. |
+| Trend-line strategy    | `src/app/core/events/strategy/trend-line/`    | The grouped V1/V2 live implementation.       |
+| DOGE baseline strategy | `src/app/core/events/strategy/doge-baseline/` | Model, training and live implementation.     |
+| Replay strategy        | `src/app/core/backtest/strategy/`             | Makes deterministic offline decisions.       |
+| Replay preset registry | `src/app/core/backtest/replay_presets.ts`     | Exposes presets to CLI and matrix replay.    |
 
 Do not use a live strategy as evidence of profitability without replaying it on
 settled data. The replay adapter and the live implementation may share decision
@@ -71,6 +72,45 @@ npm run backtest:matrix -- --history history/frames
 `--balance`, `--latency` (`0` or `1` snapshots) and `--minimum-order-value` apply
 to both commands. Matrix replay includes only complete frames with a confirmed
 settlement and records excluded frames in its manifest.
+
+The maintained comparison set is deliberately small: `no-trade`, basic trend-line
+`v1` and basic trend-line `v2`. New hypotheses must be added as separate, tested
+presets rather than changing those reference implementations.
+
+## DOGE baseline
+
+The published model contains two independent logistic regressions. Training reads
+only complete, confirmed DOGE 5m frames from the Chainlink 60-second TWAP source.
+
+| Mode        | Decision time | Return windows          | Used when                         |
+| ----------- | ------------- | ----------------------- | --------------------------------- |
+| `early-60`  | 60 seconds    | 15, 30 and 60 seconds   | No position has been opened yet.  |
+| `late-120`  | 120 seconds   | 75, 90 and 120 seconds  | Early mode did not enter.         |
+
+The model first selects the predicted outcome: probabilities above 0.5 select `up`,
+and probabilities below 0.5 select `down`. Only that side is checked against its
+visible ask and taker fee. The strategy never buys the opposite side merely because
+its token is cheaper. Both modes require at least $0.02 expected edge per token,
+and entry value is capped at $10 from a $100 strategy balance.
+
+An emergency exit is available only during the final 30 seconds. It requires DOGE
+to remain at least one basis point beyond the frame start price against the held
+side for five continuous seconds. The strategy then sells at market and pauses the
+main scheduler. A separate relative crossing observer retains its ±0.5% band for
+frame-level volatility; a calm following frame resumes the scheduler.
+
+Training requires an explicit history size and never publishes a partial model. Its
+output includes classification accuracy, probability errors, a confusion matrix,
+the continuation baseline, and outcomes grouped by signed DOGE displacement:
+
+```bash
+npm run research:doge-baseline -- --count 500
+npm run replay:doge-baseline -- --history history/frames \
+  --output history/reports/doge-baseline/latest
+```
+
+The replay loads the published model without fitting it and uses the normal replay
+engine for depth, spread, slippage, fees, minimum order value and balance limits.
 
 ## Before changing live behaviour
 

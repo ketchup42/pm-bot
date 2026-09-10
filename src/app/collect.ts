@@ -2,10 +2,12 @@ import 'dotenv/config';
 import { getSupportedCoins, isCoin } from '../market/coins.js';
 import { getSupportedFrames, isEventFrame } from '../market/frame.js';
 import {
+    getPriceSourceConfig,
     getSupportedPriceSources,
     isPriceSource,
 } from '../market/price/price_source.js';
 import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
+import { CoinPriceWatcher } from '../market/price/CoinPriceWatcher.js';
 import { TIMER_FAST } from '../timer.js';
 import { logger, logger_shutdown } from '../log.js';
 import {
@@ -18,8 +20,9 @@ import {
     DEFAULT_HISTORY_MAX_FRAMES,
     DEFAULT_HISTORY_SNAPSHOT_INTERVAL_MS,
     DEFAULT_HISTORY_SOURCE,
+    HISTORY_COIN_ALL,
 } from './defaults.js';
-import { error_str, killSignalsHook, safeToNum } from '../utils.js';
+import { delay, error_str, killSignalsHook, safeToNum } from '../utils.js';
 import { HistoryCollector } from './core/history/HistoryCollector.js';
 import { HistoryFrameWriter } from './core/history/HistoryFrameWriter.js';
 
@@ -59,10 +62,18 @@ function readBoolean(name: string, fallback: boolean): boolean {
     throw new Error(`${name} must be true/false or 1/0, got ${raw}`);
 }
 
+async function waitForFirstWatcherPrice(watcher: CoinPriceWatcher, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (watcher.getCoinPrice() === undefined && Date.now() < deadline) await delay(TIMER_FAST);
+    if (watcher.getCoinPrice() === undefined) {
+        throw new Error(`History warm-up timeout: coin=${watcher.getCoin()} source=${watcher.getSource()} timeout=${timeoutMs}ms`);
+    }
+}
+
 async function main(): Promise<void> {
     if (process.argv.includes('--help')) {
         console.log([
-            'Usage: npm run collect -- --coin btc --frame 5m --source chainlink-twap-60 [--count 1]',
+            'Usage: npm run collect -- --coin all --frame 5m --source chainlink-twap-60 [--count 1] [--cycle]',
             '',
             'The collector is read-only and waits for the next complete frame boundary.',
             'Configuration: HISTORY_DIR, HISTORY_SNAPSHOT_MS, HISTORY_BOOK_DEPTH,',
@@ -77,7 +88,7 @@ async function main(): Promise<void> {
     const coinRaw = (readArgument('coin') ?? DEFAULT_HISTORY_COIN).toLowerCase();
     const frameRaw = (readArgument('frame') ?? DEFAULT_HISTORY_FRAME).toLowerCase();
     const sourceRaw = (readArgument('source') ?? DEFAULT_HISTORY_SOURCE).toLowerCase();
-    if (!isCoin(coinRaw)) {
+    if (coinRaw !== HISTORY_COIN_ALL && !isCoin(coinRaw)) {
         throw new Error(`Unsupported coin: ${coinRaw}. Supported: ${getSupportedCoins().join(', ')}`);
     }
     if (!isEventFrame(frameRaw)) {
@@ -87,7 +98,7 @@ async function main(): Promise<void> {
         throw new Error(`Unsupported source: ${sourceRaw}. Supported: ${getSupportedPriceSources().join(', ')}`);
     }
 
-    const coin = coinRaw;
+    const coins = coinRaw === HISTORY_COIN_ALL ? getSupportedCoins() : [coinRaw];
     const frame = frameRaw;
     const source = sourceRaw;
     const snapshotIntervalMs = readInteger('HISTORY_SNAPSHOT_MS', DEFAULT_HISTORY_SNAPSHOT_INTERVAL_MS, 25);
@@ -97,36 +108,58 @@ async function main(): Promise<void> {
     const directory = process.env.HISTORY_DIR || DEFAULT_HISTORY_DIRECTORY;
     const gzipEnabled = readBoolean('HISTORY_GZIP', DEFAULT_HISTORY_GZIP);
     const frameCount = readArgumentInteger('count', DEFAULT_HISTORY_FRAME_COUNT, 0);
+    const cycle = process.argv.includes('--cycle');
+    if (cycle && frameCount === 0) throw new Error('--cycle requires --count greater than 0');
+    if (cycle && maxFrames !== 0) throw new Error('--cycle cannot be combined with HISTORY_MAX_FRAMES greater than 0');
 
-    const coinWatcher = await PriceWatcherFactory
-        .getCoinWatcher(coin, source)
-        .warmUp(TIMER_FAST);
-    const writer = new HistoryFrameWriter({ directory, gzip: gzipEnabled, maxFrames });
-    const collector = new HistoryCollector(
-        { coin, frame, snapshotIntervalMs, bookDepth, frameCount },
-        coinWatcher,
-        writer,
-    );
-    const unsubscribe = killSignalsHook(async () => {
-        logger.info('[HistoryCollector] Shutdown signal received');
-        collector.stop();
-    });
-
-    logger.info(
-        `[HistoryCollector] Config coin=${coin} frame=${frame} source=${source} interval=${snapshotIntervalMs}ms ` +
-        `depth=${bookDepth} gzip=${gzipEnabled} maxFrames=${maxFrames} count=${frameCount} directory=${directory}`,
-    );
+    const priceWatchers = PriceWatcherFactory.createSharedCoinWatchers(source);
+    const watchers = [...priceWatchers.values()];
     try {
-        await collector.run();
+        const warmUpTimeoutMs = getPriceSourceConfig(source).framePriceCaptureTimeoutMs;
+        await Promise.all(watchers.map(watcher => waitForFirstWatcherPrice(watcher, warmUpTimeoutMs)));
+        const retainedFrames = maxFrames;
+        const collectorFrameCount = cycle ? 0 : frameCount;
+        const writer = new HistoryFrameWriter({
+            directory,
+            gzip: gzipEnabled,
+            maxFrames: retainedFrames,
+            maxFramesPerCoin: cycle ? frameCount : 0,
+            retainedCoins: coins,
+        });
+        const collectors = coins.map(coin => new HistoryCollector(
+            { coin, frame, snapshotIntervalMs, bookDepth, frameCount: collectorFrameCount },
+            priceWatchers.get(coin)!, priceWatchers, writer,
+        ));
+        const unsubscribe = killSignalsHook(async () => {
+            logger.info('[HistoryCollector] Shutdown signal received');
+            collectors.forEach(collector => collector.stop());
+        }, {
+            onRepeatedSignal: () => process.exit(130),
+        });
+
+        logger.info(
+            `[HistoryCollector] Config coins=${coins.join(',')} frame=${frame} source=${source} interval=${snapshotIntervalMs}ms ` +
+            `depth=${bookDepth} gzip=${gzipEnabled} maxFrames=${retainedFrames} count=${frameCount} cycle=${cycle} directory=${directory}`,
+        );
+        try {
+            await Promise.all(collectors.map(collector => collector.run()));
+        } finally {
+            unsubscribe();
+        }
     } finally {
-        unsubscribe();
-        coinWatcher.disconnect();
+        watchers.forEach(watcher => watcher.disconnect());
+    }
+}
+
+async function run(): Promise<void> {
+    try {
+        await main();
+    } catch (error) {
+        logger.error(`[HistoryCollector] Fatal error: ${error_str(error)}`);
+        process.exitCode = 1;
+    } finally {
         await logger_shutdown();
     }
 }
 
-main().catch(async error => {
-    logger.error(`[HistoryCollector] Fatal error: ${error_str(error)}`);
-    await logger_shutdown();
-    process.exitCode = 1;
-});
+void run();

@@ -2,11 +2,14 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { gunzip as gunzipCallback } from 'node:zlib';
 import { promisify } from 'node:util';
-import { HISTORY_SCHEMA_VERSION, HistoryFrameV2, validateHistoryFrame } from './history_frame.js';
+import { isFileMissingError } from '../../../file_lock.js';
+import { HISTORY_SCHEMA_VERSION, HistoryFrameV3, validateHistoryFrame } from './history_frame.js';
 
 const gunzip = promisify(gunzipCallback);
 
-export async function readHistoryFrame(filePath: string): Promise<HistoryFrameV2> {
+export type HistoryReadStopCheck = () => boolean;
+
+export async function readHistoryFrame(filePath: string): Promise<HistoryFrameV3> {
     const payload = await fs.readFile(filePath);
     const json = filePath.endsWith('.gz') ? await gunzip(payload) : payload;
     const value: unknown = JSON.parse(json.toString('utf8'));
@@ -18,12 +21,21 @@ export async function readHistoryFrame(filePath: string): Promise<HistoryFrameV2
     const candidate = value as Record<string, unknown>;
     if (!candidate.settlement || !candidate.market_data || !candidate.data_quality ||
         !Array.isArray(candidate.snapshots) || !Array.isArray(candidate.connection_events) || !Array.isArray(candidate.data_gaps)) {
-        throw new Error(`Invalid HistoryFrameV2 structure: ${filePath}`);
+        throw new Error(`Invalid HistoryFrameV3 structure: ${filePath}`);
     }
-    const frame = value as HistoryFrameV2;
+    const frame = value as HistoryFrameV3;
     const errors = validateHistoryFrame(frame);
     if (errors.length > 0) throw new Error(`Invalid history frame ${filePath}: ${errors.join(', ')}`);
     return frame;
+}
+
+export async function readHistoryFrameIfPresent(filePath: string): Promise<HistoryFrameV3 | undefined> {
+    try {
+        return await readHistoryFrame(filePath);
+    } catch (error) {
+        if (isFileMissingError(error)) return undefined;
+        throw error;
+    }
 }
 
 export async function getHistoryFramePaths(directory: string): Promise<string[]> {
@@ -37,6 +49,13 @@ export async function getHistoryFramePaths(directory: string): Promise<string[]>
         .map(name => path.join(directory, name));
 }
 
-export async function* readHistoryFrames(directory: string): AsyncGenerator<HistoryFrameV2> {
-    for (const filePath of await getHistoryFramePaths(directory)) yield await readHistoryFrame(filePath);
+export async function* readHistoryFrames(
+    directory: string,
+    shouldStop: HistoryReadStopCheck = () => false,
+): AsyncGenerator<HistoryFrameV3> {
+    for (const filePath of await getHistoryFramePaths(directory)) {
+        if (shouldStop()) return;
+        const frame = await readHistoryFrameIfPresent(filePath);
+        if (frame !== undefined) yield frame;
+    }
 }

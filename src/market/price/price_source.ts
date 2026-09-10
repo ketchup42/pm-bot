@@ -7,6 +7,10 @@ export interface PriceSourceConfig {
     framePriceCaptureTimeoutMs: number;
     /** Maximum silence before a watcher reconnects an apparently open stream. */
     staleReconnectMs: number;
+    /** Delay before the first retry after a failed source connection. */
+    reconnectInitialDelayMs: number;
+    /** Maximum delay between repeated failed source connection attempts. */
+    reconnectMaxDelayMs: number;
 }
 
 export const PS_BINANCE = 'binance' as const;
@@ -18,7 +22,9 @@ const DEFAULT_PRICE_SOURCE_CONFIG = {
     maxAgeMs: 5_000,
     framePriceReadTimeoutMs: 5_000,
     framePriceCaptureTimeoutMs: 20_000,
-    staleReconnectMs: 25_000,
+    staleReconnectMs: 10_000,
+    reconnectInitialDelayMs: 1_000,
+    reconnectMaxDelayMs: 30_000,
 } as const satisfies PriceSourceConfig;
 
 /** Canonical registry of price sources and their collection characteristics. */
@@ -43,6 +49,21 @@ export function getPriceSourceConfig(source: PriceSource): Readonly<PriceSourceC
     return PRICE_SOURCE_CONFIGS[source];
 }
 
+export function getPriceSourceReconnectDelayMs(source: PriceSource, failedAttempt: number): number {
+    const config = getPriceSourceConfig(source);
+    const exponent = Math.max(0, failedAttempt - 1);
+    return Math.min(config.reconnectInitialDelayMs * 2 ** exponent, config.reconnectMaxDelayMs);
+}
+
 export function isPriceSource(value: string): value is PriceSource {
     return Object.prototype.hasOwnProperty.call(PRICE_SOURCE_CONFIGS, value);
 }
+
+export function isTwapPriceSource(source: PriceSource): boolean {
+    return source === PS_CHAINLINK_TWAP_30 || source === PS_CHAINLINK_TWAP_60;
+}
+
+export function getPriceSourceSymbol(coin: Coin, source: PriceSource): string {
+    return source === PS_BINANCE ? `${coin}usdt` : `${coin}/usd`;
+}
+import { Coin } from '../coins.js';

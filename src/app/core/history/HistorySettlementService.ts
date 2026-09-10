@@ -1,12 +1,14 @@
 import { MarketSide } from '../../../market/side.js';
 import { EventRaw, fetchEventBySlug, MarketRaw } from '../../../rest/scan.js';
 import { error_str } from '../../../utils.js';
-import { HistoryFrameV2 } from './history_frame.js';
-import { getHistoryFramePaths, readHistoryFrame } from './HistoryFrameReader.js';
+import { HistoryFrameV3 } from './history_frame.js';
+import { getHistoryFramePaths, readHistoryFrameIfPresent } from './HistoryFrameReader.js';
+import { tryAcquireHistoryFrameLock } from './HistoryFrameLock.js';
 import { HistoryFrameWriter } from './HistoryFrameWriter.js';
 
 export interface HistorySettlementOptions {
     directory: string;
+    shouldStop?: SettlementStopCheck;
 }
 
 export interface SettlementFailure {
@@ -18,12 +20,14 @@ export interface SettlementResult {
     checked: number;
     updated: number;
     unresolved: number;
+    disappeared: number;
     failed: number;
     failures: SettlementFailure[];
 }
 
 export type EventResolver = (slug: string) => Promise<EventRaw>;
-export type SettlementResolver = (frame: HistoryFrameV2) => Promise<MarketSide | undefined>;
+export type SettlementResolver = (frame: HistoryFrameV3) => Promise<MarketSide | undefined>;
+export type SettlementStopCheck = () => boolean;
 
 export function getConfirmedOutcome(market: MarketRaw): MarketSide | undefined {
     if (!market.closed || market.outcomes.length !== market.outcomePrices.length) return undefined;
@@ -33,7 +37,7 @@ export function getConfirmedOutcome(market: MarketRaw): MarketSide | undefined {
     return outcome === 'up' || outcome === 'down' ? outcome : undefined;
 }
 
-export function getConfirmedOutcomeForFrame(frame: HistoryFrameV2, event: EventRaw): MarketSide | undefined {
+export function getConfirmedOutcomeForFrame(frame: HistoryFrameV3, event: EventRaw): MarketSide | undefined {
     if (event.id !== frame.market_data.eventId) {
         throw new Error(`event_id_mismatch: expected ${frame.market_data.eventId}, got ${event.id}`);
     }
@@ -47,7 +51,7 @@ export function getConfirmedOutcomeForFrame(frame: HistoryFrameV2, event: EventR
 }
 
 export async function fetchConfirmedOutcome(
-    frame: HistoryFrameV2,
+    frame: HistoryFrameV3,
     fetchEvent: EventResolver = fetchEventBySlug,
 ): Promise<MarketSide | undefined> {
     return getConfirmedOutcomeForFrame(frame, await fetchEvent(frame.slug));
@@ -61,27 +65,43 @@ export async function settleHistoryDirectory(
     let checked = 0;
     let updated = 0;
     let unresolved = 0;
+    let disappeared = 0;
     const failures: SettlementFailure[] = [];
     for (const filePath of await getHistoryFramePaths(options.directory)) {
-        const frame = await readHistoryFrame(filePath);
-        if (frame.settlement.confirmed_outcome !== undefined) continue;
-        checked++;
-        let outcome: MarketSide | undefined;
+        if (options.shouldStop?.()) break;
+        const lock = await tryAcquireHistoryFrameLock(filePath);
+        if (lock === undefined) continue;
         try {
-            outcome = await resolveOutcome(frame);
-        } catch (error) {
-            failures.push({ file_path: filePath, reason: error_str(error) });
-            continue;
+            const frame = await readHistoryFrameIfPresent(filePath);
+            if (frame === undefined) {
+                disappeared++;
+                continue;
+            }
+            if (frame.settlement.confirmed_outcome !== undefined) continue;
+            checked++;
+            let outcome: MarketSide | undefined;
+            try {
+                outcome = await resolveOutcome(frame);
+            } catch (error) {
+                failures.push({ file_path: filePath, reason: error_str(error) });
+                continue;
+            }
+            if (options.shouldStop?.()) break;
+            if (outcome === undefined) {
+                unresolved++;
+                continue;
+            }
+            frame.settlement.confirmed_outcome = outcome;
+            frame.settlement.confirmed_at = now();
+            await new HistoryFrameWriter({
+                directory: options.directory,
+                gzip: filePath.endsWith('.gz'),
+                maxFrames: 0,
+            }).write(frame);
+            updated++;
+        } finally {
+            await lock.release();
         }
-        if (outcome === undefined) {
-            unresolved++;
-            continue;
-        }
-        frame.settlement.confirmed_outcome = outcome;
-        frame.settlement.confirmed_at = now();
-        const writer = new HistoryFrameWriter({ directory: options.directory, gzip: filePath.endsWith('.gz'), maxFrames: 0 });
-        await writer.write(frame);
-        updated++;
     }
-    return { checked, updated, unresolved, failed: failures.length, failures };
+    return { checked, updated, unresolved, disappeared, failed: failures.length, failures };
 }

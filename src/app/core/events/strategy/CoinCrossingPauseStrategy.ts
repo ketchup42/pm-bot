@@ -5,12 +5,24 @@ import { EventWatcher } from "../EventWatcher.js";
 import { logger } from "../../../../log.js";
 import { CoinPriceWatcher } from "../../../../market/price/CoinPriceWatcher.js";
 import { PriceWatcherFactory } from "../../../../market/price/PriceWatcherFactory.js";
-import { PS_CHAINLINK_TWAP_60 } from "../../../../market/price/price_source.js";
+import { PriceSource, PS_CHAINLINK_TWAP_60 } from "../../../../market/price/price_source.js";
 import { Coin } from "../../../../market/coins.js";
 import { ExecScheduler } from "../../ExecScheduler.js";
 
 /** Side of the coin price relative to the frame start price (within the deviation band logic). */
 type CrossingSide = 'above' | 'below';
+
+interface AbsoluteCrossingDeviation {
+    kind: 'absolute';
+    amount: number;
+}
+
+interface RelativeCrossingDeviation {
+    kind: 'relative';
+    factor: number;
+}
+
+type CrossingDeviation = AbsoluteCrossingDeviation | RelativeCrossingDeviation;
 
 /**
  * Non-trading strategy that counts how many times the coin price crossed the frame start
@@ -23,7 +35,7 @@ export class CoinCrossingPauseStrategy implements EventStrategy<CoinFrameEventMa
     private readonly _coin: Coin;
     private readonly _scheduler: ExecScheduler;
     private readonly _maxCrossings: number;
-    private readonly _deviation: number;
+    private readonly _deviation: CrossingDeviation;
     private readonly _coinWatcher: CoinPriceWatcher;
 
     private _event: EventWatcher<CoinFrameEventMarketData> | undefined = undefined;
@@ -35,10 +47,12 @@ export class CoinCrossingPauseStrategy implements EventStrategy<CoinFrameEventMa
         coin: Coin,
         scheduler: ExecScheduler,
         maxCrossings: number,
-        deviation: number
+        deviation: CrossingDeviation,
+        source: PriceSource,
     ) {
-        if (deviation <= 0) {
-            throw new Error(`[CoinCrossingPause] deviation must be > 0, got ${deviation}`);
+        const deviationValue = deviation.kind === 'absolute' ? deviation.amount : deviation.factor;
+        if (deviationValue <= 0) {
+            throw new Error(`[CoinCrossingPause] deviation must be > 0, got ${deviationValue}`);
         }
         if (maxCrossings < 0) {
             throw new Error(`[CoinCrossingPause] maxCrossings must be >= 0, got ${maxCrossings}`);
@@ -49,7 +63,7 @@ export class CoinCrossingPauseStrategy implements EventStrategy<CoinFrameEventMa
         this._scheduler = scheduler;
         this._maxCrossings = maxCrossings;
         this._deviation = deviation;
-        this._coinWatcher = PriceWatcherFactory.getCoinWatcher(coin, PS_CHAINLINK_TWAP_60);
+        this._coinWatcher = PriceWatcherFactory.getCoinWatcher(coin, source);
     }
 
     public static async create(
@@ -59,7 +73,24 @@ export class CoinCrossingPauseStrategy implements EventStrategy<CoinFrameEventMa
         maxCrossings: number,
         deviation: number
     ): Promise<CoinCrossingPauseStrategy> {
-        return new CoinCrossingPauseStrategy(eventId, coin, scheduler, maxCrossings, deviation);
+        return new CoinCrossingPauseStrategy(
+            eventId, coin, scheduler, maxCrossings,
+            { kind: 'absolute', amount: deviation }, PS_CHAINLINK_TWAP_60,
+        );
+    }
+
+    public static async createRelative(
+        eventId: string,
+        coin: Coin,
+        scheduler: ExecScheduler,
+        maxCrossings: number,
+        deviationFactor: number,
+        source: PriceSource,
+    ): Promise<CoinCrossingPauseStrategy> {
+        return new CoinCrossingPauseStrategy(
+            eventId, coin, scheduler, maxCrossings,
+            { kind: 'relative', factor: deviationFactor }, source,
+        );
     }
 
     private log(msg: string): void {
@@ -79,13 +110,16 @@ export class CoinCrossingPauseStrategy implements EventStrategy<CoinFrameEventMa
         if (price === undefined) return false;
 
         const start = history.coin_frame_start_price;
+        const deviation = this._deviation.kind === 'relative'
+            ? start * this._deviation.factor
+            : this._deviation.amount;
 
         // Hysteresis band around the start price: a crossing is counted only when the price
         // moves from above (start + deviation) to below (start - deviation) or the reverse.
         let side: CrossingSide | undefined;
-        if (price >= start + this._deviation) {
+        if (price >= start + deviation) {
             side = 'above';
-        } else if (price <= start - this._deviation) {
+        } else if (price <= start - deviation) {
             side = 'below';
         } else {
             side = undefined;

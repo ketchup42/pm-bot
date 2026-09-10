@@ -3,10 +3,6 @@ import { safeToNum } from '../../../../utils.js';
 import {
     REPLAY_STRATEGY_TREND_LINE_V1,
     REPLAY_STRATEGY_TREND_LINE_V2,
-    REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED,
-    REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED_HOLD,
-    REPLAY_STRATEGY_TREND_LINE_V2_FIXED_MAX_ENTRY,
-    REPLAY_STRATEGY_TREND_LINE_V2_NO_MIRROR,
     TREND_LINE_REPLAY_STRATEGY_IDS,
     TrendLineReplayStrategyId,
 } from '../../../defaults.js';
@@ -41,10 +37,6 @@ interface TrendLineReplayState {
 const PRESET_OPTIONS: Readonly<Record<TrendLineReplayPreset, Readonly<TrendLineReplayOptions>>> = Object.freeze({
     [REPLAY_STRATEGY_TREND_LINE_V1]: { directional: false, mirrorEnabled: true, maxEntryPriceAlways: false, exitsEnabled: true },
     [REPLAY_STRATEGY_TREND_LINE_V2]: { directional: false, mirrorEnabled: true, maxEntryPriceAlways: false, exitsEnabled: true },
-    [REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED]: { directional: true, mirrorEnabled: true, maxEntryPriceAlways: false, exitsEnabled: true },
-    [REPLAY_STRATEGY_TREND_LINE_V2_NO_MIRROR]: { directional: false, mirrorEnabled: false, maxEntryPriceAlways: false, exitsEnabled: true },
-    [REPLAY_STRATEGY_TREND_LINE_V2_FIXED_MAX_ENTRY]: { directional: false, mirrorEnabled: true, maxEntryPriceAlways: true, exitsEnabled: true },
-    [REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED_HOLD]: { directional: true, mirrorEnabled: false, maxEntryPriceAlways: true, exitsEnabled: false },
 });
 
 export const TREND_LINE_REPLAY_PRESETS: readonly TrendLineReplayPreset[] = TREND_LINE_REPLAY_STRATEGY_IDS;

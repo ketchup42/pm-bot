@@ -5,7 +5,7 @@ import { getPriceSourceConfig, PriceSource } from '../../../market/price/price_s
 import { EventMarketData } from '../../../market/orderbook/watcher/MarketOrderBooksWatcher.js';
 import { calculateTakerFee, feeRateBpsToDecimal } from '../../../rest/fees.js';
 import { csvValue, fileWrite, safeToNum } from '../../../utils.js';
-import { HistoryFrameV2, HistorySnapshotV2 } from '../history/history_frame.js';
+import { HistoryFrameV3, HistorySnapshotV3 } from '../history/history_frame.js';
 import { REPLAY_STRATEGY_NO_TRADE } from '../../defaults.js';
 
 export type ReplayOrderAction = 'buy' | 'sell';
@@ -38,7 +38,7 @@ export type ReplayDecision =
 
 export interface ReplayStrategyContext {
     frame: ReplayFrameContext;
-    snapshot: HistorySnapshotV2;
+    snapshot: HistorySnapshotV3;
     snapshot_index: number;
     progress: number;
     cash: number;
@@ -150,8 +150,8 @@ function roundLimit(price: number, tick: number, action: ReplayOrderAction): num
 }
 
 export function simulateTakerFill(
-    frame: HistoryFrameV2,
-    snapshot: HistorySnapshotV2,
+    frame: HistoryFrameV3,
+    snapshot: HistorySnapshotV3,
     order: ReplayOrder,
     availableCash: number,
     availableTokens: number,
@@ -231,7 +231,7 @@ export function simulateTakerFill(
 }
 
 export function runReplay(
-    frames: readonly HistoryFrameV2[],
+    frames: readonly HistoryFrameV3[],
     strategy: ReplayStrategy,
     config: ReplayExecutionConfig,
 ): ReplayResult {
@@ -313,6 +313,7 @@ export function runReplay(
                 if (!executionSnapshot) continue;
                 const tokens = order.side === 'up' ? upQuantity : downQuantity;
                 const fill = simulateTakerFill(frame, executionSnapshot, order, cash, tokens, config);
+                if (fill.status !== 'rejected') fill.reason_code = decision.reason_code;
                 fills.push(fill);
                 strategy.onFill?.(fill);
                 if (fill.status === 'rejected') continue;

@@ -15,7 +15,6 @@ export const COIN_CONFIGS = {
     sol: { precision: 2 },
     xrp: { precision: 4 },
     bnb: { precision: 4 },
-    hype: { precision: 4 },
 } as const satisfies Record<string, CoinConfig>;
 
 export type Coin = keyof typeof COIN_CONFIGS;

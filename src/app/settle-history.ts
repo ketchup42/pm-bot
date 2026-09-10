@@ -12,14 +12,20 @@ async function main(): Promise<void> {
     }
     logger.info(
         `[HistorySettlement] Checked=${result.checked} updated=${result.updated} ` +
-        `unresolved=${result.unresolved} failed=${result.failed}`,
+        `unresolved=${result.unresolved} disappeared=${result.disappeared} failed=${result.failed}`,
     );
     if (result.failed > 0) process.exitCode = 1;
-    await logger_shutdown();
 }
 
-main().catch(async error => {
-    logger.error(`[HistorySettlement] Fatal error: ${error_str(error)}`);
-    await logger_shutdown();
-    process.exitCode = 1;
-});
+async function run(): Promise<void> {
+    try {
+        await main();
+    } catch (error) {
+        logger.error(`[HistorySettlement] Fatal error: ${error_str(error)}`);
+        process.exitCode = 1;
+    } finally {
+        await logger_shutdown();
+    }
+}
+
+void run();

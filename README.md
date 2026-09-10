@@ -1,116 +1,140 @@
 # PM-BOT
 
-PM-BOT collects and analyses Polymarket up/down markets for supported coins and
-time frames. It has two intentionally separate modes:
+PM-BOT collects and researches Polymarket up/down markets for supported coins and
+time frames. Research mode uses public data only; live mode can submit real orders.
 
-- **Research mode** is public and read-only: collect `HistoryFrameV2` files,
-  confirm settlements, and replay registered strategy presets offline.
-- **Live mode** uses authenticated CLOB credentials and can place orders. Treat it
-  as operational software, not as a guarantee of profit.
+Start with research. It provides reproducible data and tests hypotheses with
+execution costs before changing a strategy or enabling trading.
 
-Start with research mode. It is the shortest path to reproducible evidence before
-changing a strategy or enabling any live execution.
-
-## Quick start: research workflow
+## Research quick start
 
 Requirements: Node.js **22.6+** and npm.
 
 ```bash
 npm install
 
-# Check the project without contacting a trading account.
+# Check types, style and tests without accessing a trading account.
 npm run check
 
-# Display the current supported coins, frames and price sources.
+# Show the current coins, frames and price sources.
 npm run collect -- --help
 
-# Collect one BTC 5-minute frame. This command is read-only.
-npm run collect -- --coin btc --frame 5m --source chainlink-twap-60 --count 1
+# Collect one frame for every coin in market/coins.ts.
+env HISTORY_SNAPSHOT_MS=50 \
+  npm run collect -- --coin all --frame 5m --source chainlink-twap-60 --count 1
 ```
 
-The collector waits for the next frame boundary, records the complete frame, and
-writes it to `history/frames` by default. Do not interrupt a one-frame run before
-its `Saved ... complete=true` line.
+The collector waits for the next frame boundary and writes one target frame for
+each supported coin. Every `HistoryFrameV3` file contains Up/Down order books and
+a price basket for every coin from the same source that determines the target
+market outcome. Do not interrupt a one-frame run before its
+`Saved ... complete=true` line.
 
-When a market has resolved, confirm its actual outcome and replay only the usable
-data:
+At 50 ms, a five-minute frame expects 6,000 snapshots per target;
+`complete=true` requires at least 5,700. The current registry has six targets, so
+a full interval can write up to 36,000 snapshots. See [docs/env.md](docs/env.md)
+for configuration details and the continuous collection command.
+
+The collector uses one shared price connection for the complete basket of its
+selected source. It reconnects after ten seconds without an update for an active
+coin, while preserving the strict V3 freshness checks. Failed connection attempts
+use a capped exponential delay from one second up to thirty seconds.
+
+After markets close, confirm their outcomes and run analysis only on usable data:
 
 ```bash
-# Updates unresolved HistoryFrameV2 files in HISTORY_DIR.
+# Writes confirmed outcomes into unresolved V3 frames.
 npm run history:settle
 
-# Runs one deterministic preset and writes its report files.
+# Runs one registered preset and writes a report.
 npm run backtest -- --history history/frames --output history/reports/latest --strategy v2
 
-# Runs every registered preset and writes a comparable matrix report.
+# Runs every registered preset on the same data set.
 npm run backtest:matrix -- --history history/frames --output history/reports/matrix/latest
+
+# Train both DOGE baseline entries on the newest 500 eligible frames.
+npm run research:doge-baseline -- --count 500
+
+# Replay the published model with fees, spread, slippage and book depth.
+npm run replay:doge-baseline -- --history history/frames --output history/reports/doge-baseline/latest
 ```
 
-`backtest:matrix` includes only frames with `data_quality.complete=true` and a
-confirmed settlement. Its `manifest.json` explains every excluded frame.
+The matrix uses only frames with `data_quality.complete=true` and a confirmed
+outcome. Its `manifest.json` lists excluded files and their reasons.
 
 ## Commands
 
-| Command                                                                                      | Purpose                                                                        |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `npm run dev`                                                                                | Run the live entry point from TypeScript.                                      |
-| `npm run build`                                                                              | Compile `src/` into `dist/`.                                                   |
-| `npm start`                                                                                  | Run the compiled live entry point.                                             |
-| `npm run typecheck`                                                                          | Type-check without producing output.                                           |
-| `npm run lint`                                                                               | Run static checks for source and tests.                                        |
-| `npm run test:history`                                                                       | Build and run the repository test suite.                                       |
-| `npm run test:coverage`                                                                      | Run the tests with Node's coverage report.                                     |
-| `npm run check`                                                                              | Run type-checking, linting and tests.                                          |
-| `npm run collect -- --coin btc --frame 5m --source chainlink-twap-60 --count 1`              | Collect public V2 history; `--count 0` runs until stopped.                     |
-| `npm run history:settle`                                                                     | Confirm outcomes for collected V2 history.                                     |
-| `npm run backtest -- --history history/frames --output history/reports/latest --strategy v2` | Replay one registered preset.                                                  |
-| `npm run backtest:matrix -- --history history/frames --output history/reports/matrix/latest` | Replay every registered preset on eligible frames.                             |
+| Command                                                                                      | Purpose                                                                  |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `npm run dev`                                                                                | Run the original live entry point from TypeScript.                       |
+| `npm run build`                                                                              | Compile `src/` into `dist/`.                                             |
+| `npm start`                                                                                  | Run the compiled original live entry point.                              |
+| `npm run check`                                                                              | Run type-checking, linting and tests.                                    |
+| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 500 --cycle`   | Continuously retain the newest 500 DOGE frames.                          |
+| `npm run history:settle`                                                                     | Confirm outcomes for collected V3 frames.                                |
+| `npm run backtest -- --history history/frames --strategy v2`                                 | Replay one registered reference preset.                                  |
+| `npm run backtest:matrix -- --history history/frames`                                        | Compare all registered reference presets.                                |
+| `npm run research:doge-baseline -- --count 500`                                              | Train and atomically publish the two-mode DOGE model.                    |
+| `npm run replay:doge-baseline -- --history history/frames`                                   | Replay the published DOGE model without retraining it.                   |
+| `npm run strategy:doge-baseline -- --debug true`                                             | Run DOGE with a virtual wallet; `false` enables real orders.             |
+| `npm run model-refresh:doge-baseline -- --frame 5m --count 100 --train-count 500`            | Settle and retrain immediately, then every 100 frame boundaries.         |
 
 ## Data lifecycle
 
 ```text
-public price + CLOB streams
-           │
-           ▼
-      collect ──► HistoryFrameV2 files ──► history:settle ──► backtest / matrix
-                                             │                         │
-                                             ▼                         ▼
-                                     confirmed outcome         reports and metrics
+selected-source prices + CLOB order books
+                  │
+                  ▼
+collect → HistoryFrameV3 → history:settle → research:doge-baseline → model.json
+                              │                                      │
+                              └──────── replay:doge-baseline ◀────────┘
+                                                                     │
+                                                                     ▼
+                                                      strategy:doge-baseline
 ```
 
-`complete=true` means the collector met its coverage, price-boundary and
-connection-quality requirements. It does **not** mean that a strategy will be
-profitable. Settlement confirmation is a separate, later step.
+`complete=true` describes collection quality: snapshot coverage, boundary prices
+and connection state. It does **not** mean that a strategy is profitable. Outcome
+confirmation is a separate later operation.
 
-## Live mode and credentials
+The DOGE model contains two independent logistic-regression modes. The early mode
+decides at 60 seconds from 15/30/60-second returns. If it does not enter, the late
+mode decides at 120 seconds from 75/90/120-second returns. The replay command uses
+the already published model and applies the same prediction-side entry rule. Market
+price can reject the predicted trade but cannot switch it to the opposite side. An
+emergency exit is allowed in the final 30 seconds after DOGE remains one basis point
+against the position for five seconds.
 
-`npm run dev` and `npm start` construct an authenticated trading client. Configure
-the required credentials in a local `.env`; never commit that file or its contents.
-The exact variables, defaults and a placeholder-only example are in
-[docs/env.md](docs/env.md).
+## Live mode and secrets
 
-The current live entry point uses BTC on 5-minute frames with the Chainlink 60s
-TWAP price source and starts the trend-line V1/V2 strategies. Review
-[`src/app/index.ts`](src/app/index.ts) before running it.
+`npm run dev` and `npm start` create an authenticated trading client. Configure it
+in a local `.env`, which must never be committed or written to logs. The complete
+variable list and a placeholder-only example are in [docs/env.md](docs/env.md).
 
-## Documentation map
+`strategy:doge-baseline` defaults to a virtual wallet, but the current scheduler
+still initialises an authenticated client in both modes. Passing `--debug false`
+enables real orders. Review the model and its latest replay report first.
 
-| Document                                    | Read it when you need to...                                       |
-| ------------------------------------------- | ----------------------------------------------------------------- |
-| [Environment](docs/env.md)                  | Configure read-only collection, logging, dumps or live access.    |
-| [Architecture](docs/abstractions.md)        | Navigate the collectors, watchers, history and replay layers.     |
-| [Strategy guide](docs/strategies.md)        | Add or change an event strategy safely.                           |
-| [Virtual wallets](docs/wallets.md)          | Understand simulated balances, orders and shutdown behaviour.     |
-| [Live integration example](docs/example.md) | See the minimal scheduler/watcher/strategy wiring.                |
+## Documentation
 
-## Source-of-truth registries
+| Document                                    | Read it when you need to...                                      |
+| ------------------------------------------- | ---------------------------------------------------------------- |
+| [Environment](docs/env.md)                  | Configure collection, logs, dumps or live access.                |
+| [Architecture](docs/abstractions.md)        | Understand watchers, history and replay layers.                  |
+| [Strategy guide](docs/strategies.md)        | Add or change an event strategy safely.                          |
+| [Virtual wallets](docs/wallets.md)          | Understand balances, orders and shutdown behaviour.              |
+| [Live integration example](docs/example.md) | See minimal scheduler, watcher and strategy wiring.              |
 
-Do not copy lists of supported instruments into callers. Change these registries
-instead; their derived types and CLI validation update with them.
+## Canonical registries
 
-| Registry                                  | Owns                                                         |
-| ----------------------------------------- | ------------------------------------------------------------ |
-| `src/market/coins.ts`                     | Supported coins and external-price precision.                |
-| `src/market/frame.ts`                     | Supported frames and their durations.                        |
-| `src/market/price/price_source.ts`        | Supported price sources and timeout/quality characteristics. |
-| `src/app/core/backtest/replay_presets.ts` | Presets available to single replay and matrix replay.        |
+Do not copy lists of coins, frames, sources or strategy presets into callers.
+Change the central registry instead; derived types and command-line validation
+update with it.
+
+| Registry                                  | Owns                                                             |
+| ----------------------------------------- | ---------------------------------------------------------------- |
+| `src/market/coins.ts`                     | Supported coins and external-price precision.                    |
+| `src/market/frame.ts`                     | Supported frames and their durations.                            |
+| `src/market/price/price_source.ts`        | Price sources, timeouts and quality criteria.                    |
+| `src/app/defaults.ts`                     | Default values for collection and replay.                        |
+| `src/app/core/backtest/replay_presets.ts` | Presets available to single and matrix replay.                   |

@@ -1,5 +1,5 @@
 import { csvValue, fileWrite, stringValue } from '../../../utils.js';
-import { HistoryFrameV2 } from '../history/history_frame.js';
+import { HistoryFrameV3 } from '../history/history_frame.js';
 import { ReplayExecutionConfig, ReplayResult, runReplay, writeReplayReport } from './replay.js';
 import { ReplayStrategyPreset } from './replay_presets.js';
 
@@ -11,7 +11,7 @@ export interface ReplayMatrixExcludedFrame {
 
 export interface ReplayMatrixResult {
     config: ReplayExecutionConfig;
-    frames: readonly HistoryFrameV2[];
+    frames: readonly HistoryFrameV3[];
     excluded_frames: readonly ReplayMatrixExcludedFrame[];
     results: Readonly<Record<string, ReplayResult>>;
 }
@@ -22,11 +22,11 @@ export interface ReplayMatrixSourceFile {
 }
 
 export function runReplayMatrix(
-    inputFrames: readonly HistoryFrameV2[],
+    inputFrames: readonly HistoryFrameV3[],
     presets: readonly ReplayStrategyPreset[],
     config: ReplayExecutionConfig,
 ): ReplayMatrixResult {
-    const frames: HistoryFrameV2[] = [];
+    const frames: HistoryFrameV3[] = [];
     const excludedFrames: ReplayMatrixExcludedFrame[] = [];
     for (const frame of inputFrames) {
         if (!frame.data_quality.complete) {

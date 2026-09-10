@@ -1,4 +1,4 @@
-import { Coin } from '../../../market/coins.js';
+import { getSupportedCoins, Coin } from '../../../market/coins.js';
 import {
     EventFrame,
     getCoinSlug,
@@ -16,14 +16,16 @@ import { logger } from '../../../log.js';
 import { HistoryFrameWriter } from './HistoryFrameWriter.js';
 import {
     HISTORY_SCHEMA_VERSION,
-    HistoryConnectionEventV2,
-    HistoryFrameV2,
-    HistorySideSnapshotV2,
-    HistorySnapshotV2,
+    HistoryConnectionEventV3,
+    HistoryFrameV3,
+    HistoryPriceV3,
+    HistorySideSnapshotV3,
+    HistorySnapshotV3,
     buildHistoryGaps,
     buildHistoryQuality,
     deriveHistoryOutcome,
     historyNumberOrUndefined,
+    makeHistoryPrice,
     selectBestLevels,
 } from './history_frame.js';
 
@@ -40,18 +42,21 @@ interface HistoryFrameFinalizationInput {
     endTime: number;
     durationMs: number;
     slug: string;
-    snapshots: HistorySnapshotV2[];
+    snapshots: HistorySnapshotV3[];
     market: ReturnType<MarketOrderBooksWatcher['getMarketData']>;
-    connectionEvents: HistoryConnectionEventV2[];
+    connectionEvents: HistoryConnectionEventV3[];
     stoppedEarly: boolean;
     startPricePromise: Promise<number | undefined>;
     endPricePromise: Promise<number | undefined> | undefined;
+    indicatorStartPricesPromise: Promise<Partial<Record<Coin, HistoryPriceV3>>>;
+    indicatorEndPricesPromise: Promise<Partial<Record<Coin, HistoryPriceV3>>> | undefined;
 }
 
 export class HistoryCollector {
     private readonly options: HistoryCollectorOptions;
     private readonly coinWatcher: CoinPriceWatcher;
     private readonly writer: HistoryFrameWriter;
+    private readonly indicatorWatchers: ReadonlyMap<Coin, CoinPriceWatcher>;
     private stopped = false;
     private activeBookWatcher: MarketOrderBooksWatcher | undefined;
     private readonly pendingFinalizations = new Set<Promise<void>>();
@@ -59,6 +64,7 @@ export class HistoryCollector {
     public constructor(
         options: HistoryCollectorOptions,
         coinWatcher: CoinPriceWatcher,
+        indicatorWatchers: ReadonlyMap<Coin, CoinPriceWatcher>,
         writer: HistoryFrameWriter,
     ) {
         if (!Number.isInteger(options.snapshotIntervalMs) || options.snapshotIntervalMs < 25) {
@@ -73,8 +79,15 @@ export class HistoryCollector {
         if (coinWatcher.getCoin() !== options.coin) {
             throw new Error(`Coin watcher target ${coinWatcher.getCoin()} does not match ${options.coin}`);
         }
+        for (const coin of getSupportedCoins()) {
+            const watcher = indicatorWatchers.get(coin);
+            if (watcher === undefined || watcher.getCoin() !== coin || watcher.getSource() !== coinWatcher.getSource()) {
+                throw new Error(`Invalid indicator watcher for ${coin}`);
+            }
+        }
         this.options = options;
         this.coinWatcher = coinWatcher;
+        this.indicatorWatchers = indicatorWatchers;
         this.writer = writer;
     }
 
@@ -117,37 +130,38 @@ export class HistoryCollector {
         const slug = getCoinSlug(this.options.coin, this.options.frame);
         logger.info(`[HistoryCollector] Starting ${slug}`);
 
-        const connectionEvents: HistoryConnectionEventV2[] = [];
-        const unsubscribePriceEvents = this.coinWatcher.subscribeConnectionEvents(event => {
-            connectionEvents.push({
-                timestamp: event.timestamp,
-                state: event.state,
-                code: undefined,
-                reason: event.reason,
-                source: 'coin_price',
+        const connectionEvents: HistoryConnectionEventV3[] = [];
+        const unsubscribeIndicatorEvents = getSupportedCoins().map(coin => {
+            const watcher = this.indicatorWatchers.get(coin)!;
+            return watcher.subscribeConnectionEvents(event => {
+                connectionEvents.push({
+                    timestamp: event.timestamp, state: event.state, code: undefined, reason: event.reason,
+                    source: watcher.getSource(), coin,
+                });
             });
         });
 
         const framePriceTimeoutMs = getPriceSourceConfig(this.coinWatcher.getSource()).framePriceCaptureTimeoutMs;
         const startPricePromise = this.coinWatcher.getPriceByFrame(this.options.frame, framePriceTimeoutMs);
+        const indicatorStartPricesPromise = this.captureIndicatorFramePrices(startTime * 1_000);
         const bookWatcher = await CoinMarketOrderBooksWatcher.create(slug, {
             onWSOpen: async () => {
-                connectionEvents.push({ timestamp: Date.now(), state: 'open', code: undefined, reason: undefined, source: 'clob' });
+                connectionEvents.push({ timestamp: Date.now(), state: 'open', code: undefined, reason: undefined, source: 'clob', coin: this.options.coin });
             },
             onWSClose: async (_managerId, code, reason) => {
-                connectionEvents.push({ timestamp: Date.now(), state: 'close', code, reason: reason || undefined, source: 'clob' });
+                connectionEvents.push({ timestamp: Date.now(), state: 'close', code, reason: reason || undefined, source: 'clob', coin: this.options.coin });
             },
             onError: async error => {
                 const reason = error instanceof Error ? error.message : error_str(error);
-                connectionEvents.push({ timestamp: Date.now(), state: 'error', code: undefined, reason, source: 'clob' });
+                connectionEvents.push({ timestamp: Date.now(), state: 'error', code: undefined, reason, source: 'clob', coin: this.options.coin });
             },
         }).catch(error => {
-            unsubscribePriceEvents();
+            unsubscribeIndicatorEvents.forEach(unsubscribe => unsubscribe());
             throw error;
         });
         this.activeBookWatcher = bookWatcher;
         const market = bookWatcher.getMarketData();
-        const snapshots: HistorySnapshotV2[] = [];
+        const snapshots: HistorySnapshotV3[] = [];
         let nextSnapshotAt = Date.now();
 
         try {
@@ -163,6 +177,7 @@ export class HistoryCollector {
             const endPricePromise = stoppedEarly
                 ? undefined
                 : this.coinWatcher.getPriceByFrame(this.options.frame, framePriceTimeoutMs);
+            const indicatorEndPricesPromise = stoppedEarly ? undefined : this.captureIndicatorFramePrices(endTime * 1_000);
             return {
                 finalization: this.finalizeFrame({
                     startTime,
@@ -175,10 +190,12 @@ export class HistoryCollector {
                     stoppedEarly,
                     startPricePromise,
                     endPricePromise,
+                    indicatorStartPricesPromise,
+                    indicatorEndPricesPromise,
                 }),
             };
         } finally {
-            unsubscribePriceEvents();
+            unsubscribeIndicatorEvents.forEach(unsubscribe => unsubscribe());
             bookWatcher.disconnect();
             this.activeBookWatcher = undefined;
         }
@@ -195,21 +212,29 @@ export class HistoryCollector {
         stoppedEarly,
         startPricePromise,
         endPricePromise,
+        indicatorStartPricesPromise,
+        indicatorEndPricesPromise,
     }: HistoryFrameFinalizationInput): Promise<void> {
         const startPrice = historyNumberOrUndefined(await startPricePromise);
         const endPrice = historyNumberOrUndefined(await endPricePromise);
+        const indicatorStartPrices = await indicatorStartPricesPromise;
+        const indicatorEndPrices = indicatorEndPricesPromise === undefined ? {} : await indicatorEndPricesPromise;
         const quality = buildHistoryQuality(
             snapshots,
             startPrice,
             endPrice,
+            indicatorStartPrices,
+            indicatorEndPrices,
             durationMs,
             this.options.snapshotIntervalMs,
             stoppedEarly,
             this.coinWatcher.getSource(),
+            getSupportedCoins(),
         );
-        const frame: HistoryFrameV2 = {
+        const frame: HistoryFrameV3 = {
             schema_version: HISTORY_SCHEMA_VERSION,
             source: this.coinWatcher.getSource(),
+            indicator_coins: [...getSupportedCoins()],
             coin: this.options.coin,
             frame: this.options.frame,
             slug,
@@ -220,6 +245,8 @@ export class HistoryCollector {
             book_depth: this.options.bookDepth,
             coin_frame_start_price: startPrice,
             coin_frame_end_price: endPrice,
+            indicator_frame_start_prices: indicatorStartPrices,
+            indicator_frame_end_prices: indicatorEndPrices,
             market_data: market,
             settlement: {
                 derived_outcome: deriveHistoryOutcome(startPrice, endPrice),
@@ -227,13 +254,16 @@ export class HistoryCollector {
                 confirmed_at: undefined,
             },
             connection_events: connectionEvents,
-            data_gaps: buildHistoryGaps(snapshots, this.options.snapshotIntervalMs, this.coinWatcher.getSource()),
+            data_gaps: buildHistoryGaps(
+                snapshots, this.options.snapshotIntervalMs, this.options.coin, this.coinWatcher.getSource(),
+                getSupportedCoins(),
+            ),
             snapshots,
             data_quality: quality,
         };
         const result = await this.writer.write(frame);
         const qualityDetails = quality.warnings.length === 0 ? '' :
-            ` warnings=${quality.warnings.join(',')} coinGaps=${quality.coin_gap_snapshots} ` +
+            ` warnings=${quality.warnings.join(',')} targetGaps=${quality.target_price.missing_snapshots + quality.target_price.stale_snapshots} ` +
             `clobDisconnects=${quality.disconnected_book_snapshots}`;
         logger.info(
             `[HistoryCollector] Saved ${result.path} (${result.bytes} bytes, ` +
@@ -256,18 +286,37 @@ export class HistoryCollector {
         await Promise.all(this.pendingFinalizations);
     }
 
-    private makeSnapshot(book: MarketOrderBooksWatcher, timestamp: number): HistorySnapshotV2 {
+    private makeSnapshot(book: MarketOrderBooksWatcher, timestamp: number): HistorySnapshotV3 {
+        const indicatorPrices: Partial<Record<Coin, HistoryPriceV3>> = {};
+        for (const coin of getSupportedCoins()) {
+            const watcher = this.indicatorWatchers.get(coin)!;
+            const price = makeHistoryPrice(watcher.getCoinPrice(), watcher.getTimeStamp());
+            if (price !== undefined) indicatorPrices[coin] = price;
+        }
         return {
             timestamp,
             coin_price: historyNumberOrUndefined(this.coinWatcher.getCoinPrice()),
             coin_timestamp: historyNumberOrUndefined(this.coinWatcher.getTimeStamp()),
+            indicator_prices: indicatorPrices,
             book_watching: book.isWatching(),
             up: this.makeSideSnapshot(book, 'up'),
             down: this.makeSideSnapshot(book, 'down'),
         };
     }
 
-    private makeSideSnapshot(book: MarketOrderBooksWatcher, side: MarketSide): HistorySideSnapshotV2 {
+    private async captureIndicatorFramePrices(frameTimestamp: number): Promise<Partial<Record<Coin, HistoryPriceV3>>> {
+        const timeoutMs = getPriceSourceConfig(this.coinWatcher.getSource()).framePriceCaptureTimeoutMs;
+        const prices = await Promise.all(getSupportedCoins().map(async coin => {
+            const watcher = this.indicatorWatchers.get(coin)!;
+            const price = historyNumberOrUndefined(await watcher.getPriceByFrame(this.options.frame, timeoutMs));
+            return [coin, makeHistoryPrice(price, frameTimestamp)] as const;
+        }));
+        const result: Partial<Record<Coin, HistoryPriceV3>> = {};
+        for (const [coin, price] of prices) if (price !== undefined) result[coin] = price;
+        return result;
+    }
+
+    private makeSideSnapshot(book: MarketOrderBooksWatcher, side: MarketSide): HistorySideSnapshotV3 {
         const bids = side === 'up' ? book.getBidsUp() : book.getBidsDown();
         const asks = side === 'up' ? book.getAsksUp() : book.getAsksDown();
         return {

@@ -15,21 +15,34 @@ import { REPLAY_STRATEGY_PRESETS } from '../dist/app/core/backtest/replay_preset
 import { runReplayMatrix, writeReplayMatrixReport } from '../dist/app/core/backtest/replay_matrix.js';
 import { HISTORY_SCHEMA_VERSION, buildHistoryGaps, buildHistoryQuality } from '../dist/app/core/history/history_frame.js';
 import { PS_CHAINLINK_TWAP_60 } from '../dist/market/price/price_source.js';
+import { getSupportedCoins } from '../dist/market/coins.js';
 import { csvValue } from '../dist/utils.js';
 import {
+    makeDogeBaselineFeaturesFromPrices,
+    predictDogeBaseline,
+    trainDogeBaselineWeights,
+} from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineModel.js';
+import {
+    calculateDogeBaselineTrainingMetrics,
+} from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineResearch.js';
+import {
+    calculateDogeBaselineEntryLimit,
+    evaluateDogeBaselineEmergencyExit,
+    getDogeBaselinePredictedSide,
+    selectDogeBaselineEntry,
+} from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineDecision.js';
+import {
     REPLAY_STRATEGY_TREND_LINE_V2,
-    REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED,
-    REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED_HOLD,
-    REPLAY_STRATEGY_TREND_LINE_V2_FIXED_MAX_ENTRY,
-    REPLAY_STRATEGY_TREND_LINE_V2_NO_MIRROR,
 } from '../dist/app/defaults.js';
 
 function makeFrame() {
     const start = 1_000;
+    const indicatorPrices = timestamp => Object.fromEntries(getSupportedCoins().map(coin => [coin, { price: 60_000, timestamp }]));
     const snapshots = [0, 1].map(index => ({
         timestamp: start * 1_000 + index * 100,
         coin_price: 60_000,
         coin_timestamp: start * 1_000 + index * 100,
+        indicator_prices: indicatorPrices(start * 1_000 + index * 100),
         book_watching: true,
         up: {
             book_timestamp: start * 1_000 + index * 100,
@@ -48,10 +61,13 @@ function makeFrame() {
     }));
     return {
         schema_version: HISTORY_SCHEMA_VERSION,
-        source: PS_CHAINLINK_TWAP_60, coin: 'btc', frame: '5m', slug: 'btc-updown-5m-1000',
+        source: PS_CHAINLINK_TWAP_60, indicator_coins: [...getSupportedCoins()],
+        coin: 'btc', frame: '5m', slug: 'btc-updown-5m-1000',
         start_time: start, end_time: start + 300, collected_at: start * 1_000 + 300_000,
         snapshot_interval_ms: 100, book_depth: 10,
         coin_frame_start_price: 60_000, coin_frame_end_price: 60_010,
+        indicator_frame_start_prices: indicatorPrices(start * 1_000),
+        indicator_frame_end_prices: indicatorPrices((start + 300) * 1_000),
         market_data: {
             eventId: 'event', marketId: 'market', conditionId: 'condition', tick_size: 0.01,
             min_order_size: 5, fees_enabled: true, maker_base_fee: 0, taker_base_fee: 700,
@@ -59,12 +75,114 @@ function makeFrame() {
             up: { outcome: 'up', tokenId: 'up' }, down: { outcome: 'down', tokenId: 'down' },
         },
         settlement: { derived_outcome: 'up', confirmed_outcome: undefined, confirmed_at: undefined },
-        connection_events: [], data_gaps: buildHistoryGaps(snapshots, 100, PS_CHAINLINK_TWAP_60), snapshots,
-        data_quality: buildHistoryQuality(snapshots, 60_000, 60_010, 200, 100, false, PS_CHAINLINK_TWAP_60),
+        connection_events: [],
+        data_gaps: buildHistoryGaps(snapshots, 100, 'btc', PS_CHAINLINK_TWAP_60, getSupportedCoins()),
+        snapshots,
+        data_quality: buildHistoryQuality(
+            snapshots, 60_000, 60_010, indicatorPrices(start * 1_000), indicatorPrices((start + 300) * 1_000),
+            200, 100, false, PS_CHAINLINK_TWAP_60, getSupportedCoins(),
+        ),
     };
 }
 
 const config = { initial_balance: 100, latency_snapshots: 0, minimum_order_value: 1 };
+
+test('DOGE baseline features use only prices available at the decision timestamp', () => {
+    const start = 1_000_000;
+    const prices = [15, 30, 45, 60, 75].map(seconds => ({
+        timestamp: start + seconds * 1_000,
+        price: 100 + seconds,
+    }));
+    assert.deepEqual(
+        makeDogeBaselineFeaturesFromPrices(100, start, prices, 60_000, [15_000, 30_000, 60_000]),
+        [Math.log(160 / 145), Math.log(160 / 130), Math.log(160 / 100)],
+    );
+});
+
+test('DOGE baseline probability applies saved normalization and logistic weights', () => {
+    const probability = predictDogeBaseline(
+        { means: [1, 2], scales: [2, 4], weights: [0, 2, -1] },
+        [3, 6],
+    );
+    assert.ok(Math.abs(probability - 0.7310585786300049) < 1e-12);
+});
+
+test('DOGE baseline training learns the direction of a simple signal', () => {
+    const observation = (feature, outcome) => ({
+        slug: String(feature),
+        startTime: feature,
+        outcome,
+        features: { 'early-60': [feature], 'late-120': [feature] },
+    });
+    const weights = trainDogeBaselineWeights([
+        observation(-2, 'down'), observation(-1, 'down'),
+        observation(1, 'up'), observation(2, 'up'),
+    ], 'early-60');
+    assert.ok(predictDogeBaseline(weights, [2]) > 0.5);
+    assert.ok(predictDogeBaseline(weights, [-2]) < 0.5);
+});
+
+test('DOGE training metrics compare predictions and signed price continuation with the confirmed outcome', () => {
+    const observation = (feature, outcome) => ({
+        slug: String(feature), startTime: feature, outcome,
+        features: { 'early-60': [feature], 'late-120': [feature] },
+    });
+    const observations = [observation(-0.001, 'down'), observation(0.001, 'up')];
+    const weights = { means: [0], scales: [1], weights: [0, 10_000] };
+    const model = { modes: { 'early-60': weights, 'late-120': weights } };
+    const metrics = calculateDogeBaselineTrainingMetrics(observations, model, 'early-60');
+    assert.equal(metrics.accuracy, 1);
+    assert.equal(metrics.continuationAccuracy, 1);
+    assert.equal(metrics.predictedUp, 1);
+    assert.equal(metrics.predictedDown, 1);
+    assert.equal(metrics.confusion.predictedUpActualUp, 1);
+    assert.equal(metrics.confusion.predictedDownActualDown, 1);
+    assert.equal(metrics.outcomesByDeviation.reduce((sum, value) => sum + value.frames, 0), 2);
+});
+
+test('DOGE baseline buys only the side predicted by the model', () => {
+    assert.equal(selectDogeBaselineEntry(0.51, {
+        upAsk: 0.50, downAsk: 0.50, feesEnabled: false, takerBaseFee: 0,
+    }), undefined);
+    assert.equal(selectDogeBaselineEntry(0.80, {
+        upAsk: 0.50, downAsk: 0.05, feesEnabled: false, takerBaseFee: 0,
+    })?.side, 'up');
+    assert.equal(selectDogeBaselineEntry(0.20, {
+        upAsk: 0.05, downAsk: 0.50, feesEnabled: false, takerBaseFee: 0,
+    })?.side, 'down');
+    assert.equal(selectDogeBaselineEntry(0.80, {
+        upAsk: 0.90, downAsk: 0.05, feesEnabled: false, takerBaseFee: 0,
+    }), undefined);
+    assert.equal(getDogeBaselinePredictedSide(0.5), undefined);
+});
+
+test('DOGE emergency exit requires the final window, adverse deviation and confirmation', () => {
+    const base = {
+        side: 'up', frameStartPrice: 100, currentPrice: 99.98,
+        frameEndTimestamp: 300_000, adverseSince: undefined,
+    };
+    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 269_999 }), {
+        adverseSince: undefined, adverse: false, triggered: false,
+    });
+    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 270_000 }), {
+        adverseSince: 270_000, adverse: true, triggered: false,
+    });
+    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 275_000, adverseSince: 270_000 }), {
+        adverseSince: 270_000, adverse: true, triggered: true,
+    });
+    assert.deepEqual(evaluateDogeBaselineEmergencyExit({
+        ...base, timestamp: 275_000, currentPrice: 100, adverseSince: 270_000,
+    }), { adverseSince: undefined, adverse: false, triggered: false });
+    assert.equal(evaluateDogeBaselineEmergencyExit({
+        ...base, side: 'down', timestamp: 275_000, currentPrice: 100.02, adverseSince: 270_000,
+    }).triggered, true);
+});
+
+test('DOGE baseline entry crosses one tick without producing an invalid unit price', () => {
+    assert.equal(calculateDogeBaselineEntryLimit(0.50, 0.01), 0.51);
+    assert.equal(calculateDogeBaselineEntryLimit(0.99, 0.01), 0.99);
+});
+
 
 test('CSV values preserve commas, quotes, newlines and undefined fields', () => {
     assert.equal(csvValue(undefined), '');
@@ -240,48 +358,6 @@ test('V2 baseline can enter both sides from the same snapshot', () => {
     assert.deepEqual(result.fills.map(fill => fill.side).sort(), ['down', 'up']);
 });
 
-test('directed V2 blocks the side opposite to signed BTC movement', () => {
-    const result = runReplay([makeTrendFrame()], new TrendLineReplayStrategy(REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED), config);
-    assert.equal(result.metrics.trade_count, 1);
-    assert.equal(result.fills[0].side, 'up');
-});
-
-test('V2 no-mirror does not use the lower mirror entry line', () => {
-    const frame = makeTrendFrame();
-    for (const snapshot of frame.snapshots) {
-        snapshot.up.asks = [{ price: '0.54', size: '10' }];
-        snapshot.down.asks = [{ price: '0.54', size: '10' }];
-        snapshot.up.bids = [{ price: '0.40', size: '10' }];
-        snapshot.down.bids = [{ price: '0.40', size: '10' }];
-    }
-    const baseline = runReplay([frame], new TrendLineReplayStrategy(REPLAY_STRATEGY_TREND_LINE_V2), config);
-    const noMirror = runReplay([frame], new TrendLineReplayStrategy(REPLAY_STRATEGY_TREND_LINE_V2_NO_MIRROR), config);
-    assert.equal(baseline.metrics.trade_count, 2);
-    assert.equal(noMirror.metrics.trade_count, 0);
-});
-
-test('fixed max-entry preset closes the V2 late-entry cap loophole', () => {
-    const frame = makeTrendFrame(0.8);
-    for (const snapshot of frame.snapshots) {
-        snapshot.up.asks = [{ price: '0.93', size: '10' }];
-        snapshot.down.asks = [{ price: '0.93', size: '10' }];
-        snapshot.up.bids = [{ price: '0.92', size: '10' }];
-        snapshot.down.bids = [{ price: '0.92', size: '10' }];
-    }
-    const baseline = runReplay([frame], new TrendLineReplayStrategy(REPLAY_STRATEGY_TREND_LINE_V2), config);
-    const fixed = runReplay([frame], new TrendLineReplayStrategy(REPLAY_STRATEGY_TREND_LINE_V2_FIXED_MAX_ENTRY), config);
-    assert.equal(baseline.metrics.trade_count, 2);
-    assert.equal(fixed.metrics.trade_count, 0);
-});
-
-test('directed hold preset keeps its position until settlement without A/B/C exits', () => {
-    const frame = makeTrendFrame();
-    frame.snapshots[1].up.bids = [{ price: '0.10', size: '10' }];
-    const result = runReplay([frame], new TrendLineReplayStrategy(REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED_HOLD), config);
-    assert.equal(result.fills.filter(fill => fill.action === 'buy').length, 1);
-    assert.equal(result.fills.filter(fill => fill.action === 'sell').length, 0);
-});
-
 test('matrix uses every registered preset and excludes incomplete or unconfirmed frames', async () => {
     const confirmed = makeFrame();
     confirmed.settlement.confirmed_outcome = 'up';
@@ -303,7 +379,7 @@ test('matrix uses every registered preset and excludes incomplete or unconfirmed
         assert.ok(files.includes('manifest.json'));
         assert.ok(files.includes('summary.csv'));
         assert.ok(files.includes('summary.md'));
-        assert.ok(files.includes(REPLAY_STRATEGY_TREND_LINE_V2_DIRECTED_HOLD));
+        assert.ok(files.includes(REPLAY_STRATEGY_TREND_LINE_V2));
     } finally {
         await fs.rm(directory, { recursive: true, force: true });
     }
