@@ -3,12 +3,12 @@ import { Coin } from '../../../market/coins.js';
 import { EventFrame } from '../../../market/frame.js';
 import { getPriceSourceConfig, PriceSource } from '../../../market/price/price_source.js';
 import { EventMarketData } from '../../../market/orderbook/watcher/MarketOrderBooksWatcher.js';
-import { calculateTakerFee, feeRateBpsToDecimal } from '../../../rest/fees.js';
-import { csvValue, fileWrite, safeToNum } from '../../../utils.js';
+import { calculateTakerExecution, type TakerExecutionAction } from '../../../market/orders/TakerExecution.js';
+import { csvValue, fileWrite } from '../../../utils.js';
 import { HistoryFrameV3, HistorySnapshotV3 } from '../history/history_frame.js';
 import { REPLAY_STRATEGY_NO_TRADE } from '../../defaults.js';
 
-export type ReplayOrderAction = 'buy' | 'sell';
+export type ReplayOrderAction = TakerExecutionAction;
 export type ReplayDecisionAction = ReplayOrderAction | 'hold' | 'skip';
 export type ReplayFillStatus = 'filled' | 'partial' | 'rejected';
 
@@ -143,12 +143,6 @@ export class NoTradeReplayStrategy implements ReplayStrategy {
     }
 }
 
-function roundLimit(price: number, tick: number, action: ReplayOrderAction): number {
-    const units = price / tick;
-    const rounded = action === 'buy' ? Math.floor(units + 1e-9) : Math.ceil(units - 1e-9);
-    return Math.round(rounded * tick * 1e8) / 1e8;
-}
-
 export function simulateTakerFill(
     frame: HistoryFrameV3,
     snapshot: HistorySnapshotV3,
@@ -182,36 +176,24 @@ export function simulateTakerFill(
     if (order.action === 'sell' && availableTokens < order.quantity) return rejected('insufficient_tokens');
 
     const side = order.side === 'up' ? snapshot.up : snapshot.down;
-    const limit = roundLimit(order.limit_price, frame.market_data.tick_size, order.action);
-    const levels = (order.action === 'buy' ? side.asks : side.bids)
-        .map(level => ({ price: safeToNum(level.price, Number.NaN), size: safeToNum(level.size, Number.NaN) }))
-        .filter(level => Number.isFinite(level.price) && Number.isFinite(level.size) && level.size > 0)
-        .sort((left, right) => order.action === 'buy' ? left.price - right.price : right.price - left.price);
-
-    let remaining = order.quantity;
-    let grossValue = 0;
-    let fee = 0;
-    for (const level of levels) {
-        const executable = order.action === 'buy' ? level.price <= limit : level.price >= limit;
-        if (!executable) break;
-        const quantity = Math.min(remaining, level.size);
-        grossValue += quantity * level.price;
-        if (frame.market_data.fees_enabled) {
-            fee += calculateTakerFee(quantity, level.price, feeRateBpsToDecimal(frame.market_data.taker_base_fee));
-        }
-        remaining -= quantity;
-        if (remaining <= 1e-9) break;
-    }
-    const filledQuantity = order.quantity - remaining;
-    if (filledQuantity <= 1e-9) return rejected('no_executable_liquidity');
-    if (grossValue < config.minimum_order_value) return rejected('below_minimum_value');
-    if (order.action === 'buy' && grossValue + fee > availableCash) return rejected('insufficient_balance');
-    const status: ReplayFillStatus = remaining <= 1e-9 ? 'filled' : 'partial';
-    const averagePrice = grossValue / filledQuantity;
-    const bestPrice = levels[0]?.price ?? averagePrice;
+    const execution = calculateTakerExecution({
+        action: order.action,
+        levels: order.action === 'buy' ? side.asks : side.bids,
+        quantity: order.quantity,
+        limitPrice: order.limit_price,
+        tickSize: frame.market_data.tick_size,
+        feesEnabled: frame.market_data.fees_enabled,
+        takerBaseFeeBps: frame.market_data.taker_base_fee,
+    });
+    if (execution.fillStatus === 'none') return rejected('no_executable_liquidity');
+    if (execution.grossValue < config.minimum_order_value) return rejected('below_minimum_value');
+    if (order.action === 'buy' && execution.grossValue + execution.fee > availableCash) return rejected('insufficient_balance');
+    const status: ReplayFillStatus = execution.fillStatus === 'full' ? 'filled' : 'partial';
+    const averagePrice = execution.averagePrice;
+    const bestPrice = execution.bestPrice;
     const midpoint = order.side === 'up' ? snapshot.up.midpoint : snapshot.down.midpoint;
     const spreadCost = midpoint === undefined ? 0 : Math.max(0,
-        (order.action === 'buy' ? bestPrice - midpoint : midpoint - bestPrice) * filledQuantity,
+        (order.action === 'buy' ? bestPrice - midpoint : midpoint - bestPrice) * execution.filledQuantity,
     );
     return {
         timestamp: snapshot.timestamp,
@@ -220,13 +202,13 @@ export function simulateTakerFill(
         side: order.side,
         status,
         reason_code: status === 'filled' ? 'filled' : 'insufficient_depth',
-        requested_quantity: order.quantity,
-        filled_quantity: filledQuantity,
+        requested_quantity: execution.requestedQuantity,
+        filled_quantity: execution.filledQuantity,
         average_price: averagePrice,
-        gross_value: grossValue,
-        fee,
+        gross_value: execution.grossValue,
+        fee: execution.fee,
         spread_cost: spreadCost,
-        slippage_cost: Math.abs(averagePrice - bestPrice) * filledQuantity,
+        slippage_cost: Math.abs(averagePrice - bestPrice) * execution.filledQuantity,
     };
 }
 

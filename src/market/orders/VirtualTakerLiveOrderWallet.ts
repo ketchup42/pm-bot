@@ -7,12 +7,19 @@ import { safeFloat } from "../../utils.js";
 import { v4 as uuidv4 } from "uuid";
 import { MarketOrderBooksWatcher } from "../orderbook/watcher/MarketOrderBooksWatcher.js";
 import { MarketSide } from "../side.js";
+import {
+    calculateTakerExecution,
+    type TakerExecutionAction,
+    type TakerExecutionFilledResult,
+    type TakerExecutionFilledStatus,
+    type TakerExecutionResult,
+} from "./TakerExecution.js";
 
 /**
  * Emulation of {@link LiveOrderWallet} that does not place real orders.
  *
- * Orders are executed instantly at the real market price read from a
- * {@link MarketOrderBooksWatcher}: buys fill at the best ask, sells at the best bid.
+ * Orders are executed instantly against the real levels read from a
+ * {@link MarketOrderBooksWatcher}: buys and sells walk available depth.
  * Balance and token accounting match the live wallet, but no exchange requests are
  * made and no balance check is performed on creation.
  */
@@ -30,7 +37,7 @@ export class VirtualTakerLiveOrderWallet implements MultiOrderWallet {
     private _minBuyOrderValue: number;
 
     // History of instantly-executed orders (used for fill/live status queries).
-    private _filledOrders = new Map<string, OrderWalletState>();
+    private _filledOrders = new Map<string, TakerExecutionFilledStatus>();
 
     private constructor(params: OrderWalletParams, book: MarketOrderBooksWatcher) {
         const upToken = book.getUpMarketData().tokenId;
@@ -90,24 +97,18 @@ export class VirtualTakerLiveOrderWallet implements MultiOrderWallet {
             return undefined;
         }
 
-        const ask = this._book.getBestAsk(this._side);
-        if (ask === undefined) return undefined;
+        const execution = this.calculateExecution('buy', orderPrice, orderQuantity);
+        if (execution.fillStatus === 'none') return undefined;
+        const actualCost = execution.grossValue + execution.fee;
+        if (actualCost > this._walletBalance) {
+            logger.warn(`[VirtualTakerLiveOrderWallet] Not enough balance. Available: ${this._walletBalance}, required: ${actualCost}`);
+            return undefined;
+        }
 
-        // Only a crossing order executes instantly; a maker price would rest.
-        if (orderPrice < ask) return undefined;
+        this._walletBalance = safeFloat(this._walletBalance - actualCost, ORDER_WALLET_FRACTION);
+        this._tokenQuantity = safeFloat(this._tokenQuantity + execution.filledQuantity, ORDER_WALLET_FRACTION);
 
-        this._walletBalance = safeFloat(this._walletBalance - ask * orderQuantity, ORDER_WALLET_FRACTION);
-        this._tokenQuantity = safeFloat(this._tokenQuantity + orderQuantity, ORDER_WALLET_FRACTION);
-
-        const state: OrderWalletState = {
-            id: uuidv4(),
-            value: { price: ask, quantity: orderQuantity },
-            fast_full_trade: true
-        };
-        this._filledOrders.set(state.id, state);
-
-        logger.info(`[VirtualTakerLiveOrderWallet] BUY filled: id=${state.id} price=${ask} qty=${orderQuantity}`);
-        return state;
+        return this.recordExecution('buy', execution);
     }
 
     public async sell(price: number, quantity: number): Promise<OrderWalletState | undefined> {
@@ -126,24 +127,19 @@ export class VirtualTakerLiveOrderWallet implements MultiOrderWallet {
             return undefined;
         }
 
-        const bid = this._book.getBestBid(this._side);
-        if (bid === undefined) return undefined;
+        const execution = this.calculateExecution('sell', orderPrice, orderQuantity);
+        if (execution.fillStatus === 'none') return undefined;
 
-        // Only a crossing order executes instantly; a maker price would rest.
-        if (orderPrice > bid) return undefined;
+        this._walletBalance = safeFloat(
+            this._walletBalance + execution.grossValue - execution.fee,
+            ORDER_WALLET_FRACTION,
+        );
+        this._tokenQuantity = safeFloat(
+            this._tokenQuantity - execution.filledQuantity,
+            ORDER_WALLET_FRACTION,
+        );
 
-        this._walletBalance = safeFloat(this._walletBalance + bid * orderQuantity, ORDER_WALLET_FRACTION);
-        this._tokenQuantity = safeFloat(this._tokenQuantity - orderQuantity, ORDER_WALLET_FRACTION);
-
-        const state: OrderWalletState = {
-            id: uuidv4(),
-            value: { price: bid, quantity: orderQuantity },
-            fast_full_trade: true
-        };
-        this._filledOrders.set(state.id, state);
-
-        logger.info(`[VirtualTakerLiveOrderWallet] SELL filled: id=${state.id} price=${bid} qty=${orderQuantity}`);
-        return state;
+        return this.recordExecution('sell', execution);
     }
 
     public async cancel_order(orderId: string): Promise<boolean> {
@@ -155,11 +151,11 @@ export class VirtualTakerLiveOrderWallet implements MultiOrderWallet {
     }
 
     public isFullFilled(orderId: string): boolean {
-        return this._filledOrders.has(orderId);
+        return this._filledOrders.get(orderId) === 'full';
     }
 
     public isPartialFilled(orderId: string): boolean {
-        return false;
+        return this._filledOrders.get(orderId) === 'partial';
     }
 
     public isLive(orderId: string): boolean {
@@ -210,17 +206,68 @@ export class VirtualTakerLiveOrderWallet implements MultiOrderWallet {
         return this._minBuyOrderValue;
     }
 
+    /** Resolves the remaining virtual position at the binary market payout. */
+    public settle(outcome: MarketSide): number {
+        const quantity = this._tokenQuantity;
+        const won = this._side === outcome;
+        const payout = won ? quantity : 0;
+        this._walletBalance = safeFloat(this._walletBalance + payout, ORDER_WALLET_FRACTION);
+        this._tokenQuantity = 0;
+        logger.info(
+            `[VirtualTakerLiveOrderWallet] SETTLED: won=${won} qty=${quantity} ` +
+            `payout=${payout} fee=0`,
+        );
+        return payout;
+    }
+
     public async dispose(sellAll: boolean): Promise<void> {
         if (sellAll && this._tokenQuantity > 0) {
-            const bid = this._book.getBestBid(this._side);
-            if (bid !== undefined) {
-                logger.info(`[VirtualTakerLiveOrderWallet] Sell all: ${this._tokenQuantity} tokens at market (bid=${bid})`);
-                this._walletBalance = safeFloat(this._walletBalance + bid * this._tokenQuantity, ORDER_WALLET_FRACTION);
-                this._tokenQuantity = 0;
-            } else {
+            const state = await this.sell(this._tickSize, this._tokenQuantity);
+            if (!state) {
                 logger.warn(`[VirtualTakerLiveOrderWallet] Sell all failed: no bids in the book`);
+            } else if (this._tokenQuantity > 0) {
+                logger.warn(`[VirtualTakerLiveOrderWallet] Sell all partially filled: remaining=${this._tokenQuantity}`);
             }
         }
         this._filledOrders.clear();
+    }
+
+    private calculateExecution(
+        action: TakerExecutionAction,
+        limitPrice: number,
+        quantity: number,
+    ): TakerExecutionResult {
+        const market = this._book.getMarketData();
+        const levels = action === 'buy'
+            ? (this._side === 'up' ? this._book.getAsksUp() : this._book.getAsksDown())
+            : (this._side === 'up' ? this._book.getBidsUp() : this._book.getBidsDown());
+        return calculateTakerExecution({
+            action,
+            levels,
+            quantity,
+            limitPrice,
+            tickSize: this._tickSize,
+            feesEnabled: market.fees_enabled,
+            takerBaseFeeBps: market.taker_base_fee,
+        });
+    }
+
+    private recordExecution(
+        action: TakerExecutionAction,
+        execution: Readonly<TakerExecutionFilledResult>,
+    ): OrderWalletState {
+        const state: OrderWalletState = {
+            id: uuidv4(),
+            value: { price: execution.averagePrice, quantity: execution.filledQuantity },
+            fast_full_trade: execution.fillStatus === 'full',
+        };
+        this._filledOrders.set(state.id, execution.fillStatus);
+        logger.info(
+            `[VirtualTakerLiveOrderWallet] ${action.toUpperCase()} ` +
+            `${execution.fillStatus === 'full' ? 'filled' : 'partially filled'}: ` +
+            `id=${state.id} price=${execution.averagePrice} qty=${execution.filledQuantity} ` +
+            `remaining=${execution.remainingQuantity} fee=${execution.fee}`,
+        );
+        return state;
     }
 }

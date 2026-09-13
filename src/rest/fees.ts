@@ -1,6 +1,10 @@
 import { ClobClient } from "@polymarket/clob-client-v2";
+import { safeFloat } from "../utils.js";
 
 export const BASIS_POINTS_PER_UNIT = 10_000;
+/** Polymarket rounds each taker fee charged at match time to five decimal places. */
+export const TAKER_FEE_DECIMAL_PLACES = 5;
+export const MINIMUM_TAKER_FEE = 0.00001;
 
 /** Converts the CLOB fee metadata unit (basis points) into a decimal rate. */
 export function feeRateBpsToDecimal(feeRateBps: number): number {
@@ -36,9 +40,6 @@ export function calculateTakerFee(shares: number, price: number, feeRateDecimal:
     // where C = shares, feeRate = taker fee rate (decimal), p = price
     const fee = shares * feeRateDecimal * price * (1 - price);
     
-    // Round to 5 decimal places as per Polymarket's fee precision
-    const roundedFee = Math.round(fee * 1e5) / 1e5;
-    
-    // Minimum fee is 0.00001 USD; anything smaller rounds to zero
-    return roundedFee < 0.00001 ? 0 : roundedFee;
+    const roundedFee = safeFloat(fee, TAKER_FEE_DECIMAL_PLACES);
+    return roundedFee < MINIMUM_TAKER_FEE ? 0 : roundedFee;
 }

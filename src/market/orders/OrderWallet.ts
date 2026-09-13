@@ -143,5 +143,5 @@ export interface OrderWallet {
      * After disposal the wallet instance should not be used.
      * @param sellAll If you want to sell add tokens before dispose
      */
-    dispose(sellAll: boolean): void;
+    dispose(sellAll: boolean): Promise<void>;
 }
