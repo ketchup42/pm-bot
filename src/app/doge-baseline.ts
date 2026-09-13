@@ -5,7 +5,7 @@ import { FRAME_CONFIGS } from '../market/frame.js';
 import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
 import { getTradingClient } from '../rest/client-env.js';
 import { TIMER_FAST, TIMER_NORM } from '../timer.js';
-import { readArgument } from './backtest_args.js';
+import { readFlag, readRequiredTradeArguments } from './cli_args.js';
 import { ExecManager } from './core/ExecManager.js';
 import { ExecScheduler } from './core/ExecScheduler.js';
 import { CoinFrameEventTimerWatcher } from './core/events/CoinFrameEventTimerWatcher.js';
@@ -15,22 +15,25 @@ import {
     DOGE_BASELINE_COIN,
     DOGE_BASELINE_CROSSING_DEVIATION_FACTOR,
     DOGE_BASELINE_FRAME,
-    DOGE_BASELINE_DEFAULT_DEBUG,
     DOGE_BASELINE_MAX_CROSSINGS,
     DOGE_BASELINE_SOURCE,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 
-function readDebugMode(): boolean {
-    const raw = (readArgument('debug') ?? String(DOGE_BASELINE_DEFAULT_DEBUG)).toLowerCase();
-    if (raw === 'true' || raw === '1') return true;
-    if (raw === 'false' || raw === '0') return false;
-    throw new Error(`--debug must be true/false or 1/0, got ${raw}`);
+type DogeBaselineRunMode = 'debug' | 'live';
+
+function readDogeBaselineRunMode(): DogeBaselineRunMode {
+    const isDebug = readFlag('debug');
+    const isLive = readFlag('live');
+    if (isDebug === isLive) throw new Error('provide exactly one mode: --debug or --live');
+    return isDebug ? 'debug' : 'live';
 }
 
-const isDebug = readDebugMode();
+const mode = readDogeBaselineRunMode();
+const isDebug = mode === 'debug';
+const trade = readRequiredTradeArguments();
 logger.info(
     `[DogeBaseline] Starting coin=${DOGE_BASELINE_COIN} frame=${DOGE_BASELINE_FRAME} ` +
-    `source=${DOGE_BASELINE_SOURCE} virtual=${isDebug}`,
+    `source=${DOGE_BASELINE_SOURCE} mode=${mode} balance=${trade.balance} tradeValue=${trade.tradeValue}`,
 );
 logger.info('[DogeBaseline] Initializing trading client');
 const client = await getTradingClient();
@@ -46,7 +49,9 @@ const masterScheduler = new ExecScheduler([
     async () => {
         const watcher = await CoinFrameEventTimerWatcher.create(DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, TIMER_FAST, coinWatcher);
         logger.info(`[DogeBaseline] Starting trading frame ${watcher.getEventId()}`);
-        const strategy = await CoinDogeBaselineStrategy.create(watcher.getEventId(), isDebug, masterScheduler);
+        const strategy = await CoinDogeBaselineStrategy.create(
+            watcher.getEventId(), isDebug, masterScheduler, trade.balance, trade.tradeValue,
+        );
         return new ExecManager(client, [watcher], [strategy], isDebug);
     },
 ]);

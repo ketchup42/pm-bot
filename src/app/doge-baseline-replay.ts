@@ -1,31 +1,51 @@
 import 'dotenv/config';
-import { readArgument, readReplayExecutionConfig } from './backtest_args.js';
+import {
+    readArgument,
+    readOptionalPositiveIntegerArgument,
+    readReplayExecutionConfig,
+    readRequiredTradeArguments,
+} from './cli_args.js';
 import { DEFAULT_DOGE_BASELINE_REPLAY_OUTPUT_DIRECTORY, DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
-import { runReplay, writeReplayReport } from './core/backtest/replay.js';
-import { DogeBaselineReplayStrategy } from './core/backtest/strategy/DogeBaselineReplayStrategy.js';
-import { readHistoryFrames } from './core/history/HistoryFrameReader.js';
-import { readDogeBaselineModel } from './core/events/strategy/doge-baseline/DogeBaselineModel.js';
-import { DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, DOGE_BASELINE_MODES, DOGE_BASELINE_SOURCE } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
-import { fileWrite } from '../utils.js';
-import { HistoryFrameV3 } from './core/history/history_frame.js';
+import { writeReplayReport } from './core/backtest/replay.js';
+import { runDogeBaselineReplay } from './core/backtest/strategy/DogeBaselineReplayStrategy.js';
+import { readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
+import {
+    readDogeBaselineArtifacts,
+    toDogeBaselineRuntimeConfig,
+} from './core/events/strategy/doge-baseline/artifacts.js';
+import { DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT, DOGE_BASELINE_MODES } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
+import { logger, logger_shutdown } from '../log.js';
+import { error_str, fileWrite } from '../utils.js';
+
+function readFrameCount(): number {
+    return readOptionalPositiveIntegerArgument('count') ?? DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT;
+}
 
 async function main(): Promise<void> {
     const history = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const output = readArgument('output') ?? DEFAULT_DOGE_BASELINE_REPLAY_OUTPUT_DIRECTORY;
-    const frames: HistoryFrameV3[] = [];
-    for await (const frame of readHistoryFrames(history)) {
-        if (frame.coin === DOGE_BASELINE_COIN && frame.frame === DOGE_BASELINE_FRAME &&
-            frame.source === DOGE_BASELINE_SOURCE && frame.data_quality.complete) frames.push(frame);
+    const count = readFrameCount();
+    const { replay: frames } = await readDogeBaselineTrainReplaySplit(
+        history,
+        { trainingCount: 0, replayCount: count },
+    );
+    const modelPath = readArgument('model');
+    const configPath = readArgument('config');
+    if ((modelPath === undefined) !== (configPath === undefined)) {
+        throw new Error('--model and --config must be provided together');
     }
-    const model = await readDogeBaselineModel();
-    const config = readReplayExecutionConfig();
-    const combined = runReplay(frames, new DogeBaselineReplayStrategy(model), config);
+    const artifacts = modelPath === undefined
+        ? await readDogeBaselineArtifacts()
+        : await readDogeBaselineArtifacts(modelPath, configPath!);
+    const trade = readRequiredTradeArguments();
+    const config = readReplayExecutionConfig(trade.balance);
+    const replay = runDogeBaselineReplay(frames, artifacts.model, config, {
+        ...toDogeBaselineRuntimeConfig(artifacts.config),
+        tradeValue: trade.tradeValue,
+    });
     const results = [
-        { mode: 'combined', result: combined },
-        ...DOGE_BASELINE_MODES.map(mode => ({
-            mode: mode.name,
-            result: runReplay(frames, new DogeBaselineReplayStrategy(model, [mode.name]), config),
-        })),
+        { mode: 'combined', result: replay.combined },
+        ...DOGE_BASELINE_MODES.map(mode => ({ mode: mode.name, result: replay.modes[mode.name] })),
     ];
     await Promise.all(results.map(value => writeReplayReport(value.result, `${output}/${value.mode}`)));
     const rows = results.map(value =>
@@ -35,14 +55,31 @@ async function main(): Promise<void> {
     );
     await fileWrite(`${output}/summary.md`, [
         '# DOGE baseline replay', '',
+        `Model: ${modelPath ?? 'working model'}`,
+        `Balance: $${trade.balance.toFixed(2)}`,
+        `Trade value: $${trade.tradeValue.toFixed(2)}`, '',
         '| Mode      | Trades |     Net PnL | Profit factor | Max drawdown |',
         '| --------- | -----: | ----------: | ------------: | -----------: |',
         ...rows, '',
     ].join('\n'));
-    console.log(JSON.stringify(Object.fromEntries(results.map(value => [value.mode, value.result.metrics])), undefined, 2));
+    logger.info(
+        `[DogeBaselineReplay] Result:\n${JSON.stringify(
+            Object.fromEntries(results.map(value => [value.mode, value.result.metrics])),
+            undefined,
+            2,
+        )}`,
+    );
 }
 
-main().catch(error => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-});
+async function run(): Promise<void> {
+    try {
+        await main();
+    } catch (error) {
+        logger.error(`[DogeBaselineReplay] Fatal error: ${error_str(error)}`);
+        process.exitCode = 1;
+    } finally {
+        await logger_shutdown();
+    }
+}
+
+void run();

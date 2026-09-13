@@ -14,24 +14,27 @@ import { CoinFrameEventMarketData } from '../../../history/coin_frame.js';
 import { EventWatcher } from '../../EventWatcher.js';
 import { EventStrategy } from '../EventStrategy.js';
 import {
-    DOGE_BASELINE_INITIAL_BALANCE,
-    DOGE_BASELINE_MAX_ORDER_VALUE,
+    DOGE_BASELINE_DEFAULT_BALANCE,
+    DOGE_BASELINE_DEFAULT_TRADE_VALUE,
     DOGE_BASELINE_MODES,
-    DogeBaselineModeName,
+    type DogeBaselineModeName,
 } from './DogeBaselineConfig.js';
 import {
     DogeBaselineModel,
     makeDogeBaselineFeaturesFromPrices,
     predictDogeBaseline,
-    readDogeBaselineModel,
 } from './DogeBaselineModel.js';
 import {
-    calculateDogeBaselineEntryLimit,
-    DogeBaselineEntry,
+    canRetryDogeBaselineEmergencyExit,
+    type DogeBaselineExecutableEntry,
     evaluateDogeBaselineEmergencyExit,
     getDogeBaselinePredictedSide,
-    selectDogeBaselineEntry,
+    selectDogeBaselineExecutableEntry,
 } from './DogeBaselineDecision.js';
+import {
+    DogeBaselineStrategyConfig,
+    readDogeBaselineArtifacts,
+} from './artifacts.js';
 
 export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMarketData> {
     private event: EventWatcher<CoinFrameEventMarketData> | undefined;
@@ -43,29 +46,42 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
     private adverseSince: number | undefined;
     private emergencyExitCoinPrice: number | undefined;
     private emergencyExitFrameStartPrice: number | undefined;
+    private emergencyExitNoLiquidityLogged = false;
+    private emergencyExitSellFailureLogged = false;
+    private emergencyExitMinimumSizeLogged = false;
+    private emergencyExitCompletedLogged = false;
+    private nextEmergencyExitAttemptTimestamp: number | undefined;
     private entered = false;
-    private stopped = false;
+    private emergencyExitTriggered = false;
     private readonly evaluatedModes = new Set<DogeBaselineModeName>();
 
     private constructor(
         private readonly eventId: string,
         private readonly isDebug: boolean,
         private readonly scheduler: ExecScheduler,
+        private readonly balance: number,
+        private readonly tradeValue: number,
         private readonly model: Readonly<DogeBaselineModel> | undefined,
+        private readonly strategyConfig: Readonly<DogeBaselineStrategyConfig> | undefined,
     ) {}
 
     public static async create(
         eventId: string,
         isDebug: boolean,
         scheduler: ExecScheduler,
+        balance: number = DOGE_BASELINE_DEFAULT_BALANCE,
+        tradeValue: number = DOGE_BASELINE_DEFAULT_TRADE_VALUE,
     ): Promise<CoinDogeBaselineStrategy> {
         let model: DogeBaselineModel | undefined;
+        let strategyConfig: DogeBaselineStrategyConfig | undefined;
         try {
-            model = await readDogeBaselineModel();
+            const artifacts = await readDogeBaselineArtifacts();
+            model = artifacts.model;
+            strategyConfig = artifacts.config;
         } catch (error) {
-            logger.error(`[DogeBaseline][${eventId}] Model unavailable; frame will be skipped: ${error_str(error)}`);
+            logger.error(`[DogeBaseline][${eventId}] Model or config unavailable; frame will be skipped: ${error_str(error)}`);
         }
-        return new CoinDogeBaselineStrategy(eventId, isDebug, scheduler, model);
+        return new CoinDogeBaselineStrategy(eventId, isDebug, scheduler, balance, tradeValue, model, strategyConfig);
     }
 
     public async execute(
@@ -73,12 +89,12 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         watchers: readonly EventWatcher<CoinFrameEventMarketData>[],
     ): Promise<boolean> {
         if (!this.initialize(watchers)) return false;
-        if (!this.model) return false;
+        if (!this.model || !this.strategyConfig) return false;
         if (this.sellOrder && !this.wallet?.isLive(this.sellOrder.id)) this.sellOrder = undefined;
 
         const history = this.event!.getWatcherHistoryUp()[0];
         if (await this.applyEmergencyExit(history)) return true;
-        if (this.entered || this.stopped) return false;
+        if (this.entered || this.emergencyExitTriggered) return false;
 
         if (!history?.coin_frame_start_price) return false;
         const prices = history.side_token_market_snapshots
@@ -86,6 +102,8 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
             .map(value => ({ price: value.coin_price!, timestamp: value.timestamp }));
         const elapsedMs = Date.now() - history.start_time * 1_000;
         for (const mode of DOGE_BASELINE_MODES) {
+            const modeConfig = this.strategyConfig!.entry.modes[mode.name];
+            if (!modeConfig.enabled) continue;
             if (elapsedMs < mode.offsetMs || this.evaluatedModes.has(mode.name)) continue;
             this.evaluatedModes.add(mode.name);
             const features = makeDogeBaselineFeaturesFromPrices(
@@ -98,7 +116,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
             if (!features) continue;
             const probability = predictDogeBaseline(this.model.modes[mode.name], features);
             const deviationBps = (Math.exp(features.at(-1)!) - 1) * 10_000;
-            const candidate = this.selectCandidate(mode.name, probability, deviationBps);
+            const candidate = this.selectCandidate(mode.name, probability, deviationBps, modeConfig.minimumEdge);
             if (candidate && await this.enter(client, candidate, mode.name, probability, deviationBps)) return true;
         }
         return false;
@@ -109,8 +127,11 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         watchers: readonly EventWatcher<CoinFrameEventMarketData>[],
         isSignal: boolean,
     ): Promise<boolean> {
-        if (this.wallet) await this.wallet.dispose(isSignal || this.isDebug || this.stopped);
-        const finalBalance = this.wallet?.getBalance() ?? DOGE_BASELINE_INITIAL_BALANCE;
+        if (this.wallet) {
+            if (this.isDebug && !isSignal) this.settleVirtualPosition();
+            await this.wallet.dispose(isSignal);
+        }
+        const finalBalance = this.wallet?.getBalance() ?? this.balance;
         this.log(`Strategy cancelled. Final balance: ${finalBalance.toFixed(2)}`);
         return true;
     }
@@ -125,16 +146,22 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         mode: DogeBaselineModeName,
         upProbability: number,
         deviationBps: number,
-    ): DogeBaselineEntry | undefined {
+        minimumEdge: number,
+    ): DogeBaselineExecutableEntry | undefined {
         const market = this.market!;
         const marketData = market.getMarketData();
         const predictedSide = getDogeBaselinePredictedSide(upProbability);
-        const candidate = selectDogeBaselineEntry(upProbability, {
+        const candidate = selectDogeBaselineExecutableEntry(upProbability, {
             upAsk: market.getBestAsk('up'),
             downAsk: market.getBestAsk('down'),
             feesEnabled: marketData.fees_enabled,
             takerBaseFee: marketData.taker_base_fee,
-        });
+        }, {
+            upAsks: market.getAsksUp(),
+            downAsks: market.getAsksDown(),
+            tickSize: marketData.tick_size,
+            minimumOrderValue: DEFAULT_BUY_ORDER_MIN_VALUE,
+        }, minimumEdge, this.tradeValue);
         if (!candidate) {
             this.log(
                 `${mode}: no entry predicted=${predictedSide ?? 'neutral'} pUp=${upProbability.toFixed(5)} ` +
@@ -146,7 +173,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
 
     private async enter(
         client: ClobClient,
-        candidate: DogeBaselineEntry,
+        candidate: DogeBaselineExecutableEntry,
         mode: DogeBaselineModeName,
         upProbability: number,
         deviationBps: number,
@@ -154,11 +181,8 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         let wallet: MultiOrderWallet | undefined;
         try {
             wallet = await this.createWallet(client, candidate.side);
-            const price = safeFloat(
-                calculateDogeBaselineEntryLimit(candidate.ask, wallet.getTick()),
-                ORDER_WALLET_FRACTION,
-            );
-            const quantity = DOGE_BASELINE_MAX_ORDER_VALUE / price;
+            const price = safeFloat(candidate.limitPrice, ORDER_WALLET_FRACTION);
+            const quantity = candidate.requestedQuantity;
             const state = await wallet.buy(price, quantity);
             if (!state) return false;
             this.wallet = wallet;
@@ -187,8 +211,8 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
     }
 
     private async applyEmergencyExit(history: CoinFrameEventMarketData | undefined): Promise<boolean> {
-        if (!this.wallet || !this.walletSide) return false;
-        if (!this.stopped) {
+        if (!this.wallet || !this.walletSide || !this.strategyConfig?.exit.enabled) return false;
+        if (!this.emergencyExitTriggered) {
             const snapshot = history?.side_token_market_snapshots.at(-1);
             if (!history?.coin_frame_start_price || snapshot?.coin_price === undefined) return false;
             const previousAdverseSince = this.adverseSince;
@@ -199,7 +223,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
                 timestamp: snapshot.timestamp,
                 frameEndTimestamp: history.end_time * 1_000,
                 adverseSince: this.adverseSince,
-            });
+            }, this.strategyConfig.exit);
             this.adverseSince = state.adverseSince;
             if (state.adverse && previousAdverseSince === undefined) {
                 this.log(
@@ -210,24 +234,66 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
                 this.log(`Emergency exit confirmation reset: side=${this.walletSide} coin=${snapshot.coin_price}`);
             }
             if (!state.triggered) return false;
-            this.stopped = true;
+            this.emergencyExitTriggered = true;
             this.emergencyExitCoinPrice = snapshot.coin_price;
             this.emergencyExitFrameStartPrice = history.coin_frame_start_price;
             this.scheduler.pause();
+            this.log(
+                `Emergency exit triggered: side=${this.walletSide} ` +
+                `coin=${snapshot.coin_price} start=${history.coin_frame_start_price} scheduler=PAUSED`,
+            );
         }
 
         const tokens = this.wallet.getTokensQuantity();
-        const bid = this.market!.getBestBid(this.walletSide);
-        if (tokens <= 0 || bid === undefined) return false;
-        if (this.sellOrder) return false;
-        const state = await this.wallet.sell(this.wallet.getTick(), tokens);
-        if (!state) {
-            this.log(`Emergency exit sell failed; scheduler remains paused, retrying`);
+        if (tokens <= 1e-9) {
+            if (!this.emergencyExitCompletedLogged) {
+                this.emergencyExitCompletedLogged = true;
+                this.log(`Emergency exit completed: side=${this.walletSide} remaining=0`);
+            }
             return false;
         }
+        if (this.sellOrder) return false;
+        const timestamp = history?.side_token_market_snapshots.at(-1)?.timestamp;
+        if (timestamp === undefined || !canRetryDogeBaselineEmergencyExit(timestamp, this.nextEmergencyExitAttemptTimestamp)) {
+            return false;
+        }
+        this.nextEmergencyExitAttemptTimestamp = timestamp + this.strategyConfig.exit.retryMs;
+        if (tokens < this.wallet.getMinOrderSize()) {
+            if (!this.emergencyExitMinimumSizeLogged) {
+                this.emergencyExitMinimumSizeLogged = true;
+                this.log(
+                    `Emergency exit residual is below minimum order size: ` +
+                    `remaining=${tokens} minimum=${this.wallet.getMinOrderSize()}`,
+                );
+            }
+            return false;
+        }
+        const bid = this.market!.getBestBid(this.walletSide);
+        if (bid === undefined) {
+            if (!this.emergencyExitNoLiquidityLogged) {
+                this.emergencyExitNoLiquidityLogged = true;
+                this.log(`Emergency exit has no bids; scheduler remains paused, retrying`);
+            }
+            return false;
+        }
+        this.emergencyExitNoLiquidityLogged = false;
+        const state = await this.wallet.sell(this.wallet.getTick(), tokens);
+        if (!state) {
+            if (!this.emergencyExitSellFailureLogged) {
+                this.emergencyExitSellFailureLogged = true;
+                this.log(`Emergency exit sell failed; scheduler remains paused, retrying`);
+            }
+            return false;
+        }
+        this.emergencyExitSellFailureLogged = false;
         this.sellOrder = state;
+        const remaining = this.wallet.getTokensQuantity();
+        const execution = state.fast_full_trade
+            ? `filled=${state.value.quantity} average=${state.value.price}`
+            : `submitted=${state.value.quantity} limit=${state.value.price}`;
         this.log(
-            `Emergency exit ${this.walletSide}: bid=${bid}, entry=${this.entryPrice}; ` +
+            `Emergency exit ${this.walletSide}: ${execution} remaining=${remaining} ` +
+            `bestBid=${bid} entry=${this.entryPrice}; ` +
             `coin=${this.emergencyExitCoinPrice} start=${this.emergencyExitFrameStartPrice} ` +
             `reason=adverse_coin_direction_exit scheduler=PAUSED`,
         );
@@ -239,7 +305,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         const tokenData = side === 'up' ? this.market!.getUpMarketData() : this.market!.getDownMarketData();
         const params: OrderWalletParams = {
             token_id: tokenData.tokenId,
-            balance: DOGE_BASELINE_INITIAL_BALANCE,
+            balance: this.balance,
             tick_size: marketData.tick_size,
             min_order_size: marketData.min_order_size,
             min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE,
@@ -247,6 +313,28 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         if (this.isDebug) return VirtualTakerLiveOrderWallet.create(params, this.market!);
         const watcher = await LiveOrdersWatcherRTDS.create(marketData.conditionId, client, client.creds);
         return LiveOrderWallet.create(client, params, watcher);
+    }
+
+    private settleVirtualPosition(): void {
+        if (!(this.wallet instanceof VirtualTakerLiveOrderWallet) || !this.walletSide) return;
+        const history = this.event?.getWatcherHistoryUp()[0];
+        const startPrice = history?.coin_frame_start_price;
+        const endPrice = history?.coin_frame_end_price;
+        const quantity = this.wallet.getTokensQuantity();
+        if (quantity <= 0) return;
+        if (startPrice === undefined || endPrice === undefined || startPrice === endPrice) {
+            this.log(
+                `Virtual settlement unavailable: side=${this.walletSide} quantity=${quantity} ` +
+                `start=${startPrice} end=${endPrice}`,
+            );
+            return;
+        }
+        const outcome: MarketSide = endPrice > startPrice ? 'up' : 'down';
+        const payout = this.wallet.settle(outcome);
+        this.log(
+            `Virtual settlement: position=${this.walletSide} outcome=${outcome} ` +
+            `quantity=${quantity} payout=${payout} price=${payout > 0 ? 1 : 0} fee=0`,
+        );
     }
 
     private log(message: string): void {

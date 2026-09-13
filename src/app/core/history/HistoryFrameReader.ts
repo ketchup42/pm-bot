@@ -59,3 +59,15 @@ export async function* readHistoryFrames(
         if (frame !== undefined) yield frame;
     }
 }
+
+export async function* readHistoryFramesNewestFirst(
+    directory: string,
+    shouldStop: HistoryReadStopCheck = () => false,
+): AsyncGenerator<HistoryFrameV3> {
+    const filePaths = await getHistoryFramePaths(directory);
+    for (let index = filePaths.length - 1; index >= 0; index--) {
+        if (shouldStop()) return;
+        const frame = await readHistoryFrameIfPresent(filePaths[index]!);
+        if (frame !== undefined) yield frame;
+    }
+}

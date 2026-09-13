@@ -7,7 +7,7 @@ import { getPriceSourceConfig } from '../../../../../market/price/price_source.j
 import {
     DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, DOGE_BASELINE_L2, DOGE_BASELINE_MODEL_DIRECTORY,
     DOGE_BASELINE_MODEL_FILE, DOGE_BASELINE_MODES, DOGE_BASELINE_SOURCE, DOGE_BASELINE_STRATEGY,
-    DOGE_BASELINE_MODEL_VERSION, DogeBaselineModeName,
+    DOGE_BASELINE_MODEL_VERSION, DogeBaselineArtifactFile, DogeBaselineModeName,
 } from './DogeBaselineConfig.js';
 
 export interface DogeBaselineObservation {
@@ -179,9 +179,13 @@ export function predictDogeBaseline(weights: DogeBaselineWeights, features: read
         (value - weights.means[index]!) / weights.scales[index]! * weights.weights[index + 1]!, 0));
 }
 
-export function getDogeBaselineModelPath(): string {
+export function getDogeBaselineArtifactPath(fileName: DogeBaselineArtifactFile): string {
     const root = process.env.STRATEGY_MODELS_DIR || DEFAULT_STRATEGY_MODELS_DIRECTORY;
-    return path.join(root, DOGE_BASELINE_MODEL_DIRECTORY, DOGE_BASELINE_MODEL_FILE);
+    return path.join(root, DOGE_BASELINE_MODEL_DIRECTORY, fileName);
+}
+
+export function getDogeBaselineModelPath(): string {
+    return getDogeBaselineArtifactPath(DOGE_BASELINE_MODEL_FILE);
 }
 
 export function validateDogeBaselineModel(value: unknown): DogeBaselineModel {
@@ -207,13 +211,15 @@ export function validateDogeBaselineModel(value: unknown): DogeBaselineModel {
     return model;
 }
 
-export async function readDogeBaselineModel(): Promise<DogeBaselineModel> {
-    return validateDogeBaselineModel(JSON.parse(await fs.readFile(getDogeBaselineModelPath(), 'utf8')) as unknown);
+export async function readDogeBaselineModel(filePath: string = getDogeBaselineModelPath()): Promise<DogeBaselineModel> {
+    return validateDogeBaselineModel(JSON.parse(await fs.readFile(filePath, 'utf8')) as unknown);
 }
 
-export async function writeDogeBaselineModel(model: DogeBaselineModel): Promise<void> {
+export async function writeDogeBaselineModel(
+    model: DogeBaselineModel,
+    filePath: string = getDogeBaselineModelPath(),
+): Promise<void> {
     validateDogeBaselineModel(model);
-    const filePath = getDogeBaselineModelPath();
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const temporary = `${filePath}.${process.pid}-${Date.now()}.tmp`;
     try {

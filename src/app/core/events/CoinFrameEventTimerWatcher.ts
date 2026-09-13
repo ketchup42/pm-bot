@@ -5,7 +5,6 @@ import { CoinFrameEventMarketData, MarketTokenSnapshot } from "../history/coin_f
 import { CoinPriceWatcher } from "../../../market/price/CoinPriceWatcher.js";
 import { EventWatcher } from "./EventWatcher.js";
 import { TickTimer } from "../../../timer.js";
-import { logger } from "../../../log.js";
 import { CoinMarketOrderBooksWatcher } from "../../../market/orderbook/watcher/CoinMarketOrderBooksWatcher.js";
 
 /**
@@ -43,8 +42,8 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
         price = await this._coinPriceWatcher.getPriceByFrame(this._frame);
         if (price === undefined)
           price = this._coinPriceWatcher.getCoinPrice();
-      } catch(error) {
-          logger.warn(`WARN: Frame end price is undefined for event with slug: ${this._slug}`);
+      } catch {
+          // A missing boundary price is represented in the saved history quality.
       }
 
       this._watcherHistoryUp.coin_frame_end_price = price;
@@ -67,7 +66,9 @@ export class CoinFrameEventTimerWatcher implements EventWatcher<CoinFrameEventMa
     const price = this._coinPriceWatcher.getCoinPrice();
 
     // If we have some problems with price mb connection errors than wait until next call
-    if (!price) { logger.warn(`WARN: Coin price watcher returns undefined for ${this._coinPriceWatcher.getCoin().toString()}.`); return; }
+    // The price source owns connection diagnostics. Here an absent sample simply
+    // means that this timer tick cannot produce a historically valid snapshot.
+    if (price === undefined) return;
 
     const coinFrameUpEventDTO: MarketTokenSnapshot =
     {

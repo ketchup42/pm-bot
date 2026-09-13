@@ -1,14 +1,15 @@
-import { readHistoryFrames } from '../../../history/HistoryFrameReader.js';
+import { readHistoryFramesNewestFirst } from '../../../history/HistoryFrameReader.js';
+import { HistoryFrameV3 } from '../../../history/history_frame.js';
 import {
     DogeBaselineModel,
     DogeBaselineObservation,
     makeDogeBaselineObservation,
     predictDogeBaseline,
     trainDogeBaselineWeights,
-    writeDogeBaselineModel,
 } from './DogeBaselineModel.js';
 import {
     DOGE_BASELINE_COIN,
+    DOGE_BASELINE_CONFIG_RESEARCH_SNAPSHOT_INTERVAL_MS,
     DOGE_BASELINE_FRAME,
     DOGE_BASELINE_MODES,
     DOGE_BASELINE_MODEL_VERSION,
@@ -19,8 +20,23 @@ import {
 
 export interface DogeBaselineTrainingResult {
     model: DogeBaselineModel;
-    availableFrames: number;
     metrics: Record<DogeBaselineModeName, DogeBaselineTrainingMetrics>;
+}
+
+export interface DogeBaselineEligibleFrame {
+    frame: HistoryFrameV3;
+    observation: DogeBaselineObservation;
+}
+
+export interface DogeBaselineTrainReplaySplit {
+    trainingObservations: DogeBaselineObservation[];
+    trainingFrames: HistoryFrameV3[];
+    replay: HistoryFrameV3[];
+}
+
+export interface DogeBaselineFrameSelectionCounts {
+    trainingCount: number;
+    replayCount: number;
 }
 
 export type DogeBaselineTrainingStopCheck = () => boolean;
@@ -132,52 +148,137 @@ export function calculateDogeBaselineTrainingMetrics(
     };
 }
 
-export async function trainDogeBaseline(
+export async function readDogeBaselineObservations(
     historyDirectory: string,
     requestedFrames: number,
     shouldStop: DogeBaselineTrainingStopCheck = () => false,
-): Promise<DogeBaselineTrainingResult> {
+): Promise<DogeBaselineObservation[]> {
     const observations: DogeBaselineObservation[] = [];
-    let availableFrames = 0;
+    let available = 0;
+    for await (const value of readDogeBaselineEligibleFramesNewestFirst(historyDirectory, shouldStop)) {
+        if (shouldStop()) throw new Error('doge_baseline_training_cancelled');
+        observations.push(value.observation);
+        available++;
+        if (available === requestedFrames) break;
+    }
+    if (available < requestedFrames) {
+        throw new Error(
+            `Insufficient eligible DOGE frames: required=${requestedFrames} available=${available} ` +
+            `training=${requestedFrames} replay=0`,
+        );
+    }
+    return observations.reverse();
+}
 
-    for await (const frame of readHistoryFrames(historyDirectory, shouldStop)) {
+async function* readDogeBaselineEligibleFramesNewestFirst(
+    historyDirectory: string,
+    shouldStop: DogeBaselineTrainingStopCheck = () => false,
+): AsyncGenerator<DogeBaselineEligibleFrame> {
+    for await (const frame of readHistoryFramesNewestFirst(historyDirectory, shouldStop)) {
         const observation = makeDogeBaselineObservation(frame);
         if (!observation) continue;
-        availableFrames++;
-        observations.push(observation);
-        if (observations.length > requestedFrames) observations.shift();
+        yield { frame, observation };
     }
+}
 
+export async function collectDogeBaselineTrainReplaySplit(
+    framesNewestFirst: AsyncIterable<DogeBaselineEligibleFrame>,
+    counts: Readonly<DogeBaselineFrameSelectionCounts>,
+    shouldStop: DogeBaselineTrainingStopCheck = () => false,
+): Promise<DogeBaselineTrainReplaySplit> {
+    const trainingObservations: DogeBaselineObservation[] = [];
+    const trainingFrames: HistoryFrameV3[] = [];
+    const replay: HistoryFrameV3[] = [];
+    const required = counts.trainingCount + counts.replayCount;
+    let available = 0;
+    for await (const value of framesNewestFirst) {
+        if (shouldStop()) throw new Error('doge_baseline_training_cancelled');
+        available++;
+        if (replay.length < counts.replayCount) replay.push(value.frame);
+        else if (trainingObservations.length < counts.trainingCount) {
+            trainingObservations.push(value.observation);
+            trainingFrames.push(compactDogeBaselineConfigurationFrame(value.frame));
+        }
+        if (available === required) break;
+    }
     if (shouldStop()) throw new Error('doge_baseline_training_cancelled');
-
-    if (observations.length < requestedFrames) {
-        throw new Error(`Insufficient DOGE frames: required=${requestedFrames} available=${availableFrames}`);
+    if (available < required) {
+        throw new Error(
+            `Insufficient eligible DOGE frames: required=${required} available=${available} ` +
+            `training=${counts.trainingCount} replay=${counts.replayCount}`,
+        );
     }
+    return {
+        trainingObservations: trainingObservations.reverse(),
+        trainingFrames: trainingFrames.reverse(),
+        replay: replay.reverse(),
+    };
+}
 
+function compactDogeBaselineConfigurationFrame(frame: HistoryFrameV3): HistoryFrameV3 {
+    if (!Array.isArray(frame.snapshots)) return frame;
+    const intervalMs = DOGE_BASELINE_CONFIG_RESEARCH_SNAPSHOT_INTERVAL_MS;
+    const snapshots = [] as HistoryFrameV3['snapshots'];
+    let previousTimestamp: number | undefined;
+    for (const snapshot of frame.snapshots) {
+        if (previousTimestamp !== undefined && snapshot.timestamp - previousTimestamp < intervalMs) continue;
+        snapshots.push(snapshot);
+        previousTimestamp = snapshot.timestamp;
+    }
+    const last = frame.snapshots.at(-1);
+    if (last !== undefined && snapshots.at(-1) !== last) snapshots.push(last);
+    return { ...frame, snapshots };
+}
+
+export async function readDogeBaselineTrainReplaySplit(
+    historyDirectory: string,
+    counts: Readonly<DogeBaselineFrameSelectionCounts>,
+    shouldStop: DogeBaselineTrainingStopCheck = () => false,
+): Promise<DogeBaselineTrainReplaySplit> {
+    return collectDogeBaselineTrainReplaySplit(
+        readDogeBaselineEligibleFramesNewestFirst(historyDirectory, shouldStop),
+        counts,
+        shouldStop,
+    );
+}
+
+export function buildDogeBaselineModel(observations: readonly DogeBaselineObservation[]): DogeBaselineModel {
+    if (observations.length === 0) throw new Error('doge_baseline_empty_training_set');
     const first = observations[0]!;
     const last = observations[observations.length - 1]!;
     const modes = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
         mode.name,
         trainDogeBaselineWeights(observations, mode.name),
     ])) as DogeBaselineModel['modes'];
-    const model: DogeBaselineModel = {
+    return {
         version: DOGE_BASELINE_MODEL_VERSION,
         strategy: DOGE_BASELINE_STRATEGY,
         coin: DOGE_BASELINE_COIN,
         frame: DOGE_BASELINE_FRAME,
         source: DOGE_BASELINE_SOURCE,
         trainedAt: Date.now(),
-        requestedFrames,
+        requestedFrames: observations.length,
         actualFrames: observations.length,
         firstFrameStart: first.startTime,
         lastFrameStart: last.startTime,
         modes,
     };
+}
+
+export async function trainDogeBaseline(
+    historyDirectory: string,
+    requestedFrames: number,
+    shouldStop: DogeBaselineTrainingStopCheck = () => false,
+): Promise<DogeBaselineTrainingResult> {
+    const observations = await readDogeBaselineObservations(historyDirectory, requestedFrames, shouldStop);
+
+    if (shouldStop()) throw new Error('doge_baseline_training_cancelled');
+
+    const model = buildDogeBaselineModel(observations);
     const metrics = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
         mode.name,
         calculateDogeBaselineTrainingMetrics(observations, model, mode.name),
     ])) as Record<DogeBaselineModeName, DogeBaselineTrainingMetrics>;
     if (shouldStop()) throw new Error('doge_baseline_training_cancelled');
-    await writeDogeBaselineModel(model);
-    return { model, availableFrames, metrics };
+    return { model, metrics };
 }

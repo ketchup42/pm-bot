@@ -16,6 +16,9 @@ import { runReplayMatrix, writeReplayMatrixReport } from '../dist/app/core/backt
 import { HISTORY_SCHEMA_VERSION, buildHistoryGaps, buildHistoryQuality } from '../dist/app/core/history/history_frame.js';
 import { PS_CHAINLINK_TWAP_60 } from '../dist/market/price/price_source.js';
 import { getSupportedCoins } from '../dist/market/coins.js';
+import { VirtualTakerLiveOrderWallet } from '../dist/market/orders/VirtualTakerLiveOrderWallet.js';
+import { calculateTakerExecution } from '../dist/market/orders/TakerExecution.js';
+import { calculateTakerFee } from '../dist/rest/fees.js';
 import { csvValue } from '../dist/utils.js';
 import {
     makeDogeBaselineFeaturesFromPrices,
@@ -24,11 +27,27 @@ import {
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineModel.js';
 import {
     calculateDogeBaselineTrainingMetrics,
+    collectDogeBaselineTrainReplaySplit,
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineResearch.js';
 import {
+    getDogeBaselineCandidateRejectionReasons,
+    getDogeBaselineMinimumCandidateTradeCount,
+} from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
+import {
+    createDogeBaselineStrategyConfig,
+    readDogeBaselineArtifacts,
+    validateDogeBaselineStrategyConfig,
+    writeDogeBaselineArtifacts,
+} from '../dist/app/core/events/strategy/doge-baseline/artifacts.js';
+import {
+    researchDogeBaselineConfigMatrix,
+} from '../dist/app/core/events/strategy/doge-baseline/research_matrix.js';
+import {
     calculateDogeBaselineEntryLimit,
+    canRetryDogeBaselineEmergencyExit,
     evaluateDogeBaselineEmergencyExit,
     getDogeBaselinePredictedSide,
+    selectDogeBaselineExecutableEntry,
     selectDogeBaselineEntry,
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineDecision.js';
 import {
@@ -140,6 +159,161 @@ test('DOGE training metrics compare predictions and signed price continuation wi
     assert.equal(metrics.outcomesByDeviation.reduce((sum, value) => sum + value.frames, 0), 2);
 });
 
+test('DOGE candidate replay window follows the training window chronologically', async () => {
+    const frames = Array.from({ length: 10 }, (_, index) => ({
+        frame: { start_time: index }, observation: { startTime: index },
+    }));
+    let consumed = 0;
+    const newestFirst = values => (async function* () {
+        for (const value of [...values].reverse()) {
+            consumed++;
+            yield value;
+        }
+    })();
+    const split = await collectDogeBaselineTrainReplaySplit(
+        newestFirst(frames),
+        { trainingCount: 5, replayCount: 3 },
+    );
+    assert.deepEqual(split.trainingObservations.map(value => value.startTime), [2, 3, 4, 5, 6]);
+    assert.deepEqual(split.replay.map(value => value.start_time), [7, 8, 9]);
+    assert.equal(consumed, 8);
+    consumed = 0;
+    await assert.rejects(
+        collectDogeBaselineTrainReplaySplit(
+            newestFirst(frames),
+            { trainingCount: 8, replayCount: 3 },
+        ),
+        /required=11 available=10 training=8 replay=3/,
+    );
+});
+
+test('DOGE candidate publication requires profitable replay and direction quality', () => {
+    const working = {
+        replayMetrics: { trade_count: 10, net_pnl: 0.01, profit_factor: 1.01 },
+        validationMetrics: {
+            'early-60': { accuracy: 0.55, brierScore: 0.24 },
+            'late-120': { accuracy: 0.55, brierScore: 0.24 },
+        },
+    };
+    const candidate = {
+        replayMetrics: { trade_count: 10, net_pnl: 0.01, profit_factor: 1.01 },
+        validationMetrics: {
+            'early-60': { accuracy: 0.55, brierScore: 0.24 },
+            'late-120': { accuracy: 0.55, brierScore: 0.24 },
+        },
+    };
+    assert.deepEqual(getDogeBaselineCandidateRejectionReasons(100, working, candidate), []);
+    assert.deepEqual(getDogeBaselineCandidateRejectionReasons(100, working, {
+        ...candidate,
+        replayMetrics: { ...candidate.replayMetrics, net_pnl: 0 },
+    }), [
+        'candidate_net_pnl_not_positive',
+        'candidate_net_pnl_significantly_below_working',
+    ]);
+});
+
+test('DOGE candidate minimum trade count follows replay size within bounds', () => {
+    assert.equal(getDogeBaselineMinimumCandidateTradeCount(1), 5);
+    assert.equal(getDogeBaselineMinimumCandidateTradeCount(50), 5);
+    assert.equal(getDogeBaselineMinimumCandidateTradeCount(100), 10);
+    assert.equal(getDogeBaselineMinimumCandidateTradeCount(101), 11);
+    assert.equal(getDogeBaselineMinimumCandidateTradeCount(150), 15);
+    assert.equal(getDogeBaselineMinimumCandidateTradeCount(200), 20);
+    assert.equal(getDogeBaselineMinimumCandidateTradeCount(500), 20);
+});
+
+test('DOGE configuration research keeps three natural-entry finalists for exit evaluation', () => {
+    const frame = makeFrame();
+    frame.coin = 'doge';
+    frame.slug = 'doge-updown-5m-1000';
+    frame.settlement.confirmed_outcome = 'up';
+    const weights = { means: [0, 0, 0], scales: [1, 1, 1], weights: [0, 0, 0, 0] };
+    const model = {
+        version: 1, strategy: 'doge-baseline', coin: 'doge', frame: '5m', source: PS_CHAINLINK_TWAP_60,
+        trainedAt: 1, requestedFrames: 500, actualFrames: 500, firstFrameStart: 1, lastFrameStart: 500,
+        modes: { 'early-60': weights, 'late-120': weights },
+    };
+    const matrix = researchDogeBaselineConfigMatrix([frame], model, config, createDogeBaselineStrategyConfig(model));
+    assert.equal(matrix.entryRows.length, 35);
+    assert.equal(matrix.finalists.length, 3);
+    assert.equal(matrix.rows.length, 71);
+    assert.ok(matrix.entryRows.every(row => row.config.exit.enabled === false));
+    assert.ok(matrix.rows.slice(matrix.entryRows.length).every(row => row.config.exit.enabled === true));
+});
+
+test('DOGE strategy config V2 requires an enabled entry mode', () => {
+    const weights = { means: [0, 0, 0], scales: [1, 1, 1], weights: [0, 0, 0, 0] };
+    const model = {
+        version: 1, strategy: 'doge-baseline', coin: 'doge', frame: '5m', source: PS_CHAINLINK_TWAP_60,
+        trainedAt: 1, requestedFrames: 500, actualFrames: 500, firstFrameStart: 1, lastFrameStart: 500,
+        modes: { 'early-60': weights, 'late-120': weights },
+    };
+    const strategyConfig = createDogeBaselineStrategyConfig(model);
+    assert.equal(strategyConfig.version, 2);
+    assert.equal(strategyConfig.entry.modes['early-60'].minimumEdge, 0.04);
+    assert.equal(strategyConfig.entry.modes['late-120'].minimumEdge, 0.04);
+    strategyConfig.entry.modes['early-60'].enabled = false;
+    strategyConfig.entry.modes['late-120'].enabled = false;
+    assert.throws(() => validateDogeBaselineStrategyConfig(strategyConfig, model),
+        /invalid_doge_baseline_strategy_config_entry/);
+});
+
+test('DOGE artifact reader restores a stale interrupted pair publication', async () => {
+    const modelsDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-doge-artifacts-'));
+    const previousModelsDirectory = process.env.STRATEGY_MODELS_DIR;
+    process.env.STRATEGY_MODELS_DIR = modelsDirectory;
+    const weights = { means: [0, 0, 0], scales: [1, 1, 1], weights: [0, 0, 0, 0] };
+    const model = {
+        version: 1, strategy: 'doge-baseline', coin: 'doge', frame: '5m', source: PS_CHAINLINK_TWAP_60,
+        trainedAt: 1, requestedFrames: 500, actualFrames: 500, firstFrameStart: 1, lastFrameStart: 500,
+        modes: { 'early-60': weights, 'late-120': weights },
+    };
+    try {
+        const strategyConfig = createDogeBaselineStrategyConfig(model);
+        await writeDogeBaselineArtifacts(model, strategyConfig);
+        const artifactDirectory = path.join(modelsDirectory, 'doge-baseline');
+        const modelPath = path.join(artifactDirectory, 'model.json');
+        const configPath = path.join(artifactDirectory, 'config.json');
+        const backupDirectory = path.join(artifactDirectory, '.publish-backup');
+        await fs.mkdir(backupDirectory);
+        await fs.copyFile(modelPath, path.join(backupDirectory, 'model.json'));
+        await fs.copyFile(configPath, path.join(backupDirectory, 'config.json'));
+        await fs.writeFile(path.join(backupDirectory, 'state.json'), JSON.stringify({
+            pid: 999_999_999, modelExists: true, configExists: true,
+        }));
+        await fs.writeFile(modelPath, `${JSON.stringify({ ...model, trainedAt: 2 })}\n`);
+        const restored = await readDogeBaselineArtifacts();
+        assert.equal(restored.model.trainedAt, 1);
+        await assert.rejects(fs.access(backupDirectory));
+    } finally {
+        if (previousModelsDirectory === undefined) delete process.env.STRATEGY_MODELS_DIR;
+        else process.env.STRATEGY_MODELS_DIR = previousModelsDirectory;
+        await fs.rm(modelsDirectory, { recursive: true, force: true });
+    }
+});
+
+test('DOGE candidate may trail profitable working model by at most twenty percent', () => {
+    const evaluationModel = netPnl => ({
+        replayMetrics: { trade_count: 10, net_pnl: netPnl, profit_factor: 1.01 },
+        validationMetrics: {
+            'early-60': { accuracy: 0.55, brierScore: 0.24 },
+            'late-120': { accuracy: 0.55, brierScore: 0.24 },
+        },
+    });
+    assert.deepEqual(
+        getDogeBaselineCandidateRejectionReasons(100, evaluationModel(10), evaluationModel(7.99)),
+        ['candidate_net_pnl_significantly_below_working'],
+    );
+    assert.deepEqual(
+        getDogeBaselineCandidateRejectionReasons(100, evaluationModel(10), evaluationModel(8)),
+        [],
+    );
+    assert.deepEqual(
+        getDogeBaselineCandidateRejectionReasons(100, evaluationModel(-1), evaluationModel(0.01)),
+        [],
+    );
+});
+
 test('DOGE baseline buys only the side predicted by the model', () => {
     assert.equal(selectDogeBaselineEntry(0.51, {
         upAsk: 0.50, downAsk: 0.50, feesEnabled: false, takerBaseFee: 0,
@@ -158,29 +332,46 @@ test('DOGE baseline buys only the side predicted by the model', () => {
 
 test('DOGE emergency exit requires the final window, adverse deviation and confirmation', () => {
     const base = {
-        side: 'up', frameStartPrice: 100, currentPrice: 99.98,
+        side: 'up', frameStartPrice: 100, currentPrice: 99.94,
         frameEndTimestamp: 300_000, adverseSince: undefined,
     };
-    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 269_999 }), {
+    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 239_999 }), {
         adverseSince: undefined, adverse: false, triggered: false,
     });
-    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 270_000 }), {
-        adverseSince: 270_000, adverse: true, triggered: false,
+    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 240_000 }), {
+        adverseSince: 240_000, adverse: true, triggered: false,
     });
-    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 275_000, adverseSince: 270_000 }), {
-        adverseSince: 270_000, adverse: true, triggered: true,
+    assert.deepEqual(evaluateDogeBaselineEmergencyExit({ ...base, timestamp: 245_000, adverseSince: 240_000 }), {
+        adverseSince: 240_000, adverse: true, triggered: true,
     });
     assert.deepEqual(evaluateDogeBaselineEmergencyExit({
-        ...base, timestamp: 275_000, currentPrice: 100, adverseSince: 270_000,
+        ...base, timestamp: 245_000, currentPrice: 100, adverseSince: 240_000,
     }), { adverseSince: undefined, adverse: false, triggered: false });
     assert.equal(evaluateDogeBaselineEmergencyExit({
-        ...base, side: 'down', timestamp: 275_000, currentPrice: 100.02, adverseSince: 270_000,
+        ...base, side: 'down', timestamp: 245_000, currentPrice: 100.06, adverseSince: 240_000,
     }).triggered, true);
 });
 
 test('DOGE baseline entry crosses one tick without producing an invalid unit price', () => {
     assert.equal(calculateDogeBaselineEntryLimit(0.50, 0.01), 0.51);
     assert.equal(calculateDogeBaselineEntryLimit(0.99, 0.01), 0.99);
+});
+
+test('DOGE executable entry rejects a top-of-book edge erased by depth and fees', () => {
+    const prices = { upAsk: 0.51, downAsk: 0.51, feesEnabled: true, takerBaseFee: 700 };
+    assert.ok(selectDogeBaselineEntry(0.55, prices, 0.02));
+    assert.equal(selectDogeBaselineExecutableEntry(0.55, prices, {
+        upAsks: [{ price: '0.51', size: '5' }, { price: '0.52', size: '20' }],
+        downAsks: [{ price: '0.51', size: '25' }],
+        tickSize: 0.01,
+        minimumOrderValue: 1,
+    }), undefined);
+});
+
+test('DOGE emergency exit retry waits for the configured retry interval', () => {
+    assert.equal(canRetryDogeBaselineEmergencyExit(215_000, undefined), true);
+    assert.equal(canRetryDogeBaselineEmergencyExit(215_500, 216_000), false);
+    assert.equal(canRetryDogeBaselineEmergencyExit(216_000, 216_000), true);
 });
 
 
@@ -203,6 +394,40 @@ test('taker execution walks depth, calculates VWAP and fees', () => {
     assert.equal(Number(fill.fee.toFixed(5)), 0.13989);
 });
 
+test('taker fees use Polymarket precision without floating-point tails', () => {
+    assert.equal(calculateTakerFee(0.001, 0.01, 0.07), 0);
+
+    const execution = calculateTakerExecution({
+        action: 'sell',
+        levels: [{ price: '0.49', size: '4' }, { price: '0.48', size: '6' }],
+        quantity: 10,
+        limitPrice: 0.01,
+        tickSize: 0.01,
+        feesEnabled: true,
+        takerBaseFeeBps: 700,
+    });
+    assert.equal(execution.fillStatus, 'full');
+    assert.equal(execution.averagePrice, 0.484);
+    assert.equal(execution.bestPrice, 0.49);
+    assert.equal(execution.fee, 0.1748);
+    assert.equal(execution.fee.toString(), '0.1748');
+    const none = calculateTakerExecution({
+        action: 'buy', levels: [], quantity: 10, limitPrice: 1, tickSize: 0.01,
+        feesEnabled: false, takerBaseFeeBps: 0,
+    });
+    assert.equal(none.fillStatus, 'none');
+    assert.equal(none.averagePrice, undefined);
+    assert.equal(none.bestPrice, undefined);
+
+    const partial = calculateTakerExecution({
+        action: 'buy', levels: [{ price: '0.51', size: '5' }], quantity: 10, limitPrice: 0.52, tickSize: 0.01,
+        feesEnabled: false, takerBaseFeeBps: 0,
+    });
+    assert.equal(partial.fillStatus, 'partial');
+    assert.equal(partial.averagePrice, 0.51);
+    assert.equal(partial.bestPrice, 0.51);
+});
+
 test('taker execution reports partial depth and rejects invalid minimum', () => {
     const frame = makeFrame();
     const partial = simulateTakerFill(frame, frame.snapshots[0], {
@@ -214,6 +439,66 @@ test('taker execution reports partial depth and rejects invalid minimum', () => 
         action: 'buy', side: 'up', quantity: 4, limit_price: 0.52,
     }, 100, 0, config);
     assert.equal(rejected.reason_code, 'below_minimum_size');
+});
+
+test('virtual taker wallet accounts for depth, partial fills, fees and settlement', async () => {
+    let upBids = [];
+    const marketData = {
+        eventId: 'event', marketId: 'market', conditionId: 'condition', tick_size: 0.01,
+        min_order_size: 5, fees_enabled: true, maker_base_fee: 0, taker_base_fee: 700,
+        rewards_max_spread: 0, rewards_min_size: 0,
+        up: { outcome: 'up', tokenId: 'up' }, down: { outcome: 'down', tokenId: 'down' },
+    };
+    const book = {
+        getMarketData: () => marketData,
+        getUpMarketData: () => marketData.up,
+        getDownMarketData: () => marketData.down,
+        getAsksUp: () => [{ price: '0.51', size: '5' }, { price: '0.52', size: '5' }],
+        getAsksDown: () => [],
+        getBidsUp: () => upBids,
+        getBidsDown: () => [],
+    };
+    const createWallet = () => VirtualTakerLiveOrderWallet.create({
+        token_id: 'up', balance: 100, tick_size: 0.01,
+        min_order_size: 5, min_buy_order_value: 1,
+    }, book);
+    const wallet = createWallet();
+
+    const buy = await wallet.buy(0.52, 10);
+    assert.equal(buy?.fast_full_trade, true);
+    assert.equal(buy?.value.quantity, 10);
+    assert.equal(buy?.value.price, 0.515);
+
+    const noLiquiditySell = await wallet.sell(0.01, 10);
+    assert.equal(noLiquiditySell, undefined);
+    assert.equal(wallet.getTokensQuantity(), 10);
+
+    upBids = [{ price: '0.49', size: '4' }];
+    const partialSell = await wallet.sell(0.01, 10);
+    assert.equal(partialSell?.fast_full_trade, false);
+    assert.equal(partialSell?.value.quantity, 4);
+    assert.equal(wallet.isPartialFilled(partialSell.id), true);
+    assert.equal(wallet.getTokensQuantity(), 6);
+
+    upBids = [{ price: '0.48', size: '6' }];
+    const finalSell = await wallet.sell(0.01, wallet.getTokensQuantity());
+    assert.equal(finalSell?.fast_full_trade, true);
+    assert.equal(finalSell?.value.quantity, 6);
+    assert.equal(wallet.isFullFilled(finalSell.id), true);
+    assert.equal(wallet.getTokensQuantity(), 0);
+    assert.equal(wallet.getBalance(), 99.34037);
+
+    const winningWallet = createWallet();
+    await winningWallet.buy(0.52, 10);
+    assert.equal(winningWallet.settle('up'), 10);
+    assert.equal(winningWallet.getTokensQuantity(), 0);
+    assert.equal(winningWallet.getBalance(), 104.67517);
+
+    const losingWallet = createWallet();
+    await losingWallet.buy(0.52, 10);
+    assert.equal(losingWallet.settle('down'), 0);
+    assert.equal(losingWallet.getTokensQuantity(), 0);
+    assert.equal(losingWallet.getBalance(), 94.67517);
 });
 
 test('buy limit is rounded down to the market tick', () => {

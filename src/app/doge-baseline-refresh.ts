@@ -1,25 +1,105 @@
 import 'dotenv/config';
 import { logger, logger_shutdown } from '../log.js';
 import { getFrameDurationMs, isEventFrame, waitFrameStartMsUntil } from '../market/frame.js';
-import { error_str, killSignalsHook, safeToNum } from '../utils.js';
-import { readArgument } from './backtest_args.js';
+import { delay, error_str, killSignalsHook } from '../utils.js';
+import { readArgument, readPositiveIntegerArgument, readReplayExecutionConfig } from './cli_args.js';
 import { DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
-import { trainDogeBaseline } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
+import {
+    DOGE_BASELINE_CANDIDATE_MODEL_FILE,
+    DOGE_BASELINE_DEFAULT_BALANCE,
+    getDogeBaselineEntrySummary,
+} from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
+import { buildDogeBaselineModel, readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
+import { type DogeBaselineModel, getDogeBaselineArtifactPath, readDogeBaselineModel, writeDogeBaselineModel } from './core/events/strategy/doge-baseline/DogeBaselineModel.js';
+import {
+    createDogeBaselineStrategyConfig,
+    readDogeBaselineStrategyConfigOrDefault,
+    rebindDogeBaselineStrategyConfig,
+    writeDogeBaselineArtifacts,
+    writeDogeBaselineStrategyConfig,
+} from './core/events/strategy/doge-baseline/artifacts.js';
+import { researchDogeBaselineConfigMatrix } from './core/events/strategy/doge-baseline/research_matrix.js';
+import { evaluateDogeBaselineModelConfigurations, writeDogeBaselineEvaluation } from './core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
 import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/DogeBaselineRefreshLock.js';
 import { settleHistoryDirectory } from './core/history/HistorySettlementService.js';
+import { isFileMissingError } from '../file_lock.js';
 
-function readPositiveInteger(name: string): number {
-    const raw = readArgument(name);
-    const value = safeToNum(raw, Number.NaN);
-    if (!Number.isInteger(value) || value <= 0) throw new Error(`--${name} must be a positive integer`);
-    return value;
+async function readWorkingConfig(model: Readonly<DogeBaselineModel>) {
+    const config = await readDogeBaselineStrategyConfigOrDefault(model);
+    await writeDogeBaselineStrategyConfig(config, model);
+    return config;
+}
+
+async function refreshModel(
+    history: string,
+    trainFrames: number,
+    replayFrames: number,
+    shouldStop: () => boolean,
+): Promise<string> {
+    const executionConfig = readReplayExecutionConfig(DOGE_BASELINE_DEFAULT_BALANCE);
+    const { trainingObservations, trainingFrames, replay } = await readDogeBaselineTrainReplaySplit(
+        history, { trainingCount: trainFrames, replayCount: replayFrames }, shouldStop,
+    );
+    const candidate = buildDogeBaselineModel(trainingObservations);
+    await writeDogeBaselineModel(candidate, getDogeBaselineArtifactPath(DOGE_BASELINE_CANDIDATE_MODEL_FILE));
+
+    let workingModel;
+    try {
+        workingModel = await readDogeBaselineModel();
+    } catch (error) {
+        if (!isFileMissingError(error)) throw error;
+    }
+    if (workingModel === undefined) {
+        const initialConfig = createDogeBaselineStrategyConfig(candidate);
+        const selected = researchDogeBaselineConfigMatrix(
+            trainingFrames,
+            candidate,
+            executionConfig,
+            initialConfig,
+        );
+        await writeDogeBaselineArtifacts(candidate, selected.selected.config);
+        return `Initial model and config published from ${candidate.actualFrames} frames`;
+    }
+
+    const workingConfig = await readWorkingConfig(workingModel);
+    const workingMatrix = researchDogeBaselineConfigMatrix(
+        trainingFrames, workingModel, executionConfig, workingConfig,
+    );
+    const candidateCurrent = rebindDogeBaselineStrategyConfig(candidate, workingConfig);
+    const candidateMatrix = researchDogeBaselineConfigMatrix(
+        trainingFrames, candidate, executionConfig, candidateCurrent,
+    );
+    const evaluation = evaluateDogeBaselineModelConfigurations(
+        trainFrames,
+        replay,
+        workingModel,
+        workingConfig,
+        workingMatrix.selected.config,
+        candidate,
+        candidateCurrent,
+        candidateMatrix.selected.config,
+        executionConfig,
+    );
+    await writeDogeBaselineEvaluation(evaluation);
+    if (!evaluation.promoted) return 'Working model and config retained after four-way comparison';
+
+    if (evaluation.selected.model === 'working') {
+        await writeDogeBaselineStrategyConfig(evaluation.selected.strategyConfig, workingModel);
+    } else {
+        await writeDogeBaselineArtifacts(candidate, evaluation.selected.strategyConfig);
+    }
+    const exit = evaluation.selected.strategyConfig.exit;
+    return `Published ${evaluation.selected.id}: modes=${getDogeBaselineEntrySummary(evaluation.selected.strategyConfig.entry)} ` +
+        `exit=${exit.enabled ? `${exit.windowMs / 1_000}s/${(exit.deviationFactor * 100).toFixed(2)}%` : 'natural'} ` +
+        `frames=${evaluation.replayFrames} netPnL=${evaluation.selected.replayMetrics.net_pnl.toFixed(6)}`;
 }
 
 async function main(): Promise<void> {
     const frameRaw = readArgument('frame');
     if (!frameRaw || !isEventFrame(frameRaw)) throw new Error('--frame must be a supported frame');
-    const refreshFrames = readPositiveInteger('count');
-    const trainFrames = readPositiveInteger('train-count');
+    const refreshFrames = readPositiveIntegerArgument('count');
+    const trainFrames = readPositiveIntegerArgument('train-count');
+    const replayFrames = readPositiveIntegerArgument('replay');
     const history = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const lock = await DogeBaselineRefreshLock.acquire();
     logger.info('[DogeBaselineRefresh] Refresh lock acquired');
@@ -28,7 +108,6 @@ async function main(): Promise<void> {
         stopped = true;
         logger.info('[DogeBaselineRefresh] Shutdown signal received');
     });
-
     try {
         while (!stopped) {
             const settlement = await settleHistoryDirectory({ directory: history, shouldStop: () => stopped });
@@ -38,20 +117,14 @@ async function main(): Promise<void> {
             );
             if (stopped) break;
             try {
-                const result = await trainDogeBaseline(history, trainFrames, () => stopped);
-                const accuracy = Object.entries(result.metrics)
-                    .map(([mode, metrics]) => `${mode}=${metrics.accuracy.toFixed(4)}`)
-                    .join(' ');
-                logger.info(
-                    `[DogeBaselineRefresh] Model updated from ${result.model.actualFrames} frames accuracy ${accuracy}`,
-                );
+                logger.info(`[DogeBaselineRefresh] ${await refreshModel(history, trainFrames, replayFrames, () => stopped)}`);
             } catch (error) {
                 if (stopped) break;
-                logger.error(`[DogeBaselineRefresh] Training failed, previous model retained: ${error_str(error)}`);
+                logger.error(`[DogeBaselineRefresh] Refresh failed, working artifacts retained: ${error_str(error)}`);
             }
             for (let index = 0; index < refreshFrames && !stopped; index++) {
                 await waitFrameStartMsUntil(getFrameDurationMs(frameRaw), () => stopped);
-                if (!stopped) await new Promise(resolve => setTimeout(resolve, 1));
+                if (!stopped) await delay(1);
             }
         }
     } finally {
