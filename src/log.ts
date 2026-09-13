@@ -123,6 +123,11 @@ export const logger = winston.createLogger({
     rejectionHandlers: transports.length ? transports : undefined
 });
 
+/** Writes command output independently of the configured log transports. */
+export function writeOutput(message: string): void {
+    process.stdout.write(`${message}\n`);
+}
+
 /**
  * Gracefully shuts down the Winston logger, flushing all pending logs.
  * Resolves after all transports have been closed or after a 3‑second timeout.

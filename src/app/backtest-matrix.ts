@@ -4,8 +4,10 @@ import { createHash } from 'node:crypto';
 import { getHistoryFramePaths, readHistoryFrame } from './core/history/HistoryFrameReader.js';
 import { ReplayMatrixSourceFile, runReplayMatrix, writeReplayMatrixReport } from './core/backtest/replay_matrix.js';
 import { REPLAY_STRATEGY_PRESETS } from './core/backtest/replay_presets.js';
-import { readArgument, readReplayExecutionConfig } from './backtest_args.js';
+import { readArgument, readReplayExecutionConfig } from './cli_args.js';
 import { DEFAULT_BACKTEST_MATRIX_OUTPUT_DIRECTORY, DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
+import { logger, logger_shutdown } from '../log.js';
+import { error_str } from '../utils.js';
 
 async function main(): Promise<void> {
     const input = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
@@ -23,15 +25,23 @@ async function main(): Promise<void> {
     }
     const result = runReplayMatrix(frames, REPLAY_STRATEGY_PRESETS, config);
     await writeReplayMatrixReport(result, output, sourceFiles);
-    console.log(JSON.stringify({
+    logger.info(`[BacktestMatrix] Result:\n${JSON.stringify({
         presets: Object.keys(result.results),
         included_frames: result.frames.length,
         excluded_frames: result.excluded_frames.length,
         output,
-    }, undefined, 2));
+    }, undefined, 2)}`);
 }
 
-main().catch(error => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-});
+async function run(): Promise<void> {
+    try {
+        await main();
+    } catch (error) {
+        logger.error(`[BacktestMatrix] Fatal error: ${error_str(error)}`);
+        process.exitCode = 1;
+    } finally {
+        await logger_shutdown();
+    }
+}
+
+void run();

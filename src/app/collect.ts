@@ -9,7 +9,7 @@ import {
 import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
 import { CoinPriceWatcher } from '../market/price/CoinPriceWatcher.js';
 import { TIMER_FAST } from '../timer.js';
-import { logger, logger_shutdown } from '../log.js';
+import { logger, logger_shutdown, writeOutput } from '../log.js';
 import {
     DEFAULT_HISTORY_BOOK_DEPTH,
     DEFAULT_HISTORY_COIN,
@@ -25,14 +25,7 @@ import {
 import { delay, error_str, killSignalsHook, safeToNum } from '../utils.js';
 import { HistoryCollector } from './core/history/HistoryCollector.js';
 import { HistoryFrameWriter } from './core/history/HistoryFrameWriter.js';
-
-function readArgument(name: string): string | undefined {
-    const prefix = `--${name}=`;
-    const inline = process.argv.find(argument => argument.startsWith(prefix));
-    if (inline) return inline.slice(prefix.length);
-    const index = process.argv.indexOf(`--${name}`);
-    return index >= 0 ? process.argv[index + 1] : undefined;
-}
+import { readArgument } from './cli_args.js';
 
 function readInteger(name: string, fallback: number, minimum: number): number {
     const raw = process.env[name];
@@ -72,7 +65,7 @@ async function waitForFirstWatcherPrice(watcher: CoinPriceWatcher, timeoutMs: nu
 
 async function main(): Promise<void> {
     if (process.argv.includes('--help')) {
-        console.log([
+        writeOutput([
             'Usage: npm run collect -- --coin all --frame 5m --source chainlink-twap-60 [--count 1] [--cycle]',
             '',
             'The collector is read-only and waits for the next complete frame boundary.',
