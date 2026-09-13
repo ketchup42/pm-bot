@@ -55,4 +55,15 @@ const wallet = await LiveOrderWallet.create(client, {
 created. Always handle that result, and do not assume a submitted limit order has
 filled until the order watcher reports the state.
 
+`VirtualTakerLiveOrderWallet` is immediate by design. It walks every executable
+level currently visible in the live book, records a volume-weighted average price,
+charges the configured taker fee and leaves an unfilled remainder in the virtual
+position. A caller that needs full liquidation must retry that remainder when new
+bid depth appears.
+
+For a resolved binary frame, `settle(outcome)` pays $1 per remaining virtual token
+when the outcome matches the wallet side, and $0 otherwise. Settlement clears the
+position and does not walk the book or charge an exit fee; it must not be
+substituted with a sale at a final bid such as $0.99.
+
 For strategy lifecycle and safe book reads, see [strategies.md](strategies.md).

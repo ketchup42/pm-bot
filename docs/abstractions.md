@@ -39,8 +39,9 @@ boundaries.
 | `OrderWallet`                   | `market/orders/OrderWallet.ts`                     | Virtual balance, order lifecycle and exchange limits.   |
 | `CoinDogeBaselineStrategy`      | `app/core/events/strategy/doge-baseline/`          | Executes the published DOGE model for one live frame.   |
 
-The live entry point is `src/app/index.ts`. It creates an authenticated client and
-is therefore separate from `collect`, `history:settle` and replay commands.
+The live entry point is `src/app/doge-baseline.ts`, started with
+`npm run strategy:doge-baseline`. It creates an authenticated client and is
+therefore separate from `collect`, `history:settle` and replay commands.
 
 ## Market data watchers
 

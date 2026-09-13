@@ -52,11 +52,18 @@ npm run backtest -- --history history/frames --output history/reports/latest --s
 # Runs every registered preset on the same data set.
 npm run backtest:matrix -- --history history/frames --output history/reports/matrix/latest
 
-# Train both DOGE baseline entries on the newest 500 eligible frames.
-npm run research:doge-baseline -- --count 500
+# Train and publish a DOGE model while retaining its current trading configuration.
+npm run research:doge-baseline-model -- --count 500
 
-# Replay the published model with fees, spread, slippage and book depth.
-npm run replay:doge-baseline -- --history history/frames --output history/reports/doge-baseline/latest
+# Select and atomically publish per-mode edges and emergency-exit parameters for the working model.
+npm run research:doge-baseline-config -- --count 500
+
+# Replay the published model on the newest 100 eligible frames.
+npm run replay:doge-baseline -- --history history/frames --count 100 \
+  --balance 100 --trade-value 10 --output history/reports/doge-baseline/latest
+
+# Settle, train, tune both model configurations, then compare four pairs on 100 later frames.
+npm run refresh:doge-baseline -- --frame 5m --count 100 --train-count 500 --replay 100
 ```
 
 The matrix uses only frames with `data_quality.complete=true` and a confirmed
@@ -64,20 +71,20 @@ outcome. Its `manifest.json` lists excluded files and their reasons.
 
 ## Commands
 
-| Command                                                                                      | Purpose                                                                  |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `npm run dev`                                                                                | Run the original live entry point from TypeScript.                       |
-| `npm run build`                                                                              | Compile `src/` into `dist/`.                                             |
-| `npm start`                                                                                  | Run the compiled original live entry point.                              |
-| `npm run check`                                                                              | Run type-checking, linting and tests.                                    |
-| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 500 --cycle`   | Continuously retain the newest 500 DOGE frames.                          |
-| `npm run history:settle`                                                                     | Confirm outcomes for collected V3 frames.                                |
-| `npm run backtest -- --history history/frames --strategy v2`                                 | Replay one registered reference preset.                                  |
-| `npm run backtest:matrix -- --history history/frames`                                        | Compare all registered reference presets.                                |
-| `npm run research:doge-baseline -- --count 500`                                              | Train and atomically publish the two-mode DOGE model.                    |
-| `npm run replay:doge-baseline -- --history history/frames`                                   | Replay the published DOGE model without retraining it.                   |
-| `npm run strategy:doge-baseline -- --debug true`                                             | Run DOGE with a virtual wallet; `false` enables real orders.             |
-| `npm run model-refresh:doge-baseline -- --frame 5m --count 100 --train-count 500`            | Settle and retrain immediately, then every 100 frame boundaries.         |
+| Command                                                                                        | Purpose                                                              |
+| ------------------------------------------------------------------------------------------------| ----------------------------------------------------------------------|
+| `npm run build`                                                                                | Compile `src/` into `dist/`.                                         |
+| `npm run check`                                                                                | Run type-checking, linting and tests.                                |
+| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 700 --cycle`     | Retain a 700-frame DOGE buffer for 500+100 model evaluation.         |
+| `npm run history:settle`                                                                       | Confirm outcomes for collected V3 frames.                            |
+| `npm run backtest -- --history history/frames --strategy v2`                                   | Replay one registered reference preset.                              |
+| `npm run backtest:matrix -- --history history/frames`                                          | Compare all registered reference presets.                            |
+| `npm run research:doge-baseline-model -- --count 500`                                          | Train and publish the two-mode DOGE model.                           |
+| `npm run research:doge-baseline-config -- --count 500`                                         | Tune and publish per-mode edge and exit configuration.               |
+| `npm run replay:doge-baseline -- --model <file> --config <file> --history history/frames --count 100 --balance 100 --trade-value 10` | Replay a specified model and matching configuration. |
+| `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10`                      | Run DOGE with a virtual wallet.                                       |
+| `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`                       | Run DOGE with real orders.                                            |
+| `npm run refresh:doge-baseline -- --frame 5m --count 100 --train-count 500 --replay 100`       | Tune two model/config pairs and compare them on 100 later frames.    |
 
 ## Data lifecycle
 
@@ -85,9 +92,9 @@ outcome. Its `manifest.json` lists excluded files and their reasons.
 selected-source prices + CLOB order books
                   │
                   ▼
-collect → HistoryFrameV3 → history:settle → research:doge-baseline → model.json
-                              │                                      │
-                              └──────── replay:doge-baseline ◀────────┘
+collect → HistoryFrameV3 → history:settle → model/config research → model.json + config.json
+                              │                                           │
+                              └──────────── replay:doge-baseline ◀────────┘
                                                                      │
                                                                      ▼
                                                       strategy:doge-baseline
@@ -97,23 +104,38 @@ collect → HistoryFrameV3 → history:settle → research:doge-baseline → mod
 and connection state. It does **not** mean that a strategy is profitable. Outcome
 confirmation is a separate later operation.
 
+Configuration research keeps the same eligible frames as model training, but reduces
+their snapshots in memory to a 250 ms cadence. This bounds memory use for the
+two-stage matrix: 35 natural entry configurations, then 12 emergency-exit variants
+for each of three finalists. It does not modify the original history files. Normal replay keeps
+using every recorded snapshot.
+
 The DOGE model contains two independent logistic-regression modes. The early mode
 decides at 60 seconds from 15/30/60-second returns. If it does not enter, the late
 mode decides at 120 seconds from 75/90/120-second returns. The replay command uses
 the already published model and applies the same prediction-side entry rule. Market
-price can reject the predicted trade but cannot switch it to the opposite side. An
-emergency exit is allowed in the final 30 seconds after DOGE remains one basis point
-against the position for five seconds.
+price can reject the predicted trade but cannot switch it to the opposite side. Ask
+depth, VWAP, taker fee and the minimum order value must preserve the configured edge
+before an entry is submitted. An emergency exit is allowed in the final 60 seconds
+after DOGE remains 0.05% against the position for five seconds. It walks
+available bid depth and retries an unsold remainder no more than once per second
+without placing duplicate active orders. Positions held through a
+natural frame end are settled at $1 for the winning side or $0 for the losing side;
+they are not sold at the final bid and do not incur an exit fee.
+
+Candidate refresh requires profitable replay, sufficient prediction quality and a
+trade count equal to 10% of replay frames, bounded from 5 to 20. A candidate also
+cannot trail a profitable working model by more than 20% net PnL on the same frames.
 
 ## Live mode and secrets
 
-`npm run dev` and `npm start` create an authenticated trading client. Configure it
-in a local `.env`, which must never be committed or written to logs. The complete
-variable list and a placeholder-only example are in [docs/env.md](docs/env.md).
-
-`strategy:doge-baseline` defaults to a virtual wallet, but the current scheduler
-still initialises an authenticated client in both modes. Passing `--debug false`
-enables real orders. Review the model and its latest replay report first.
+`strategy:doge-baseline` requires exactly one explicit mode: `--debug` creates a
+virtual wallet, while `--live` enables real orders. Both modes require a positive
+`--balance` and `--trade-value`; the latter cannot exceed the balance. The scheduler
+still initialises an authenticated client in both modes. Configure it in a local
+`.env`, which must never be committed or written to logs. The complete variable list
+and a placeholder-only example are in [docs/env.md](docs/env.md). Review the model
+and its latest replay report first.
 
 ## Documentation
 

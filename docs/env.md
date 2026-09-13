@@ -6,13 +6,13 @@ API credentials; live trading does.
 
 ## Which mode needs which settings?
 
-| Mode                          | Credentials | Relevant settings                                      |
-| ----------------------------- | ----------- | ------------------------------------------------------ |
-| `collect`                     | No          | `HISTORY_*`, logging                                   |
-| `history:settle`              | No          | `HISTORY_DIR`, logging                                 |
-| `backtest`, model research    | No          | Command-line arguments, `STRATEGY_MODELS_DIR`          |
-| `strategy:doge-baseline`      | Yes         | Model path, wallet/API settings and logging            |
-| `dev`, `start`                | Yes         | Wallet/API settings, optional RPC, logging and dumps   |
+| Mode                       | Credentials | Relevant settings                                    |
+| ----------------------------| -------------| ------------------------------------------------------|
+| `collect`                  | No          | `HISTORY_*`, logging                                 |
+| `history:settle`           | No          | `HISTORY_DIR`, logging                               |
+| `backtest`, model research | No          | Command-line arguments, `STRATEGY_MODELS_DIR`        |
+| `strategy:doge-baseline`   | Yes         | Model path, wallet/API settings and logging          |
+| `dev`, `start`             | Yes         | Wallet/API settings, optional RPC, logging and dumps |
 
 ## Live trading credentials
 
