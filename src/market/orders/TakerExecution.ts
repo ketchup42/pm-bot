@@ -1,6 +1,6 @@
 import { calculateTakerFee, feeRateBpsToDecimal, TAKER_FEE_DECIMAL_PLACES } from '../../rest/fees.js';
-import { DEFAULT_ORDER_AMOUNT_FRACTION } from '../../rest/orders.js';
 import { safeFloat, safeToNum } from '../../utils.js';
+import { ORDER_WALLET_FRACTION } from './OrderWallet.js';
 
 export type TakerExecutionAction = 'buy' | 'sell';
 export type TakerExecutionFillStatus = 'none' | 'partial' | 'full';
@@ -57,7 +57,8 @@ export function calculateTakerExecution(params: Readonly<TakerExecutionParams>):
         .filter(level => Number.isFinite(level.price) && Number.isFinite(level.size) && level.size > 0)
         .sort((left, right) => params.action === 'buy' ? left.price - right.price : right.price - left.price);
 
-    let remainingQuantity = params.quantity;
+    const requestedQuantity = safeFloat(params.quantity, ORDER_WALLET_FRACTION);
+    let remainingQuantity = requestedQuantity;
     let grossValue = 0;
     let fee = 0;
     let bestPrice: number | undefined;
@@ -65,38 +66,38 @@ export function calculateTakerExecution(params: Readonly<TakerExecutionParams>):
     for (const level of levels) {
         const executable = params.action === 'buy' ? level.price <= limit : level.price >= limit;
         if (!executable) break;
-        const quantity = Math.min(remainingQuantity, level.size);
+        const quantity = safeFloat(Math.min(remainingQuantity, level.size), ORDER_WALLET_FRACTION);
         if (quantity <= 0) continue;
         bestPrice ??= level.price;
-        grossValue += quantity * level.price;
+        grossValue = safeFloat(grossValue + quantity * level.price, ORDER_WALLET_FRACTION);
         if (params.feesEnabled) {
             fee = safeFloat(fee + calculateTakerFee(quantity, level.price, feeRate), TAKER_FEE_DECIMAL_PLACES);
         }
-        remainingQuantity -= quantity;
-        if (remainingQuantity <= 1e-9) {
+        remainingQuantity = safeFloat(remainingQuantity - quantity, ORDER_WALLET_FRACTION);
+        if (remainingQuantity === 0) {
             remainingQuantity = 0;
             break;
         }
     }
 
-    const filledQuantity = params.quantity - remainingQuantity;
+    const filledQuantity = safeFloat(requestedQuantity - remainingQuantity, ORDER_WALLET_FRACTION);
     const common: TakerExecutionCommonResult = {
-        requestedQuantity: params.quantity,
+        requestedQuantity,
         filledQuantity,
         remainingQuantity,
         grossValue,
         fee,
     };
-    if (filledQuantity <= 1e-9) {
+    if (filledQuantity === 0) {
         return { ...common, fillStatus: 'none', averagePrice: undefined, bestPrice: undefined };
     }
     if (bestPrice === undefined) throw new Error('taker_execution_missing_best_price');
     const filled = {
         ...common,
-        averagePrice: safeFloat(grossValue / filledQuantity, DEFAULT_ORDER_AMOUNT_FRACTION),
+        averagePrice: safeFloat(grossValue / filledQuantity, ORDER_WALLET_FRACTION),
         bestPrice,
     };
-    return remainingQuantity <= 1e-9
+    return remainingQuantity === 0
         ? { ...filled, fillStatus: 'full' }
         : { ...filled, fillStatus: 'partial' };
 }

@@ -99,7 +99,7 @@ export class VirtualTakerLiveOrderWallet implements MultiOrderWallet {
 
         const execution = this.calculateExecution('buy', orderPrice, orderQuantity);
         if (execution.fillStatus === 'none') return undefined;
-        const actualCost = execution.grossValue + execution.fee;
+        const actualCost = safeFloat(execution.grossValue + execution.fee, ORDER_WALLET_FRACTION);
         if (actualCost > this._walletBalance) {
             logger.warn(`[VirtualTakerLiveOrderWallet] Not enough balance. Available: ${this._walletBalance}, required: ${actualCost}`);
             return undefined;
@@ -129,9 +129,10 @@ export class VirtualTakerLiveOrderWallet implements MultiOrderWallet {
 
         const execution = this.calculateExecution('sell', orderPrice, orderQuantity);
         if (execution.fillStatus === 'none') return undefined;
+        const netValue = safeFloat(execution.grossValue - execution.fee, ORDER_WALLET_FRACTION);
 
         this._walletBalance = safeFloat(
-            this._walletBalance + execution.grossValue - execution.fee,
+            this._walletBalance + netValue,
             ORDER_WALLET_FRACTION,
         );
         this._tokenQuantity = safeFloat(

@@ -434,6 +434,15 @@ test('taker fees use Polymarket precision without floating-point tails', () => {
     assert.equal(partial.fillStatus, 'partial');
     assert.equal(partial.averagePrice, 0.51);
     assert.equal(partial.bestPrice, 0.51);
+
+    const fractionalPartial = calculateTakerExecution({
+        action: 'buy', levels: [{ price: '0.74', size: '12.7' }], quantity: 13.333333, limitPrice: 0.75,
+        tickSize: 0.01, feesEnabled: false, takerBaseFeeBps: 0,
+    });
+    assert.equal(fractionalPartial.fillStatus, 'partial');
+    assert.equal(fractionalPartial.filledQuantity, 12.7);
+    assert.equal(fractionalPartial.remainingQuantity, 0.633333);
+    assert.equal(fractionalPartial.grossValue, 9.398);
 });
 
 test('immediately matched GTC orders return taker fee from actual trades', async () => {
