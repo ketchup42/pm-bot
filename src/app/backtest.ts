@@ -10,10 +10,9 @@ import {
     DEFAULT_HISTORY_DIRECTORY,
     DEFAULT_REPLAY_STRATEGY,
 } from './defaults.js';
-import { logger, logger_shutdown } from '../log.js';
-import { error_str } from '../utils.js';
+import { logger } from '../log.js';
 
-async function main(): Promise<void> {
+export async function runBacktest(): Promise<void> {
     const input = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const output = readArgument('output') ?? DEFAULT_BACKTEST_OUTPUT_DIRECTORY;
     const strategyName = readArgument('strategy') ?? DEFAULT_REPLAY_STRATEGY;
@@ -26,16 +25,3 @@ async function main(): Promise<void> {
     await writeReplayReport(result, output);
     logger.info(`[Backtest] Result:\n${JSON.stringify(result.metrics, undefined, 2)}`);
 }
-
-async function run(): Promise<void> {
-    try {
-        await main();
-    } catch (error) {
-        logger.error(`[Backtest] Fatal error: ${error_str(error)}`);
-        process.exitCode = 1;
-    } finally {
-        await logger_shutdown();
-    }
-}
-
-void run();

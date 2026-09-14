@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { readArgument, readPositiveIntegerArgument, readReplayExecutionConfig } from './cli_args.js';
 import { DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
 import { readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
@@ -10,10 +9,9 @@ import {
     DOGE_BASELINE_DEFAULT_BALANCE,
     getDogeBaselineEntrySummary,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
-import { logger, logger_shutdown } from '../log.js';
-import { error_str } from '../utils.js';
+import { logger } from '../log.js';
 
-async function main(): Promise<void> {
+export async function runDogeBaselineConfigResearch(): Promise<void> {
     const count = readPositiveIntegerArgument('count');
     const history = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const lock = await DogeBaselineRefreshLock.acquire();
@@ -36,16 +34,3 @@ async function main(): Promise<void> {
         await lock.release();
     }
 }
-
-async function run(): Promise<void> {
-    try {
-        await main();
-    } catch (error) {
-        logger.error(`[DogeBaselineConfigResearch] Fatal error: ${error_str(error)}`);
-        process.exitCode = 1;
-    } finally {
-        await logger_shutdown();
-    }
-}
-
-void run();

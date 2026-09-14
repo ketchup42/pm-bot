@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { readArgument, readPositiveIntegerArgument } from './cli_args.js';
 import { DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
 import { trainDogeBaseline } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
@@ -10,11 +9,10 @@ import {
     writeDogeBaselineArtifacts,
 } from './core/events/strategy/doge-baseline/artifacts.js';
 import { readDogeBaselineModel } from './core/events/strategy/doge-baseline/DogeBaselineModel.js';
-import { logger, logger_shutdown } from '../log.js';
-import { error_str } from '../utils.js';
+import { logger } from '../log.js';
 import { isFileMissingError } from '../file_lock.js';
 
-async function main(): Promise<void> {
+export async function runDogeBaselineModelResearch(): Promise<void> {
     const count = readPositiveIntegerArgument('count');
     const history = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const lock = await DogeBaselineRefreshLock.acquire();
@@ -41,16 +39,3 @@ async function main(): Promise<void> {
         await lock.release();
     }
 }
-
-async function run(): Promise<void> {
-    try {
-        await main();
-    } catch (error) {
-        logger.error(`[DogeBaselineModelResearch] Fatal error: ${error_str(error)}`);
-        process.exitCode = 1;
-    } finally {
-        await logger_shutdown();
-    }
-}
-
-void run();

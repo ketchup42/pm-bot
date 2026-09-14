@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { getSupportedCoins, isCoin } from '../market/coins.js';
 import { getSupportedFrames, isEventFrame } from '../market/frame.js';
 import {
@@ -9,7 +8,7 @@ import {
 import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
 import { CoinPriceWatcher } from '../market/price/CoinPriceWatcher.js';
 import { TIMER_FAST } from '../timer.js';
-import { logger, logger_shutdown, writeOutput } from '../log.js';
+import { logger, writeOutput } from '../log.js';
 import {
     DEFAULT_HISTORY_BOOK_DEPTH,
     DEFAULT_HISTORY_COIN,
@@ -22,7 +21,7 @@ import {
     DEFAULT_HISTORY_SOURCE,
     HISTORY_COIN_ALL,
 } from './defaults.js';
-import { delay, error_str, killSignalsHook, safeToNum } from '../utils.js';
+import { delay, killSignalsHook, safeToNum } from '../utils.js';
 import { HistoryCollector } from './core/history/HistoryCollector.js';
 import { HistoryFrameWriter } from './core/history/HistoryFrameWriter.js';
 import { readArgument } from './cli_args.js';
@@ -63,10 +62,10 @@ async function waitForFirstWatcherPrice(watcher: CoinPriceWatcher, timeoutMs: nu
     }
 }
 
-async function main(): Promise<void> {
+export async function runCollect(): Promise<void> {
     if (process.argv.includes('--help')) {
         writeOutput([
-            'Usage: npm run collect -- --coin all --frame 5m --source chainlink-twap-60 [--count 1] [--cycle]',
+            'Usage: pm-bot collect --coin all --frame 5m --source chainlink-twap-60 [--count 1] [--cycle]',
             '',
             'The collector is read-only and waits for the next complete frame boundary.',
             'Configuration: HISTORY_DIR, HISTORY_SNAPSHOT_MS, HISTORY_BOOK_DEPTH,',
@@ -143,16 +142,3 @@ async function main(): Promise<void> {
         watchers.forEach(watcher => watcher.disconnect());
     }
 }
-
-async function run(): Promise<void> {
-    try {
-        await main();
-    } catch (error) {
-        logger.error(`[HistoryCollector] Fatal error: ${error_str(error)}`);
-        process.exitCode = 1;
-    } finally {
-        await logger_shutdown();
-    }
-}
-
-void run();

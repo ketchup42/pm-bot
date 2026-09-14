@@ -1,5 +1,3 @@
-import 'dotenv/config';
-import { globalDie } from '../die.js';
 import { logger } from '../log.js';
 import { FRAME_CONFIGS } from '../market/frame.js';
 import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
@@ -28,54 +26,58 @@ function readDogeBaselineRunMode(): DogeBaselineRunMode {
     return isDebug ? 'debug' : 'live';
 }
 
-const mode = readDogeBaselineRunMode();
-const isDebug = mode === 'debug';
-const trade = readRequiredTradeArguments();
-logger.info(
-    `[DogeBaseline] Starting coin=${DOGE_BASELINE_COIN} frame=${DOGE_BASELINE_FRAME} ` +
-    `source=${DOGE_BASELINE_SOURCE} mode=${mode} balance=${trade.balance} tradeValue=${trade.tradeValue}`,
-);
-logger.info('[DogeBaseline] Initializing trading client');
-const client = await getTradingClient();
-logger.info('[DogeBaseline] Trading client ready');
+export async function runDogeBaselineStrategy(): Promise<void> {
+    const mode = readDogeBaselineRunMode();
+    const isDebug = mode === 'debug';
+    const trade = readRequiredTradeArguments();
+    logger.info(
+        `[DogeBaseline] Starting coin=${DOGE_BASELINE_COIN} frame=${DOGE_BASELINE_FRAME} ` +
+        `source=${DOGE_BASELINE_SOURCE} mode=${mode} balance=${trade.balance} tradeValue=${trade.tradeValue}`,
+    );
+    logger.info('[DogeBaseline] Initializing trading client');
+    const client = await getTradingClient();
+    logger.info('[DogeBaseline] Trading client ready');
 
-logger.info(`[DogeBaseline] Waiting for the first ${DOGE_BASELINE_COIN} price from ${DOGE_BASELINE_SOURCE}`);
-const coinWatcher = await PriceWatcherFactory
-    .getCoinWatcher(DOGE_BASELINE_COIN, DOGE_BASELINE_SOURCE)
-    .warmUp(TIMER_FAST);
-logger.info(`[DogeBaseline] First ${DOGE_BASELINE_COIN} price received: ${coinWatcher.getCoinPrice()}`);
+    logger.info(`[DogeBaseline] Waiting for the first ${DOGE_BASELINE_COIN} price from ${DOGE_BASELINE_SOURCE}`);
+    const coinWatcher = await PriceWatcherFactory
+        .getCoinWatcher(DOGE_BASELINE_COIN, DOGE_BASELINE_SOURCE)
+        .warmUp(TIMER_FAST);
+    logger.info(`[DogeBaseline] First ${DOGE_BASELINE_COIN} price received: ${coinWatcher.getCoinPrice()}`);
+    try {
+        const masterScheduler = new ExecScheduler([
+            async () => {
+                const watcher = await CoinFrameEventTimerWatcher.create(DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, TIMER_FAST, coinWatcher);
+                logger.info(`[DogeBaseline] Starting trading frame ${watcher.getEventId()}`);
+                const strategy = await CoinDogeBaselineStrategy.create(
+                    watcher.getEventId(), isDebug, masterScheduler, trade.balance, trade.tradeValue,
+                );
+                return new ExecManager(client, [watcher], [strategy], isDebug);
+            },
+        ]);
 
-const masterScheduler = new ExecScheduler([
-    async () => {
-        const watcher = await CoinFrameEventTimerWatcher.create(DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, TIMER_FAST, coinWatcher);
-        logger.info(`[DogeBaseline] Starting trading frame ${watcher.getEventId()}`);
-        const strategy = await CoinDogeBaselineStrategy.create(
-            watcher.getEventId(), isDebug, masterScheduler, trade.balance, trade.tradeValue,
-        );
-        return new ExecManager(client, [watcher], [strategy], isDebug);
-    },
-]);
+        const shadowScheduler = new ExecScheduler([
+            async () => {
+                const watcher = await CoinFrameEventTimerWatcher.create(DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, TIMER_FAST, coinWatcher);
+                logger.info(`[DogeBaseline] Starting volatility guard for ${watcher.getEventId()}`);
+                const strategy = await CoinCrossingPauseStrategy.createRelative(
+                    watcher.getEventId(),
+                    DOGE_BASELINE_COIN,
+                    masterScheduler,
+                    DOGE_BASELINE_MAX_CROSSINGS,
+                    DOGE_BASELINE_CROSSING_DEVIATION_FACTOR,
+                    DOGE_BASELINE_SOURCE,
+                );
+                return new ExecManager(client, [watcher], [strategy]);
+            },
+        ]);
 
-const shadowScheduler = new ExecScheduler([
-    async () => {
-        const watcher = await CoinFrameEventTimerWatcher.create(DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, TIMER_FAST, coinWatcher);
-        logger.info(`[DogeBaseline] Starting volatility guard for ${watcher.getEventId()}`);
-        const strategy = await CoinCrossingPauseStrategy.createRelative(
-            watcher.getEventId(),
-            DOGE_BASELINE_COIN,
-            masterScheduler,
-            DOGE_BASELINE_MAX_CROSSINGS,
-            DOGE_BASELINE_CROSSING_DEVIATION_FACTOR,
-            DOGE_BASELINE_SOURCE,
-        );
-        return new ExecManager(client, [watcher], [strategy]);
-    },
-]);
-
-const frameDurationMs = FRAME_CONFIGS[DOGE_BASELINE_FRAME].durationMs;
-logger.info(`[DogeBaseline] Ready; waiting for the next ${DOGE_BASELINE_FRAME} frame boundary`);
-await Promise.all([
-    masterScheduler.start(frameDurationMs, TIMER_NORM),
-    shadowScheduler.start(frameDurationMs, TIMER_NORM),
-]);
-await globalDie();
+        const frameDurationMs = FRAME_CONFIGS[DOGE_BASELINE_FRAME].durationMs;
+        logger.info(`[DogeBaseline] Ready, waiting for the next ${DOGE_BASELINE_FRAME} frame boundary`);
+        await Promise.all([
+            masterScheduler.start(frameDurationMs, TIMER_NORM),
+            shadowScheduler.start(frameDurationMs, TIMER_NORM),
+        ]);
+    } finally {
+        PriceWatcherFactory.destroyCoinWatcher(DOGE_BASELINE_COIN, DOGE_BASELINE_SOURCE);
+    }
+}

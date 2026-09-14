@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import {
     readArgument,
     readOptionalPositiveIntegerArgument,
@@ -14,14 +13,14 @@ import {
     toDogeBaselineRuntimeConfig,
 } from './core/events/strategy/doge-baseline/artifacts.js';
 import { DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT, DOGE_BASELINE_MODES } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
-import { logger, logger_shutdown } from '../log.js';
-import { error_str, fileWrite } from '../utils.js';
+import { logger } from '../log.js';
+import { fileWrite } from '../utils.js';
 
 function readFrameCount(): number {
     return readOptionalPositiveIntegerArgument('count') ?? DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT;
 }
 
-async function main(): Promise<void> {
+export async function runDogeBaselineReplayCommand(): Promise<void> {
     const history = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const output = readArgument('output') ?? DEFAULT_DOGE_BASELINE_REPLAY_OUTPUT_DIRECTORY;
     const count = readFrameCount();
@@ -70,16 +69,3 @@ async function main(): Promise<void> {
         )}`,
     );
 }
-
-async function run(): Promise<void> {
-    try {
-        await main();
-    } catch (error) {
-        logger.error(`[DogeBaselineReplay] Fatal error: ${error_str(error)}`);
-        process.exitCode = 1;
-    } finally {
-        await logger_shutdown();
-    }
-}
-
-void run();

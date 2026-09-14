@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 /models/
+/release/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -69,8 +70,9 @@ jest.config.js
 .coverage/
 
 # Other
-/trash
-/history
-/secret
+/backup/
+/history/
+/secret/
+
 TODO.txt
 AGENTS.md

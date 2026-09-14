@@ -6,10 +6,9 @@ import { ReplayMatrixSourceFile, runReplayMatrix, writeReplayMatrixReport } from
 import { REPLAY_STRATEGY_PRESETS } from './core/backtest/replay_presets.js';
 import { readArgument, readReplayExecutionConfig } from './cli_args.js';
 import { DEFAULT_BACKTEST_MATRIX_OUTPUT_DIRECTORY, DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
-import { logger, logger_shutdown } from '../log.js';
-import { error_str } from '../utils.js';
+import { logger } from '../log.js';
 
-async function main(): Promise<void> {
+export async function runBacktestMatrix(): Promise<void> {
     const input = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const output = readArgument('output') ?? DEFAULT_BACKTEST_MATRIX_OUTPUT_DIRECTORY;
     const config = readReplayExecutionConfig();
@@ -32,16 +31,3 @@ async function main(): Promise<void> {
         output,
     }, undefined, 2)}`);
 }
-
-async function run(): Promise<void> {
-    try {
-        await main();
-    } catch (error) {
-        logger.error(`[BacktestMatrix] Fatal error: ${error_str(error)}`);
-        process.exitCode = 1;
-    } finally {
-        await logger_shutdown();
-    }
-}
-
-void run();

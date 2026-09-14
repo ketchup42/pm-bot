@@ -1,5 +1,4 @@
-import 'dotenv/config';
-import { logger, logger_shutdown } from '../log.js';
+import { logger } from '../log.js';
 import { getFrameDurationMs, isEventFrame, waitFrameStartMsUntil } from '../market/frame.js';
 import { delay, error_str, killSignalsHook } from '../utils.js';
 import { readArgument, readPositiveIntegerArgument, readReplayExecutionConfig } from './cli_args.js';
@@ -19,7 +18,11 @@ import {
     writeDogeBaselineStrategyConfig,
 } from './core/events/strategy/doge-baseline/artifacts.js';
 import { researchDogeBaselineConfigMatrix } from './core/events/strategy/doge-baseline/research_matrix.js';
-import { evaluateDogeBaselineModelConfigurations, writeDogeBaselineEvaluation } from './core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
+import {
+    type DogeBaselineConfigurationEvaluation,
+    evaluateDogeBaselineModelConfigurations,
+    writeDogeBaselineEvaluation,
+} from './core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
 import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/DogeBaselineRefreshLock.js';
 import { settleHistoryDirectory } from './core/history/HistorySettlementService.js';
 import { isFileMissingError } from '../file_lock.js';
@@ -28,6 +31,20 @@ async function readWorkingConfig(model: Readonly<DogeBaselineModel>) {
     const config = await readDogeBaselineStrategyConfigOrDefault(model);
     await writeDogeBaselineStrategyConfig(config, model);
     return config;
+}
+
+export function formatDogeBaselineRefreshSelection(
+    evaluation: Pick<DogeBaselineConfigurationEvaluation, 'promoted' | 'replayFrames' | 'selected'>,
+): string {
+    const selected = evaluation.selected;
+    const exit = selected.strategyConfig.exit;
+    const details = `modes=${getDogeBaselineEntrySummary(selected.strategyConfig.entry)} ` +
+        `exit=${exit.enabled ? `${exit.windowMs / 1_000}s/${(exit.deviationFactor * 100).toFixed(2)}%` : 'natural'} ` +
+        `frames=${evaluation.replayFrames} netPnL=${selected.replayMetrics.net_pnl.toFixed(6)}`;
+    if (!evaluation.promoted) {
+        return `Working model and config retained: selected=${selected.id} ${details}`;
+    }
+    return `Published ${selected.id}: ${details}`;
 }
 
 async function refreshModel(
@@ -81,20 +98,18 @@ async function refreshModel(
         executionConfig,
     );
     await writeDogeBaselineEvaluation(evaluation);
-    if (!evaluation.promoted) return 'Working model and config retained after four-way comparison';
+    const selectionMessage = formatDogeBaselineRefreshSelection(evaluation);
+    if (!evaluation.promoted) return selectionMessage;
 
     if (evaluation.selected.model === 'working') {
         await writeDogeBaselineStrategyConfig(evaluation.selected.strategyConfig, workingModel);
     } else {
         await writeDogeBaselineArtifacts(candidate, evaluation.selected.strategyConfig);
     }
-    const exit = evaluation.selected.strategyConfig.exit;
-    return `Published ${evaluation.selected.id}: modes=${getDogeBaselineEntrySummary(evaluation.selected.strategyConfig.entry)} ` +
-        `exit=${exit.enabled ? `${exit.windowMs / 1_000}s/${(exit.deviationFactor * 100).toFixed(2)}%` : 'natural'} ` +
-        `frames=${evaluation.replayFrames} netPnL=${evaluation.selected.replayMetrics.net_pnl.toFixed(6)}`;
+    return selectionMessage;
 }
 
-async function main(): Promise<void> {
+export async function runDogeBaselineRefresh(): Promise<void> {
     const frameRaw = readArgument('frame');
     if (!frameRaw || !isEventFrame(frameRaw)) throw new Error('--frame must be a supported frame');
     const refreshFrames = readPositiveIntegerArgument('count');
@@ -133,16 +148,3 @@ async function main(): Promise<void> {
         logger.info('[DogeBaselineRefresh] Refresh lock released');
     }
 }
-
-async function run(): Promise<void> {
-    try {
-        await main();
-    } catch (error) {
-        logger.error(`[DogeBaselineRefresh] Fatal error: ${error_str(error)}`);
-        process.exitCode = 1;
-    } finally {
-        await logger_shutdown();
-    }
-}
-
-void run();
