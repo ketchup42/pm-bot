@@ -55,14 +55,18 @@ export async function waitFrameStartMs(intervalMs: number): Promise<void> {
 }
 
 /** Waits for a frame boundary while allowing the caller to cancel the wait. */
-export async function waitFrameStartMsUntil(intervalMs: number, shouldStop: () => boolean): Promise<void> {
+export async function waitFrameStartMsUntil(
+    intervalMs: number,
+    shouldStop: () => boolean,
+    checkIntervalMs: number = 1_000,
+): Promise<void> {
     const nowMs = Date.now();
     const remainder = nowMs % intervalMs;
     const targetTimeMs = nowMs + (remainder === 0 ? 0 : intervalMs - remainder);
     while (!shouldStop()) {
         const remainingMs = targetTimeMs - Date.now();
         if (remainingMs <= 0) return;
-        await new Promise(resolve => setTimeout(resolve, Math.min(remainingMs, 1_000)));
+        await new Promise(resolve => setTimeout(resolve, Math.min(remainingMs, checkIntervalMs)));
     }
 }
 

@@ -1,7 +1,7 @@
 import { UnsubscribeHook, delay, error_str, killSignalsHook } from "../../utils.js";
 import { ExecManager } from "./ExecManager.js";
 import { logger } from "../../log.js";
-import { waitFrameStartMs } from "../../market/frame.js";
+import { waitFrameStartMsUntil } from "../../market/frame.js";
 
 /**
  * Type of functions that create ExecManager instances for each cycle.
@@ -44,16 +44,18 @@ export class ExecScheduler {
             logger.warn('SCHEDULER: No handlers provided, exiting..');
             return;
         }
-        this._isStarted =  true;
-        // Align to the next time frame boundary
-        await waitFrameStartMs(alignMs);
-
-        // Per-scheduler shutdown hook: on a signal only this scheduler is stopped gracefully.
-        this._unsubscribeHook = killSignalsHook(async () => {
-            await this.shutdown();
-        });
+        this._isStarted = true;
 
         try {
+            // Per-scheduler shutdown hook: on a signal only this scheduler is stopped gracefully.
+            this._unsubscribeHook = killSignalsHook(async () => {
+                await this.shutdown();
+            });
+
+            // Align to the next time frame boundary. The wait must remain interruptible,
+            // including before the first manager has been created.
+            await waitFrameStartMsUntil(alignMs, () => this._isStopped, execTickMs);
+
             while (!this._isStopped) {
                 if (this._paused) {
                     logger.info(`SCHEDULER: PAUSED, waiting ${alignMs}ms`);
@@ -126,7 +128,7 @@ export class ExecScheduler {
     }
 
     /** Idles while paused: micro-steps of stepMs until the remaining time to the next frame
-     * boundary fits in one step, then waitFrameStartMs finishes the exact alignment.
+     * boundary fits in one step, then waitFrameStartMsUntil finishes the exact alignment.
      * Checks the stop and pause flags so shutdown/stop/unpause interrupt promptly. */
     private async waitPaused(alignMs: number, stepMs: number): Promise<void> {
         while (!this._isStopped && this._paused) {
@@ -135,7 +137,7 @@ export class ExecScheduler {
             await delay(stepMs);                                 // micro-step
         }
         if (!this._isStopped) {
-            await waitFrameStartMs(alignMs);                     // exact frame-boundary alignment
+            await waitFrameStartMsUntil(alignMs, () => this._isStopped, stepMs);
         }
     }
 

@@ -214,7 +214,9 @@ export class CoinLiquidityMakerStrategy implements EventStrategy<CoinFrameEventM
                     balance: safeFloat(this._INITIAL_BALANCE / 2, ORDER_WALLET_FRACTION),
                     tick_size: marketData.tick_size,
                     min_order_size: marketData.min_order_size,
-                    min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE
+                    min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE,
+                    fees_enabled: marketData.fees_enabled,
+                    taker_base_fee: marketData.taker_base_fee,
                 },
                 await LiveOrdersWatcherRTDS.create(marketData.conditionId, client, client!.creds));
 
@@ -235,7 +237,9 @@ export class CoinLiquidityMakerStrategy implements EventStrategy<CoinFrameEventM
                     balance: safeFloat(this._INITIAL_BALANCE / 2, ORDER_WALLET_FRACTION),
                     tick_size: marketData.tick_size,
                     min_order_size: marketData.min_order_size,
-                    min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE
+                    min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE,
+                    fees_enabled: marketData.fees_enabled,
+                    taker_base_fee: marketData.taker_base_fee,
                 },
                 await LiveOrdersWatcherRTDS.create(marketData.conditionId, client, client!.creds));
 
