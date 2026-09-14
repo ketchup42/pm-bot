@@ -142,6 +142,11 @@ npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10
 npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10
 ```
 
+`--live` uses `TakerLiveOrderWallet`: each DOGE order is submitted as a marketable
+GTC limit order and any unfilled remainder is cancelled immediately. The strategy
+records only the resulting full or partial execution; if the connection fails after
+an order ID is received, its order watcher retains the order until reconciliation.
+
 `--debug` and `--live` are flags. An omitted mode, duplicate mode, or a value passed
 to either flag is rejected before the scheduler starts.
 

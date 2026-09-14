@@ -100,6 +100,35 @@ collect → HistoryFrameV3 → history:settle → model/config research → mode
                                                       strategy:doge-baseline
 ```
 
+## Deployment archive
+
+Build a Linux x64 deployment archive after a full project check:
+
+```bash
+# Binary and deployment instructions only.
+npm run deploy -- --tiny
+
+# Binary, current DOGE model artifacts and HistoryFrameV3 files.
+npm run deploy -- --full
+```
+
+The archive is written to `release/`. It contains one executable named
+`pm-bot-linux-x64`; Node.js and `node_modules` are not required on the server.
+After extraction, enter the package directory and use the same command names
+without npm:
+
+```bash
+cd pm-bot-linux-x64
+chmod +x pm-bot-linux-x64
+./pm-bot-linux-x64 help
+./pm-bot-linux-x64 collect --coin doge --frame 5m --source chainlink-twap-60
+```
+
+`--tiny` does not include models or history. `--full` includes
+`models/doge-baseline/*.json` and `history/frames/`, but excludes reports, logs,
+lock files and secrets. Copy or create `.env` manually beside the executable for
+live trading; deployment archives never include `.env` or key material.
+
 `complete=true` describes collection quality: snapshot coverage, boundary prices
 and connection state. It does **not** mean that a strategy is profitable. Outcome
 confirmation is a separate later operation.

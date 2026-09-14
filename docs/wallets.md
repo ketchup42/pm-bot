@@ -1,4 +1,4 @@
-# Virtual wallets
+# Wallets
 
 A wallet gives one strategy an isolated virtual cash balance and token inventory
 while it uses the shared Polymarket account. It validates exchange constraints,
@@ -7,20 +7,22 @@ virtual balance twice.
 
 ## Choose a wallet
 
-| Wallet                         | Use it when...                                                    |
-| ------------------------------ | ----------------------------------------------------------------- |
-| `PairOrderWallet`              | The strategy keeps at most one buy and one sell order.            |
-| `LiveOrderWallet`              | The strategy may hold multiple independent active orders.         |
-| `VirtualTakerLiveOrderWallet`  | You need virtual taker-style execution over live order data.      |
+| Wallet                         | Use it when...                                                       |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `PairOrderWallet`              | The strategy keeps at most one buy and one sell maker order.        |
+| `LiveOrderWallet`              | The strategy may hold multiple independent active maker orders.     |
+| `TakerLiveOrderWallet`         | Real orders must execute immediately or be cancelled.               |
+| `VirtualTakerLiveOrderWallet`  | You need virtual taker-style execution over live order data.        |
 
 All wallets implement `OrderWallet`; wallets that expose available cash and tokens
 also implement `MultiOrderWallet`.
 
 ## Required inputs
 
-Create an order watcher for the market condition and pass its current market
-constraints into the wallet. Obtain these values from the event market watcher; do
-not hard-code them.
+Pass current market constraints into every wallet. Obtain them from the event
+market watcher; do not hard-code them. `LiveOrderWallet`, `PairOrderWallet` and
+`TakerLiveOrderWallet` require an order watcher. For the taker wallet it is used
+only to recover a known order when a request fails after submission.
 
 ```ts
 const marketData = marketWatcher.getMarketData();
@@ -37,6 +39,8 @@ const wallet = await LiveOrderWallet.create(client, {
     tick_size: marketData.tick_size,
     min_order_size: marketData.min_order_size,
     min_buy_order_value: 1,
+    fees_enabled: marketData.fees_enabled,
+    taker_base_fee: marketData.taker_base_fee,
 }, ordersWatcher);
 ```
 
@@ -60,6 +64,13 @@ level currently visible in the live book, records a volume-weighted average pric
 charges the configured taker fee and leaves an unfilled remainder in the virtual
 position. A caller that needs full liquidation must retry that remainder when new
 bid depth appears.
+
+`TakerLiveOrderWallet` sends a marketable GTC limit order with `postOnly=false`,
+reads its immediate execution and cancels any remaining quantity before returning.
+It records the final fill status, actual VWAP and fees from the CLOB trade records;
+only trades labelled `TAKER` by the exchange are charged a taker fee. It uses an
+`OrdersWatcher` only when a request fails after the exchange has returned an order ID:
+the watcher retains that order until it can be cancelled and reconciled.
 
 For a resolved binary frame, `settle(outcome)` pays $1 per remaining virtual token
 when the outcome matches the wallet side, and $0 otherwise. Settlement clears the
