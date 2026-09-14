@@ -8,6 +8,12 @@ import { waitFrameStartMsUntil } from "../../market/frame.js";
  */
 export type SchedulerTickInitType = () => Promise<ExecManager>;
 
+/**
+ * A scheduler resumed shortly after a frame boundary may still start that current frame.
+ * Later resumes wait for the next boundary rather than creating an outdated manager.
+ */
+const SCHEDULER_RESUME_WINDOW_MS = 5_000;
+
 export class ExecScheduler {
 
     /**
@@ -127,18 +133,23 @@ export class ExecScheduler {
         return this._paused;
     }
 
-    /** Idles while paused: micro-steps of stepMs until the remaining time to the next frame
-     * boundary fits in one step, then waitFrameStartMsUntil finishes the exact alignment.
-     * Checks the stop and pause flags so shutdown/stop/unpause interrupt promptly. */
+    /**
+     * Idles while paused in micro-steps. A resume before a boundary preserves exact alignment.
+     * A resume shortly after a boundary starts that current frame; a later resume waits for the
+     * next boundary. Stop always interrupts the wait promptly.
+     */
     private async waitPaused(alignMs: number, stepMs: number): Promise<void> {
         while (!this._isStopped && this._paused) {
             const remaining = alignMs - (Date.now() % alignMs);  // ms until the next frame boundary
             if (remaining <= stepMs) break;                      // close enough — let waitFrameStartMs finish
             await delay(stepMs);                                 // micro-step
         }
-        if (!this._isStopped) {
-            await waitFrameStartMsUntil(alignMs, () => this._isStopped, stepMs);
-        }
+        if (this._isStopped) return;
+
+        const elapsedMs = Date.now() % alignMs;
+        if (!this._paused && elapsedMs <= SCHEDULER_RESUME_WINDOW_MS) return;
+
+        await waitFrameStartMsUntil(alignMs, () => this._isStopped, stepMs);
     }
 
     /**

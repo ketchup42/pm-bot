@@ -79,3 +79,49 @@ test('scheduler stops after unpausing without waiting for the next full frame', 
 
     assert.ok(Date.now() - startedAt < waitForFirstBoundaryMs + 300);
 });
+
+test('scheduler starts the current frame when unpaused shortly after its boundary', async () => {
+    const intervalMs = 200;
+    let startedAt;
+    const scheduler = new ExecScheduler([async () => ({
+        start: async () => {
+            startedAt = Date.now();
+            scheduler.stop();
+        },
+        shutdown: async () => {},
+    })]);
+    scheduler.pause();
+
+    const beginAt = Date.now();
+    const firstBoundaryMs = intervalMs - (beginAt % intervalMs);
+    const running = scheduler.start(intervalMs, 5);
+    setTimeout(() => { scheduler.unpause(); }, firstBoundaryMs + 20);
+
+    await running;
+
+    assert.ok(startedAt !== undefined);
+    assert.ok(startedAt - beginAt < firstBoundaryMs + intervalMs);
+});
+
+test('scheduler waits for the next frame when unpaused after the resume window', async () => {
+    const intervalMs = 6_000;
+    let startedAt;
+    const scheduler = new ExecScheduler([async () => ({
+        start: async () => {
+            startedAt = Date.now();
+            scheduler.stop();
+        },
+        shutdown: async () => {},
+    })]);
+    scheduler.pause();
+
+    const beginAt = Date.now();
+    const firstBoundaryMs = intervalMs - (beginAt % intervalMs);
+    const running = scheduler.start(intervalMs, 5);
+    setTimeout(() => { scheduler.unpause(); }, firstBoundaryMs + 5_100);
+
+    await running;
+
+    assert.ok(startedAt !== undefined);
+    assert.ok(startedAt - beginAt >= firstBoundaryMs + intervalMs);
+});
