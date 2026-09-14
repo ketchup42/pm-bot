@@ -39,8 +39,10 @@ export const DOGE_BASELINE_EMERGENCY_EXIT_WINDOWS_MS = Object.freeze([60_000, 90
 export const DOGE_BASELINE_EMERGENCY_EXIT_DEVIATION_FACTORS = Object.freeze([0.0001, 0.0002, 0.0003, 0.0005]);
 export const DOGE_BASELINE_MINIMUM_EDGE_VALUES = Object.freeze([0.02, 0.04, 0.06, 0.08, 0.10]);
 export const DOGE_BASELINE_CONFIG_FINALIST_COUNT = 3;
+/** Relative band around the frame-start price; movements inside it do not form a crossing side. */
 export const DOGE_BASELINE_CROSSING_DEVIATION_FACTOR = 0.0005;
-export const DOGE_BASELINE_MAX_CROSSINGS = 0;
+/** One crossing is allowed; the master scheduler pauses only from the second crossing onward. */
+export const DOGE_BASELINE_MAX_CROSSINGS = 1;
 
 export const DOGE_BASELINE_MODES = Object.freeze([
     { name: 'early-60', offsetMs: 60_000, lookbacksMs: Object.freeze([15_000, 30_000, 60_000]) },

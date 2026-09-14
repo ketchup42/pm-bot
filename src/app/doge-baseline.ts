@@ -55,6 +55,8 @@ export async function runDogeBaselineStrategy(): Promise<void> {
             },
         ]);
 
+        // This non-trading scheduler filters future DOGE trading frames with repeated
+        // crossings. It does not open positions or interrupt an active trading strategy.
         const shadowScheduler = new ExecScheduler([
             async () => {
                 const watcher = await CoinFrameEventTimerWatcher.create(DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, TIMER_FAST, coinWatcher);

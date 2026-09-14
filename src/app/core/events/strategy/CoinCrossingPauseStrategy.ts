@@ -25,10 +25,11 @@ interface RelativeCrossingDeviation {
 type CrossingDeviation = AbsoluteCrossingDeviation | RelativeCrossingDeviation;
 
 /**
- * Non-trading strategy that counts how many times the coin price crossed the frame start
- * price (with a hysteresis band of `deviation` around it). On the end of the frame it
- * pauses the referenced scheduler if the crossing count exceeds `maxCrossings`, otherwise
- * it unpauses it. On a signal-driven cancel the pause decision is skipped.
+ * Non-trading strategy for a shadow scheduler. It observes a selected coin price relative
+ * to its frame-start price, counts transitions between the sides of the `deviation` band,
+ * and temporarily pauses the referenced master scheduler when crossings exceed
+ * `maxCrossings`. Coin, source, deviation, and threshold are provided by the caller.
+ * On a signal-driven cancel the pause decision is skipped.
  */
 export class CoinCrossingPauseStrategy implements EventStrategy<CoinFrameEventMarketData> {
     private readonly _eventId: string;
