@@ -2,7 +2,7 @@ import { createPublicClient } from '@polymarket/client';
 import { ConnectionStatus, Message, RealTimeDataClient, RealTimeDataClientArgs } from '@polymarket/real-time-data-client';
 import { Coin } from '../coins.js';
 import { TIMER_FAST } from '../../timer.js';
-import { delay, error_str, safeToNum } from '../../utils.js';
+import { delay, error_str, positiveFiniteNumberOrUndefined } from '../../utils.js';
 import { logger } from '../../log.js';
 import { isPriceStreamStale, PriceConnectionListener, PriceConnectionState } from './CoinPriceWatcher.js';
 import { getPriceSourceConfig, getPriceSourceReconnectDelayMs, getPriceSourceSymbol, isTwapPriceSource, PriceSource, PS_BINANCE, PS_CHAINLINK_TWAP_30 } from './price_source.js';
@@ -76,9 +76,9 @@ export class SharedCoinPriceFeed {
 
     private update(symbol: string, rawValue: unknown, rawTimestamp: unknown): void {
         const coin = this.coins.find(candidate => getPriceSourceSymbol(candidate, this.source) === symbol.toLowerCase());
-        const value = safeToNum(rawValue, Number.NaN);
-        const timestamp = safeToNum(rawTimestamp, Number.NaN);
-        if (coin === undefined || !Number.isFinite(value) || !Number.isFinite(timestamp)) return;
+        const value = positiveFiniteNumberOrUndefined(rawValue);
+        const timestamp = positiveFiniteNumberOrUndefined(rawTimestamp);
+        if (coin === undefined || value === undefined || timestamp === undefined) return;
         const state = this.states.get(coin)!;
         state.value = value;
         state.timestamp = timestamp;

@@ -3,6 +3,7 @@ import { isEventFrame, type EventFrame } from '../../../market/frame.js';
 import { MarketSide } from '../../../market/side.js';
 import { EventMarketData, OrderBookLevel } from '../../../market/orderbook/watcher/MarketOrderBooksWatcher.js';
 import { getPriceSourceConfig, isPriceSource, type PriceSource } from '../../../market/price/price_source.js';
+import { positiveFiniteNumberOrUndefined } from '../../../utils.js';
 
 export const HISTORY_SCHEMA_VERSION = 3 as const;
 /** Allows small local event-loop jitter without accepting a material collection gap. */
@@ -120,7 +121,7 @@ function finiteOrUndefined(value: number | undefined): number | undefined {
 }
 
 export function makeHistoryPrice(price: number | undefined, timestamp: number | undefined): HistoryPriceV3 | undefined {
-    const validPrice = finiteOrUndefined(price);
+    const validPrice = positiveFiniteNumberOrUndefined(price);
     const validTimestamp = finiteOrUndefined(timestamp);
     return validPrice === undefined || validTimestamp === undefined ? undefined : { price: validPrice, timestamp: validTimestamp };
 }
@@ -257,7 +258,7 @@ export function buildHistoryQuality(
 function isValidPrice(value: unknown): boolean {
     if (!value || typeof value !== 'object') return false;
     const price = value as Partial<HistoryPriceV3>;
-    return Number.isFinite(price.price) && Number.isFinite(price.timestamp);
+    return positiveFiniteNumberOrUndefined(price.price) !== undefined && Number.isFinite(price.timestamp);
 }
 
 export function validateHistoryFrame(frame: HistoryFrameV3): string[] {
@@ -275,6 +276,10 @@ export function validateHistoryFrame(frame: HistoryFrameV3): string[] {
     if (!Number.isFinite(frame.market_data.tick_size) || frame.market_data.tick_size <= 0) errors.push('invalid_tick_size');
     if (!Number.isFinite(frame.market_data.min_order_size) || frame.market_data.min_order_size <= 0) errors.push('invalid_min_order_size');
     if (!Number.isFinite(frame.market_data.taker_base_fee) || frame.market_data.taker_base_fee < 0) errors.push('invalid_taker_fee');
+    if ((frame.coin_frame_start_price !== undefined && positiveFiniteNumberOrUndefined(frame.coin_frame_start_price) === undefined) ||
+        (frame.coin_frame_end_price !== undefined && positiveFiniteNumberOrUndefined(frame.coin_frame_end_price) === undefined)) {
+        errors.push('invalid_frame_price');
+    }
     if (frame.data_quality.snapshot_count !== frame.snapshots.length) errors.push('snapshot_count_mismatch');
     if (frame.indicator_coins.some(coin => frame.data_quality.indicator_prices[coin] === undefined)) errors.push('missing_indicator_quality');
     if (Object.keys(frame.data_quality.indicator_prices).some(coin => !frame.indicator_coins.includes(coin as Coin))) {
@@ -287,6 +292,9 @@ export function validateHistoryFrame(frame: HistoryFrameV3): string[] {
     for (let index = 0; index < frame.snapshots.length; index++) {
         const snapshot = frame.snapshots[index]!;
         if (index > 0 && snapshot.timestamp < frame.snapshots[index - 1]!.timestamp) errors.push('snapshots_not_chronological');
+        if (snapshot.coin_price !== undefined && positiveFiniteNumberOrUndefined(snapshot.coin_price) === undefined) {
+            errors.push('invalid_coin_snapshot_price');
+        }
         if (Object.entries(snapshot.indicator_prices).some(([coin, point]) => !frame.indicator_coins.includes(coin as Coin) || !isValidPrice(point))) errors.push('invalid_indicator_snapshot_price');
     }
     if (frame.data_gaps.some(gap => gap.start_timestamp > gap.end_timestamp || gap.duration_ms !== gap.end_timestamp - gap.start_timestamp || (gap.coin !== undefined && !isCoin(gap.coin)))) errors.push('invalid_data_gap');

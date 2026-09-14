@@ -93,6 +93,13 @@ export function safeToNum(value: unknown, fallback: number = 0): number {
     return isNaN(converted) ? fallback : converted;
 }
 
+/** Converts an external price or timestamp into a strictly positive finite number. */
+export function positiveFiniteNumberOrUndefined(value: unknown): number | undefined {
+    if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+    const parsedValue = safeToNum(value, Number.NaN);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : undefined;
+}
+
 /** Converts an optional report value to text without serializing undefined as a literal. */
 export function stringValue(value: unknown): string {
     return value === undefined ? '' : String(value);

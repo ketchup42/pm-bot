@@ -164,6 +164,17 @@ test('history rejects quality outside its saved indicator basket', () => {
     assert.ok(validateHistoryFrame(frame).includes('invalid_indicator_quality'));
 });
 
+test('history rejects non-positive target and indicator prices', () => {
+    const frame = makeFrame(1_480);
+    frame.coin_frame_start_price = 0;
+    frame.snapshots[0].coin_price = -1;
+    frame.snapshots[1].indicator_prices.doge.price = 0;
+    const errors = validateHistoryFrame(frame);
+    assert.ok(errors.includes('invalid_frame_price'));
+    assert.ok(errors.includes('invalid_coin_snapshot_price'));
+    assert.ok(errors.includes('invalid_indicator_snapshot_price'));
+});
+
 test('TWAP watchdog identifies silence from either connection or last update time', () => {
     assert.equal(isPriceStreamStale(undefined, 1_000, 15_000, 15_000), false);
     assert.equal(isPriceStreamStale(undefined, 1_000, 16_001, 15_000), true);
@@ -280,12 +291,62 @@ test('RTDS records connection lifecycle and clears a disconnected price', () => 
         payload: { symbol: 'btcusdt', value: 60_000, timestamp: 1_000 },
     });
     assert.equal(watcher.getCurrentPrice(), 60_000);
+    clientArgs.onMessage(clients[0], {
+        topic: 'crypto_prices', type: 'update',
+        payload: { symbol: 'btcusdt', value: 0, timestamp: 1_001 },
+    });
+    assert.equal(watcher.getCurrentPrice(), 60_000);
+    assert.equal(watcher.getTimeStamp(), 1_000);
     clientArgs.onStatusChange('DISCONNECTED');
 
     assert.deepEqual(events.map(event => event.state), ['open', 'close']);
     assert.equal(watcher.getCurrentPrice(), undefined);
     unsubscribe();
     watcher.disconnect();
+});
+
+test('price watchers retain the latest valid price when an invalid update arrives', async () => {
+    const twapHandle = {
+        async close() {},
+        [Symbol.asyncIterator]() {
+            let index = 0;
+            const events = [
+                { payload: { symbol: 'btc/usd', value: '60000', timestamp: 1_000 } },
+                { payload: { symbol: 'btc/usd', value: '0', timestamp: 1_001 } },
+                { payload: { symbol: 'btc/usd', value: true, timestamp: 1_002 } },
+            ];
+            return {
+                next: () => index < events.length
+                    ? Promise.resolve({ value: events[index++], done: false })
+                    : new Promise(() => {}),
+            };
+        },
+    };
+    const twap = new CoinPriceWatcherTWAP('btc', PS_CHAINLINK_TWAP_60, { subscribe: async () => twapHandle });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(twap.getCurrentPrice(), 60_000);
+    assert.equal(twap.getTimeStamp(), 1_000);
+    twap.disconnect();
+
+    let args;
+    const feed = new SharedCoinPriceFeed(PS_BINANCE, ['btc'], value => {
+        args = value;
+        return { connect() { return this; }, disconnect() {}, subscribe() {} };
+    });
+    const shared = new SharedCoinPriceWatcher('btc', feed);
+    args.onStatusChange('CONNECTED');
+    args.onMessage(undefined, {
+        topic: 'crypto_prices', type: 'update', payload: { symbol: 'btcusdt', value: '60000', timestamp: 1_000 },
+    });
+    args.onMessage(undefined, {
+        topic: 'crypto_prices', type: 'update', payload: { symbol: 'btcusdt', value: 0, timestamp: 1_001 },
+    });
+    args.onMessage(undefined, {
+        topic: 'crypto_prices', type: 'update', payload: { symbol: 'btcusdt', value: true, timestamp: 1_002 },
+    });
+    assert.equal(shared.getCurrentPrice(), 60_000);
+    assert.equal(shared.getTimeStamp(), 1_000);
+    shared.disconnect();
 });
 
 test('RTDS watchdog closes a silent stream and creates a replacement client', async () => {

@@ -19,7 +19,7 @@ import { CoinPriceWatcher, isPriceStreamStale, PriceConnectionEvent, PriceConnec
 import { getPriceSourceConfig, PriceSource, PS_BINANCE, PS_CHAINLINK } from "./price_source.js";
 import { TIMER_FAST, TIMER_NORM } from "../../timer.js";
 import { EventFrame, getCurrentFrameStart, getFrameDurationMs, getSupportedFrames, waitFrameStartMsUntil } from "../frame.js";
-import { delay, roundTo, safeToNum } from "../../utils.js";
+import { delay, positiveFiniteNumberOrUndefined, roundTo } from "../../utils.js";
 import { logger } from "../../log.js";
 
 interface CoinPriceData {
@@ -80,9 +80,9 @@ export class CoinPriceWatcherRTDS implements CoinPriceWatcher {
             // Compare symbols case‑insensitively
             if (payload && payload.symbol.toLowerCase() === this._priceCoinData.data.symbol) {
                 // Store the latest price and timestamp
-                const price = safeToNum(payload.value, Number.NaN);
-                const timestamp = safeToNum(payload.timestamp, Number.NaN);
-                if (!Number.isFinite(price) || !Number.isFinite(timestamp)) return;
+                const price = positiveFiniteNumberOrUndefined(payload.value);
+                const timestamp = positiveFiniteNumberOrUndefined(payload.timestamp);
+                if (price === undefined || timestamp === undefined) return;
                 this._priceCoinData.data.value = price;
                 this._priceCoinData.data.timestamp = timestamp;
                 this._lastReceivedAt = Date.now();

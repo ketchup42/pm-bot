@@ -3,7 +3,7 @@ import { Coin, coin_precis } from "../coins.js";
 import { CoinPriceWatcher, isPriceStreamStale, PriceConnectionEvent, PriceConnectionListener } from "./CoinPriceWatcher.js";
 import { getPriceSourceConfig, PriceSource, PS_CHAINLINK_TWAP_30, PS_CHAINLINK_TWAP_60 } from "./price_source.js";
 import { EventFrame, getCurrentFrameStart, getFrameDurationMs, getSupportedFrames, waitFrameStartMsUntil } from "../frame.js";
-import { delay, error_str, roundTo, safeToNum } from "../../utils.js";
+import { delay, error_str, positiveFiniteNumberOrUndefined, roundTo } from "../../utils.js";
 import { logger } from "../../log.js";
 import { TIMER_FAST, TIMER_NORM } from "../../timer.js";
 
@@ -84,8 +84,11 @@ export class CoinPriceWatcherTWAP implements CoinPriceWatcher {
 
     private readonly _onTwapEvent = (payload: TwapPayload): void => {
         if (payload.symbol.toLowerCase() !== this._symbol) return;
-        this._priceCoinData.data.value = safeToNum(payload.value);
-        this._priceCoinData.data.timestamp = payload.timestamp;
+        const value = positiveFiniteNumberOrUndefined(payload.value);
+        const timestamp = positiveFiniteNumberOrUndefined(payload.timestamp);
+        if (value === undefined || timestamp === undefined) return;
+        this._priceCoinData.data.value = value;
+        this._priceCoinData.data.timestamp = timestamp;
         this._lastReceivedAt = Date.now();
     };
 
