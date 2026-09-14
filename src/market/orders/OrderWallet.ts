@@ -21,7 +21,9 @@ export interface OrderWalletParams {
     balance: number
     tick_size: number,
     min_order_size: number,
-    min_buy_order_value: number
+    min_buy_order_value: number,
+    fees_enabled: boolean,
+    taker_base_fee: number,
 }
 
 /**

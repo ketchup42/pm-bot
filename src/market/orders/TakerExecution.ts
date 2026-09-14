@@ -1,4 +1,5 @@
 import { calculateTakerFee, feeRateBpsToDecimal, TAKER_FEE_DECIMAL_PLACES } from '../../rest/fees.js';
+import { DEFAULT_ORDER_AMOUNT_FRACTION } from '../../rest/orders.js';
 import { safeFloat, safeToNum } from '../../utils.js';
 
 export type TakerExecutionAction = 'buy' | 'sell';
@@ -90,7 +91,11 @@ export function calculateTakerExecution(params: Readonly<TakerExecutionParams>):
         return { ...common, fillStatus: 'none', averagePrice: undefined, bestPrice: undefined };
     }
     if (bestPrice === undefined) throw new Error('taker_execution_missing_best_price');
-    const filled = { ...common, averagePrice: grossValue / filledQuantity, bestPrice };
+    const filled = {
+        ...common,
+        averagePrice: safeFloat(grossValue / filledQuantity, DEFAULT_ORDER_AMOUNT_FRACTION),
+        bestPrice,
+    };
     return remainingQuantity <= 1e-9
         ? { ...filled, fillStatus: 'full' }
         : { ...filled, fillStatus: 'partial' };

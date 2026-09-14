@@ -6,6 +6,7 @@ import { tick_price, valid_quantity_unsafe } from "../../rest/orders-price.js";
 import { logger } from "../../log.js";
 import { error_str, safeFloat, safeToNum } from "../../utils.js";
 import { isBidsEmpty } from "../../rest/price.js";
+import { calculateBuyTakerFeeReserve } from "../../rest/fees.js";
 
 /**
  * Virtual wallet for a single pair of orders - one buy and one sell.
@@ -26,6 +27,8 @@ export class PairOrderWallet implements OrderWallet {
     private _tickSize: number;
     private _minOrderSize: number;
     private _minBuyOrderValue: number;
+    private _feesEnabled: boolean;
+    private _takerBaseFee: number;
 
     private _buyOrderId: string | undefined = undefined;
     private _buyOrderState: OrderWalletState | undefined = undefined;
@@ -98,6 +101,8 @@ export class PairOrderWallet implements OrderWallet {
         this._tickSize = params.tick_size;
         this._minOrderSize = params.min_order_size;
         this._minBuyOrderValue = params.min_buy_order_value;
+        this._feesEnabled = params.fees_enabled;
+        this._takerBaseFee = params.taker_base_fee;
     }
 
     private async init(): Promise<void> {
@@ -142,7 +147,11 @@ export class PairOrderWallet implements OrderWallet {
             logger.warn(`[PairOrderWallet] Adjusted quantity to ${orderQuantity} to meet minimum buy value`);
         }
 
-        if (orderValue > this._walletBalance) {
+        const requiredBalance = safeFloat(
+            orderValue + calculateBuyTakerFeeReserve(this._feesEnabled, this._takerBaseFee, orderPrice, orderQuantity),
+            ORDER_WALLET_FRACTION,
+        );
+        if (requiredBalance > this._walletBalance) {
             logger.warn(`[PairOrderWallet] Not enough balance ${this._walletBalance} for buy order for ${orderQuantity} tokens and ${orderPrice} price for token ${this._tokenId}`);
             return undefined;
         }
@@ -154,7 +163,7 @@ export class PairOrderWallet implements OrderWallet {
 
         let result; 
         try {
-            result = await placeMakerOrder(this._client, this._tokenId, Side.BUY, orderPrice, orderQuantity);
+            result = await placeMakerOrder(this._client, this._tokenId, Side.BUY, orderPrice, orderQuantity, this._feesEnabled, this._takerBaseFee);
         } catch (error) {
             logger.warn(`[PairOrderWallet] Placing buy order failed – may be insufficient balance/allowance`);
             return undefined;
@@ -171,14 +180,17 @@ export class PairOrderWallet implements OrderWallet {
         if (result.status === 'matched') {
             const filledQty = result.executed_size || 0;
             const avgPrice = result.average_price || orderSetPrice;
+            const takerFee = result.taker_fee || 0;
+            const grossValue = safeFloat(avgPrice * filledQty, ORDER_WALLET_FRACTION);
+            const netValue = safeFloat(grossValue + takerFee, ORDER_WALLET_FRACTION);
 
             if (filledQty > 0) {
-                this._walletBalance = safeFloat(this._walletBalance - avgPrice * filledQty, ORDER_WALLET_FRACTION);
+                this._walletBalance = safeFloat(this._walletBalance - netValue, ORDER_WALLET_FRACTION);
                 this._tokenQuantity = safeFloat(this._tokenQuantity + filledQty, ORDER_WALLET_FRACTION);
             }
 
             if (filledQty >= orderSetQuantity) {
-                logger.info(`[PairOrderWallet] BUY order ${result.orderID} fully matched: filled=${filledQty} avgPrice=${avgPrice}`);
+                logger.info(`[PairOrderWallet] BUY order ${result.orderID} fully matched: filled=${filledQty} averagePrice=${avgPrice} fee=${takerFee} netValue=${netValue} remaining=0`);
                 this._buyOrderId = undefined;
                 this._buyOrderState = undefined;
                 this._buyLastMatchedSize = 0;
@@ -189,7 +201,7 @@ export class PairOrderWallet implements OrderWallet {
                 };
             }
 
-            logger.info(`[PairOrderWallet] BUY order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} avgPrice=${avgPrice}, remaining will be placed as limit`);
+            logger.info(`[PairOrderWallet] BUY order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} averagePrice=${avgPrice} fee=${takerFee} netValue=${netValue} remaining=${orderSetQuantity - filledQty}`);
             const remainingQty = safeFloat(orderSetQuantity - filledQty, ORDER_WALLET_FRACTION);
             this._buyLastMatchedSize = filledQty;
             const buyOrderState: OrderWalletState = {
@@ -243,7 +255,7 @@ export class PairOrderWallet implements OrderWallet {
 
         let result; 
         try {
-            result = await placeMakerOrder(this._client, this._tokenId, Side.SELL, orderPrice, orderQuantity);
+            result = await placeMakerOrder(this._client, this._tokenId, Side.SELL, orderPrice, orderQuantity, this._feesEnabled, this._takerBaseFee);
         } catch (error) {
             logger.warn(`[PairOrderWallet] Placing sell order failed – may be insufficient balance/allowance`);
             return undefined;
@@ -261,14 +273,17 @@ export class PairOrderWallet implements OrderWallet {
         if (result.status === 'matched') {
             const filledQty = result.executed_size || 0;
             const avgPrice = result.average_price || orderSetPrice;
+            const takerFee = result.taker_fee || 0;
+            const grossValue = safeFloat(avgPrice * filledQty, ORDER_WALLET_FRACTION);
+            const netValue = safeFloat(grossValue - takerFee, ORDER_WALLET_FRACTION);
 
             if (filledQty > 0) {
-                this._walletBalance = safeFloat(this._walletBalance + avgPrice * filledQty, ORDER_WALLET_FRACTION);
+                this._walletBalance = safeFloat(this._walletBalance + netValue, ORDER_WALLET_FRACTION);
                 this._tokenQuantity = safeFloat(this._tokenQuantity - filledQty, ORDER_WALLET_FRACTION);
             }
 
             if (filledQty >= orderSetQuantity) {
-                logger.info(`[PairOrderWallet] SELL order ${result.orderID} fully matched: filled=${filledQty} avgPrice=${avgPrice}`);
+                logger.info(`[PairOrderWallet] SELL order ${result.orderID} fully matched: filled=${filledQty} averagePrice=${avgPrice} fee=${takerFee} netValue=${netValue} remaining=0`);
                 this._sellOrderId = undefined;
                 this._sellOrderState = undefined;
                 this._sellLastMatchedSize = 0;
@@ -279,7 +294,7 @@ export class PairOrderWallet implements OrderWallet {
                 };
             }
 
-            logger.info(`[PairOrderWallet] SELL order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} avgPrice=${avgPrice}, remaining will be placed as limit`);
+            logger.info(`[PairOrderWallet] SELL order ${result.orderID} partially matched: filled=${filledQty}/${orderSetQuantity} averagePrice=${avgPrice} fee=${takerFee} netValue=${netValue} remaining=${orderSetQuantity - filledQty}`);
             const remainingQty = safeFloat(orderSetQuantity - filledQty, ORDER_WALLET_FRACTION);
             this._sellLastMatchedSize = filledQty;
             const sellOrderState: OrderWalletState = {

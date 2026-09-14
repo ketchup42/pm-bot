@@ -1,6 +1,6 @@
-import { ClobClient, Side, OrderType, AssetType, Trade } from "@polymarket/clob-client-v2"
-import { delay, error_str, safeFloat, safeToNum } from "../utils.js";
-import { getDecimalsFromTickString } from "./orders-price.js";
+import { ClobClient, Side, OrderType, AssetType, Trade, type OpenOrder } from "@polymarket/clob-client-v2"
+import { error_str, safeFloat, safeToNum } from "../utils.js";
+import { calculateTakerFee, feeRateBpsToDecimal, TAKER_FEE_DECIMAL_PLACES } from "./fees.js";
 
 /**
  * The most common values by public api.
@@ -22,9 +22,58 @@ export interface OrderStatusRaw {
     /** For taker order: average price per share of the executed fills, exists if maker order had "matched" status. */
     average_price?: number;
 
+    /** Taker fee for the part filled immediately when the GTC order was posted. */
+    taker_fee?: number;
+
     /** For GTC taker orders: amount of shares that were filled before cancellation. */
     filled_size?: number;
 }
+
+export type GtcTakerFillStatus = 'none' | 'partial' | 'full';
+
+interface GtcTakerOrderResultCommon {
+    orderID: string;
+    filledSize: number;
+    remainingSize: number;
+    grossValue: number;
+    fee: number;
+}
+
+/** Final accounting for a GTC order cancelled immediately after submission. */
+export interface GtcTakerOrderNoneResult extends GtcTakerOrderResultCommon {
+    fillStatus: 'none';
+    averagePrice: undefined;
+}
+
+export interface GtcTakerOrderPartialResult extends GtcTakerOrderResultCommon {
+    fillStatus: 'partial';
+    averagePrice: number;
+}
+
+export interface GtcTakerOrderFullResult extends GtcTakerOrderResultCommon {
+    fillStatus: 'full';
+    averagePrice: number;
+}
+
+export type GtcTakerOrderResult =
+    | GtcTakerOrderNoneResult
+    | GtcTakerOrderPartialResult
+    | GtcTakerOrderFullResult;
+
+export type GtcTakerFilledOrderResult = GtcTakerOrderPartialResult | GtcTakerOrderFullResult;
+
+export type GtcTakerRecoveryStage = 'read_status' | 'cancel_remainder' | 'read_trades';
+
+export interface GtcTakerOrderRecoveryRequiredResult {
+    orderID: string;
+    fillStatus: 'recovery_required';
+    recoveryStage: GtcTakerRecoveryStage;
+    error: string;
+}
+
+export type GtcTakerOrderAttemptResult = GtcTakerOrderResult | GtcTakerOrderRecoveryRequiredResult;
+
+export const DEFAULT_TAKER_ORDER_RECOVERY_RETRY_MS = 1_000;
 
 /**
  * Fetches multiple trades by their IDs.
@@ -42,17 +91,77 @@ async function fetchTradesByIds(client: ClobClient, tradeIds: string[]): Promise
 /**
  * Computes the total executed size and volume‑weighted average price from a list of trades.
  */
-function computeAveragePrice(trades: Trade[]): { exec_size: number; average_price: number } {
+interface ImmediateExecution {
+    filledSize: number;
+    averagePrice: number;
+    takerFee: number;
+}
+
+type TradeIdList = readonly string[] | undefined;
+
+function computeImmediateOrderExecution(
+    trades: Trade[],
+    feesEnabled: boolean,
+): ImmediateExecution {
     let totalSize = 0;
     let totalCost = 0;
+    let takerFee = 0;
     for (const trade of trades) {
         const size = safeToNum(trade.size);
         const price = safeToNum(trade.price);
         totalSize += size;
         totalCost += size * price;
+        if (feesEnabled && trade.trader_side === 'TAKER') {
+            takerFee = safeFloat(
+                takerFee + calculateTakerFee(size, price, feeRateBpsToDecimal(safeToNum(trade.fee_rate_bps))),
+                TAKER_FEE_DECIMAL_PLACES,
+            );
+        }
     }
     const averagePrice = totalSize > 0 ? totalCost / totalSize : 0;
-    return { exec_size: totalSize, average_price: averagePrice };
+    return { filledSize: totalSize, averagePrice, takerFee };
+}
+
+function getUniqueTradeIds(...tradeIdLists: TradeIdList[]): string[] {
+    return [...new Set(tradeIdLists.flatMap(tradeIds => tradeIds ?? []))];
+}
+
+function getTakerFillStatus(filledSize: number, requestedSize: number): GtcTakerFillStatus {
+    if (filledSize <= 0) return 'none';
+    return filledSize >= requestedSize ? 'full' : 'partial';
+}
+
+function createGtcTakerOrderResult(
+    orderID: string,
+    requestedSize: number,
+    limitPrice: number,
+    filledSize: number,
+    execution: ImmediateExecution | undefined,
+    feesEnabled: boolean,
+    takerBaseFeeBps: number,
+): GtcTakerOrderResult {
+    const normalizedFilledSize = safeFloat(Math.min(requestedSize, Math.max(0, filledSize)), DEFAULT_ORDER_AMOUNT_FRACTION);
+    const knownFilledSize = Math.min(normalizedFilledSize, execution?.filledSize ?? 0);
+    const missingFilledSize = safeFloat(normalizedFilledSize - knownFilledSize, DEFAULT_ORDER_AMOUNT_FRACTION);
+    const knownGrossValue = execution ? execution.averagePrice * knownFilledSize : 0;
+    const fallbackFee = feesEnabled
+        ? calculateTakerFee(missingFilledSize, limitPrice, feeRateBpsToDecimal(takerBaseFeeBps))
+        : 0;
+    const grossValue = safeFloat(knownGrossValue + missingFilledSize * limitPrice, DEFAULT_ORDER_AMOUNT_FRACTION);
+    const fee = safeFloat((execution?.takerFee ?? 0) + fallbackFee, TAKER_FEE_DECIMAL_PLACES);
+    const remainingSize = safeFloat(requestedSize - normalizedFilledSize, DEFAULT_ORDER_AMOUNT_FRACTION);
+    const fillStatus = getTakerFillStatus(normalizedFilledSize, requestedSize);
+    const common = {
+        orderID,
+        filledSize: normalizedFilledSize,
+        remainingSize,
+        grossValue,
+        fee,
+    };
+    if (fillStatus === 'none') return { ...common, fillStatus, averagePrice: undefined };
+
+    const averagePrice = safeFloat(grossValue / normalizedFilledSize, DEFAULT_ORDER_AMOUNT_FRACTION);
+    return { ...common, fillStatus, averagePrice };
 }
 
 /**
@@ -71,6 +180,8 @@ function computeAveragePrice(trades: Trade[]): { exec_size: number; average_pric
  *                     order rests in the book; may be bettered if it crosses
  *                     the spread).
  * @param size       - Number of tokens to buy/sell.
+ * @param feesEnabled - Whether this market charges taker fees.
+ * @param takerBaseFeeBps - Market taker fee rate in basis points.
  *
  * @returns An {@link OrderStatusRaw} object. For `matched` orders the fields
  *          `exec_size` and `average_price` are populated from real trades;
@@ -84,7 +195,9 @@ export async function placeMakerOrder(
     tokenId: string,
     side: Side,
     price: number,
-    size: number
+    size: number,
+    feesEnabled: boolean,
+    takerBaseFeeBps: number,
 ): Promise<OrderStatusRaw> {
     try {
         const order = await client.createOrder({
@@ -103,16 +216,20 @@ export async function placeMakerOrder(
             const tradeIds: string[] = response.tradeIDs ?? [];
             let execSize = size;      // fallback
             let avgPrice = price;     // fallback
+            let takerFee = feesEnabled
+                ? calculateTakerFee(execSize, avgPrice, feeRateBpsToDecimal(takerBaseFeeBps))
+                : 0;
 
             if (tradeIds.length > 0) {
-                const tickSize = client.getTickSize(tokenId);
                 const trades = await fetchTradesByIds(client, tradeIds);
+                if (trades.length > 0) {
+                    const result = computeImmediateOrderExecution(trades, feesEnabled);
 
-                const result = computeAveragePrice(trades);
-
-                execSize = safeFloat(result.exec_size, DEFAULT_ORDER_AMOUNT_FRACTION);
-                // All trades have prices with tick fixed size - floating point operations errors fix
-                avgPrice = safeFloat(result.average_price, getDecimalsFromTickString(await tickSize));
+                    execSize = safeFloat(result.filledSize, DEFAULT_ORDER_AMOUNT_FRACTION);
+                    // VWAP across tick-sized trades can have more decimal places than one trade price.
+                    avgPrice = safeFloat(result.averagePrice, DEFAULT_ORDER_AMOUNT_FRACTION);
+                    takerFee = result.takerFee;
+                }
             }
 
             return {
@@ -121,6 +238,7 @@ export async function placeMakerOrder(
                 status: "matched",
                 executed_size: execSize,
                 average_price: avgPrice,
+                taker_fee: takerFee,
             };
         }
 
@@ -199,11 +317,9 @@ export async function cancelAllOrders(client: ClobClient): Promise<void> {
     }
 }
 
-export const GTC_TAKER_ORDER_CANCEL_TIME = 200;
-
 /**
- * Places a GTC taker order with aggressive price.
- * Returns the order ID and the filled size.
+ * Places a marketable GTC limit order, reads its immediate execution, and cancels
+ * any remaining quantity without waiting for the order to rest in the book.
  */
 export async function placeGtcTakerOrder(
     client: ClobClient,
@@ -211,40 +327,66 @@ export async function placeGtcTakerOrder(
     side: Side,
     price: number,
     size: number,
-    autoCancelAfterMs: number = GTC_TAKER_ORDER_CANCEL_TIME
-): Promise<OrderStatusRaw> {
+    feesEnabled: boolean,
+    takerBaseFeeBps: number,
+): Promise<GtcTakerOrderAttemptResult> {
+    let orderID: string | undefined;
+    try {
+        const order = await client.createOrder({
+            tokenID: tokenId,
+            price,
+            size,
+            side,
+        });
+        const response = await client.postOrder(order, OrderType.GTC, false, false);
+        if (!response.success) throw new Error(response.errorMsg);
+        if (response.error) throw new Error(response.error);
+        if (!response.orderID) throw new Error('OrderID missing!');
 
-    const order = await client.createOrder({
-        tokenID: tokenId,
-        price,
-        size,
-        side,
-    });
-
-    const response = await client.postOrder(order, OrderType.GTC, false, false);
-            
-    if (!response.orderID) {
-        throw new Error('Order placed but orderID is missing in response!');
-    }
-
-    const orderId = response.orderID;
-
-    await delay(autoCancelAfterMs);
-
-    const orderStatus = await client.getOrder(orderId);
-    const filledSize = safeToNum(orderStatus.size_matched);
-
-    let successStatus = true;    
-    if (filledSize < size) {
-
-        try {
-            successStatus = false;
-            await cancelOrder(client, orderId);
-        } catch (error) {
-            throw new Error(`Failed to cancel partial order ${orderId}: ${error_str(error)}`);
+        const postedOrderID = response.orderID;
+        orderID = postedOrderID;
+        return await recoverGtcTakerOrder(
+            client, postedOrderID, size, price, feesEnabled, takerBaseFeeBps, response.tradeIDs,
+        );
+    } catch (error) {
+        if (orderID !== undefined) {
+            return {
+                orderID,
+                fillStatus: 'recovery_required',
+                recoveryStage: 'read_status',
+                error: error_str(error),
+            };
         }
+        throw new Error(`Failed to place GTC taker order: ${error_str(error)}`);
     }
-    return { success: successStatus, orderID: orderId, filled_size: filledSize };
+}
+
+/**
+ * Reads the final state of a known GTC taker order and cancels its unfilled remainder.
+ */
+export async function recoverGtcTakerOrder(
+    client: ClobClient,
+    orderID: string,
+    size: number,
+    price: number,
+    feesEnabled: boolean,
+    takerBaseFeeBps: number,
+    responseTradeIds: TradeIdList = undefined,
+): Promise<GtcTakerOrderResult> {
+    const beforeCancel = await client.getOrder(orderID);
+    let finalStatus: OpenOrder = beforeCancel;
+    if (safeToNum(beforeCancel.size_matched) < size) {
+        await cancelOrder(client, orderID);
+        finalStatus = await client.getOrder(orderID);
+    }
+
+    const tradeIds = getUniqueTradeIds(responseTradeIds, beforeCancel.associate_trades, finalStatus.associate_trades);
+    const trades = await fetchTradesByIds(client, tradeIds);
+    const execution = trades.length > 0
+        ? computeImmediateOrderExecution(trades, feesEnabled)
+        : undefined;
+    const filledSize = Math.max(safeToNum(finalStatus.size_matched), execution?.filledSize ?? 0);
+    return createGtcTakerOrderResult(orderID, size, price, filledSize, execution, feesEnabled, takerBaseFeeBps);
 }
 
 /**

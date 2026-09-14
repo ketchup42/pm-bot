@@ -43,3 +43,14 @@ export function calculateTakerFee(shares: number, price: number, feeRateDecimal:
     const roundedFee = safeFloat(fee, TAKER_FEE_DECIMAL_PLACES);
     return roundedFee < MINIMUM_TAKER_FEE ? 0 : roundedFee;
 }
+
+/** Calculates the maximum taker fee reserve for a prospective buy limit order. */
+export function calculateBuyTakerFeeReserve(
+    feesEnabled: boolean,
+    takerBaseFeeBps: number,
+    price: number,
+    quantity: number,
+): number {
+    if (!feesEnabled) return 0;
+    return calculateTakerFee(quantity, price, feeRateBpsToDecimal(takerBaseFeeBps));
+}

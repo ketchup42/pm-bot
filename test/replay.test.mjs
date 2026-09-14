@@ -17,8 +17,11 @@ import { HISTORY_SCHEMA_VERSION, buildHistoryGaps, buildHistoryQuality } from '.
 import { PS_CHAINLINK_TWAP_60 } from '../dist/market/price/price_source.js';
 import { getSupportedCoins } from '../dist/market/coins.js';
 import { VirtualTakerLiveOrderWallet } from '../dist/market/orders/VirtualTakerLiveOrderWallet.js';
+import { TakerLiveOrderWallet } from '../dist/market/orders/TakerLiveOrderWallet.js';
 import { calculateTakerExecution } from '../dist/market/orders/TakerExecution.js';
 import { calculateTakerFee } from '../dist/rest/fees.js';
+import { placeMakerOrder } from '../dist/rest/orders.js';
+import { createDogeBaselineSettlementReport } from '../dist/app/core/events/strategy/doge-baseline/settlement_report.js';
 import { csvValue } from '../dist/utils.js';
 import {
     makeDogeBaselineFeaturesFromPrices,
@@ -390,7 +393,7 @@ test('taker execution walks depth, calculates VWAP and fees', () => {
     }, 100, 0, config);
     assert.equal(fill.status, 'filled');
     assert.equal(fill.filled_quantity, 8);
-    assert.equal(fill.average_price, (5 * 0.51 + 3 * 0.52) / 8);
+    assert.equal(fill.average_price, 0.51375);
     assert.equal(Number(fill.fee.toFixed(5)), 0.13989);
 });
 
@@ -411,6 +414,11 @@ test('taker fees use Polymarket precision without floating-point tails', () => {
     assert.equal(execution.bestPrice, 0.49);
     assert.equal(execution.fee, 0.1748);
     assert.equal(execution.fee.toString(), '0.1748');
+    const roundedPrice = calculateTakerExecution({
+        action: 'buy', levels: [{ price: '0.75', size: '13.157895' }], quantity: 13.157895,
+        limitPrice: 0.75, tickSize: 0.01, feesEnabled: false, takerBaseFeeBps: 0,
+    });
+    assert.equal(roundedPrice.averagePrice, 0.75);
     const none = calculateTakerExecution({
         action: 'buy', levels: [], quantity: 10, limitPrice: 1, tickSize: 0.01,
         feesEnabled: false, takerBaseFeeBps: 0,
@@ -426,6 +434,123 @@ test('taker fees use Polymarket precision without floating-point tails', () => {
     assert.equal(partial.fillStatus, 'partial');
     assert.equal(partial.averagePrice, 0.51);
     assert.equal(partial.bestPrice, 0.51);
+});
+
+test('immediately matched GTC orders return taker fee from actual trades', async () => {
+    const client = {
+        createOrder: async value => value,
+        postOrder: async () => ({ success: true, orderID: 'order', status: 'matched', tradeIDs: ['first', 'second'] }),
+        getTrades: async ({ id }) => id === 'first'
+            ? [{ size: '4', price: '0.49', fee_rate_bps: '700', trader_side: 'TAKER' }]
+            : [{ size: '6', price: '0.48', fee_rate_bps: '700', trader_side: 'TAKER' }],
+    };
+    const order = await placeMakerOrder(client, 'token', 'BUY', 0.5, 10, true, 700);
+    assert.equal(order.executed_size, 10);
+    assert.equal(order.average_price, 0.484);
+    assert.equal(order.taker_fee, 0.1748);
+});
+
+test('real taker wallet cancels the remainder and accounts for the actual partial fill', async () => {
+    let canceledOrderId;
+    const client = {
+        getBalanceAllowance: async () => ({ balance: '100000000' }),
+        createOrder: async value => value,
+        postOrder: async () => ({ success: true, orderID: 'order', tradeIDs: ['trade'] }),
+        getOrder: async () => ({ size_matched: '4', associate_trades: ['trade'] }),
+        cancelOrder: async ({ orderID }) => { canceledOrderId = orderID; return {}; },
+        getTrades: async () => [{
+            size: '4', price: '0.49', fee_rate_bps: '700', trader_side: 'TAKER',
+        }],
+    };
+    const wallet = await TakerLiveOrderWallet.create(client, {
+        token_id: 'up', balance: 100, tick_size: 0.01,
+        min_order_size: 5, min_buy_order_value: 1,
+        fees_enabled: true, taker_base_fee: 700,
+    }, {
+        isActive: () => true,
+        isFullMatched: () => false,
+        isPartialMatched: () => false,
+        isLive: () => false,
+        hasCanceled: () => false,
+        setUpdateHandler: () => {},
+        resetUpdateHandler: () => {},
+        disconnect: () => {},
+    });
+    const order = await wallet.buy(0.5, 10);
+    assert.equal(canceledOrderId, 'order');
+    assert.equal(order?.value.quantity, 4);
+    assert.equal(order?.value.price, 0.49);
+    assert.equal(order?.fast_full_trade, false);
+    assert.equal(wallet.getTokensQuantity(), 4);
+    assert.equal(wallet.getBalance(), 97.97003);
+    assert.equal(wallet.isPartialFilled('order'), true);
+    assert.equal(wallet.hasCanceled('order'), true);
+    assert.equal(wallet.isLive('order'), false);
+    assert.equal(wallet.getBuyOrdersCount(), 0);
+});
+
+test('real taker wallet reconciles a known order after an immediate status failure', async () => {
+    let getOrderCalls = 0;
+    let updateHandler;
+    const client = {
+        getBalanceAllowance: async () => ({ balance: '100000000' }),
+        createOrder: async value => value,
+        postOrder: async () => ({ success: true, orderID: 'recovery-order', tradeIDs: ['trade'] }),
+        getOrder: async () => {
+            getOrderCalls++;
+            if (getOrderCalls === 1) throw new Error('temporary status failure');
+            return { size_matched: '4', associate_trades: ['trade'] };
+        },
+        cancelOrder: async () => ({}),
+        getTrades: async () => [{ size: '4', price: '0.49', fee_rate_bps: '700', trader_side: 'TAKER' }],
+    };
+    const watcher = {
+        isActive: () => true,
+        isFullMatched: () => false,
+        isPartialMatched: () => false,
+        isLive: () => false,
+        hasCanceled: () => true,
+        setUpdateHandler: (orderId, handler) => { if (orderId === 'recovery-order') updateHandler = handler; },
+        resetUpdateHandler: () => {},
+        disconnect: () => {},
+    };
+    const wallet = await TakerLiveOrderWallet.create(client, {
+        token_id: 'up', balance: 100, tick_size: 0.01,
+        min_order_size: 5, min_buy_order_value: 1,
+        fees_enabled: true, taker_base_fee: 700,
+    }, watcher);
+    const pending = await wallet.buy(0.5, 10);
+    assert.equal(pending?.id, 'recovery-order');
+    assert.equal(wallet.isLive('recovery-order'), true);
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    updateHandler?.({});
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(wallet.getTokensQuantity(), 4);
+    assert.equal(wallet.getBalance(), 97.97003);
+    assert.equal(wallet.isPartialFilled('recovery-order'), true);
+    assert.equal(wallet.isLive('recovery-order'), false);
+});
+
+test('live settlement report separates expected payout from executable bid proceeds', () => {
+    const report = createDogeBaselineSettlementReport({
+        cash: 90,
+        side: 'up',
+        tokenQuantity: 10,
+        frameStartPrice: 1,
+        frameEndPrice: 2,
+        bids: [{ price: '0.60', size: '5' }, { price: '0.50', size: '5' }],
+        tickSize: 0.01,
+        feesEnabled: false,
+        takerBaseFeeBps: 0,
+    });
+    assert.equal(report.sourceOutcome, 'up');
+    assert.equal(report.expectedPayout, 10);
+    assert.equal(report.expectedEquity, 100);
+    assert.equal(report.executableQuantity, 10);
+    assert.equal(report.executableProceeds, 5.5);
+    assert.equal(report.liquidationEquity, 95.5);
 });
 
 test('taker execution reports partial depth and rejects invalid minimum', () => {
@@ -461,6 +586,7 @@ test('virtual taker wallet accounts for depth, partial fills, fees and settlemen
     const createWallet = () => VirtualTakerLiveOrderWallet.create({
         token_id: 'up', balance: 100, tick_size: 0.01,
         min_order_size: 5, min_buy_order_value: 1,
+        fees_enabled: true, taker_base_fee: 700,
     }, book);
     const wallet = createWallet();
 

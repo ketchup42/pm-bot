@@ -1,11 +1,11 @@
 import { ClobClient } from '@polymarket/clob-client-v2';
 import { logger } from '../../../../../log.js';
 import { MarketOrderBooksWatcher } from '../../../../../market/orderbook/watcher/MarketOrderBooksWatcher.js';
-import { LiveOrderWallet } from '../../../../../market/orders/LiveOrderWallet.js';
 import { MultiOrderWallet } from '../../../../../market/orders/MultiOrderWallet.js';
 import { ORDER_WALLET_FRACTION, OrderWalletParams, OrderWalletState } from '../../../../../market/orders/OrderWallet.js';
-import { VirtualTakerLiveOrderWallet } from '../../../../../market/orders/VirtualTakerLiveOrderWallet.js';
+import { TakerLiveOrderWallet } from '../../../../../market/orders/TakerLiveOrderWallet.js';
 import { LiveOrdersWatcherRTDS } from '../../../../../market/orders/watcher/LiveOrdersWatcherRTDS.js';
+import { VirtualTakerLiveOrderWallet } from '../../../../../market/orders/VirtualTakerLiveOrderWallet.js';
 import { MarketSide } from '../../../../../market/side.js';
 import { DEFAULT_BUY_ORDER_MIN_VALUE } from '../../../../../rest/orders.js';
 import { error_str, safeFloat } from '../../../../../utils.js';
@@ -35,6 +35,7 @@ import {
     DogeBaselineStrategyConfig,
     readDogeBaselineArtifacts,
 } from './artifacts.js';
+import { createDogeBaselineSettlementReport, getDogeBaselineFrameOutcome } from './settlement_report.js';
 
 export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMarketData> {
     private event: EventWatcher<CoinFrameEventMarketData> | undefined;
@@ -127,12 +128,22 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         watchers: readonly EventWatcher<CoinFrameEventMarketData>[],
         isSignal: boolean,
     ): Promise<boolean> {
+        const history = this.event?.getWatcherHistoryUp()[0];
         if (this.wallet) {
-            if (this.isDebug && !isSignal) this.settleVirtualPosition();
+            if (this.isDebug && !isSignal) this.settleVirtualPosition(history);
             await this.wallet.dispose(isSignal);
         }
         const finalBalance = this.wallet?.getBalance() ?? this.balance;
-        this.log(`Strategy cancelled. Final balance: ${finalBalance.toFixed(2)}`);
+        if (!this.isDebug && !isSignal) {
+            this.logLiveSettlementReport(history, finalBalance);
+        } else if (!this.isDebug) {
+            this.log(
+                `Live strategy stopped: cash=${finalBalance.toFixed(6)} ` +
+                `tokens=${this.wallet?.getTokensQuantity() ?? 0} side=${this.walletSide ?? 'undefined'}`,
+            );
+        } else {
+            this.log(`Strategy cancelled. Final balance: ${finalBalance.toFixed(2)}`);
+        }
         return true;
     }
 
@@ -309,31 +320,59 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
             tick_size: marketData.tick_size,
             min_order_size: marketData.min_order_size,
             min_buy_order_value: DEFAULT_BUY_ORDER_MIN_VALUE,
+            fees_enabled: marketData.fees_enabled,
+            taker_base_fee: marketData.taker_base_fee,
         };
         if (this.isDebug) return VirtualTakerLiveOrderWallet.create(params, this.market!);
         const watcher = await LiveOrdersWatcherRTDS.create(marketData.conditionId, client, client.creds);
-        return LiveOrderWallet.create(client, params, watcher);
+        return TakerLiveOrderWallet.create(client, params, watcher);
     }
 
-    private settleVirtualPosition(): void {
+    private settleVirtualPosition(history: CoinFrameEventMarketData | undefined): void {
         if (!(this.wallet instanceof VirtualTakerLiveOrderWallet) || !this.walletSide) return;
-        const history = this.event?.getWatcherHistoryUp()[0];
         const startPrice = history?.coin_frame_start_price;
         const endPrice = history?.coin_frame_end_price;
         const quantity = this.wallet.getTokensQuantity();
         if (quantity <= 0) return;
-        if (startPrice === undefined || endPrice === undefined || startPrice === endPrice) {
+        const outcome = getDogeBaselineFrameOutcome(startPrice, endPrice);
+        if (outcome === undefined) {
             this.log(
                 `Virtual settlement unavailable: side=${this.walletSide} quantity=${quantity} ` +
                 `start=${startPrice} end=${endPrice}`,
             );
             return;
         }
-        const outcome: MarketSide = endPrice > startPrice ? 'up' : 'down';
         const payout = this.wallet.settle(outcome);
         this.log(
             `Virtual settlement: position=${this.walletSide} outcome=${outcome} ` +
             `quantity=${quantity} payout=${payout} price=${payout > 0 ? 1 : 0} fee=0`,
+        );
+    }
+
+    private logLiveSettlementReport(history: CoinFrameEventMarketData | undefined, cash: number): void {
+        const marketData = this.market?.getMarketData();
+        if (!this.wallet || !marketData) {
+            this.log(`Live frame pending settlement: cash=${cash.toFixed(6)} tokens=0 side=undefined`);
+            return;
+        }
+        const tokenQuantity = this.wallet.getTokensQuantity();
+        const report = createDogeBaselineSettlementReport({
+            cash,
+            side: this.walletSide,
+            tokenQuantity,
+            frameStartPrice: history?.coin_frame_start_price,
+            frameEndPrice: history?.coin_frame_end_price,
+            bids: this.walletSide === 'up' ? this.market!.getBidsUp() : this.market!.getBidsDown(),
+            tickSize: marketData.tick_size,
+            feesEnabled: marketData.fees_enabled,
+            takerBaseFeeBps: marketData.taker_base_fee,
+        });
+        this.log(
+            `Live frame pending settlement: cash=${cash.toFixed(6)} tokens=${tokenQuantity} ` +
+            `side=${this.walletSide ?? 'undefined'} sourceOutcome=${report.sourceOutcome ?? 'undefined'} ` +
+            `expectedPayout=${report.expectedPayout ?? 'undefined'} expectedEquity=${report.expectedEquity ?? 'undefined'} ` +
+            `executableQuantity=${report.executableQuantity} executableProceeds=${report.executableProceeds ?? 'undefined'} ` +
+            `liquidationEquity=${report.liquidationEquity ?? 'undefined'}; Polymarket settlement is pending`,
         );
     }
 
