@@ -1,214 +1,99 @@
 # PM-BOT
 
-PM-BOT collects and researches Polymarket up/down markets for supported coins and
-time frames. Research mode uses public data only; live mode can submit real orders.
+PM-BOT collects Polymarket up/down market data, replays strategies with execution
+costs, and runs the DOGE baseline strategy. Start with research and virtual
+trading; `--live` can submit real orders.
 
-Start with research. It provides reproducible data and tests hypotheses with
-execution costs before changing a strategy or enabling trading.
-
-## Research quick start
+## Quick start
 
 Requirements: Node.js **22.6+** and npm.
 
 ```bash
 npm install
-
-# Check types, style and tests without accessing a trading account.
 npm run check
 
-# Show the current coins, frames and price sources.
+# Show supported coins, frames, and price sources.
 npm run collect -- --help
 
-# Collect one frame for every coin in market/coins.ts.
+# Record one frame for every registered coin.
 env HISTORY_SNAPSHOT_MS=50 \
   npm run collect -- --coin all --frame 5m --source chainlink-twap-60 --count 1
 ```
 
-The collector waits for the next frame boundary and writes one target frame for
-each supported coin. Every `HistoryFrameV3` file contains Up/Down order books and
-a price basket for every coin from the same source that determines the target
-market outcome. Do not interrupt a one-frame run before its
-`Saved ... complete=true` line.
+The collector waits for the next frame boundary. Do not interrupt a one-frame run
+before its `Saved ... complete=true` message.
 
-At 50 ms, a five-minute frame expects 6,000 snapshots per target;
-`complete=true` requires at least 5,700. The current registry has six targets, so
-a full interval can write up to 36,000 snapshots. See [docs/env.md](docs/env.md)
-for configuration details and the continuous collection command.
+## DOGE virtual working loop
 
-The collector uses one shared price connection for the complete basket of its
-selected source. It reconnects after ten seconds without an update for an active
-coin, while preserving the strict V3 freshness checks. Failed connection attempts
-use a capped exponential delay from one second up to thirty seconds.
-
-After markets close, confirm their outcomes and run analysis only on usable data:
+Run these three commands in separate terminals. The collector retains the newest
+700 frames; the strategy uses a virtual wallet; refresh confirms outcomes,
+re-trains, tunes configuration, and compares the working and candidate pairs.
 
 ```bash
-# Writes confirmed outcomes into unresolved V3 frames.
-npm run history:settle
-
-# Runs one registered preset and writes a report.
-npm run backtest -- --history history/frames --output history/reports/latest --strategy v2
-
-# Runs every registered preset on the same data set.
-npm run backtest:matrix -- --history history/frames --output history/reports/matrix/latest
-
-# Train and publish a DOGE model while retaining its current trading configuration.
-npm run research:doge-baseline-model -- --count 500
-
-# Select and atomically publish per-mode entry and emergency-exit parameters for the working model.
-npm run research:doge-baseline-config -- --count 500
-
-# Replay the published model on the newest 100 eligible frames.
-npm run replay:doge-baseline -- --history history/frames --count 100 \
-  --balance 100 --trade-value 10 --output history/reports/doge-baseline/latest
-
-# Settle, train, tune both model configurations, then compare four pairs on 100 later frames.
-npm run refresh:doge-baseline -- --frame 5m --count 100 --train-count 500 --replay 100
+env LOG_LEVEL=info HISTORY_SNAPSHOT_MS=50 HISTORY_BOOK_DEPTH=10 HISTORY_GZIP=true \
+  npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 700 --cycle
 ```
 
-The matrix uses only frames with `data_quality.complete=true` and a confirmed
-outcome. Its `manifest.json` lists excluded files and their reasons.
+```bash
+env LOG_LEVEL=info \
+  npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10
+```
+
+```bash
+env LOG_LEVEL=info \
+  npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100
+```
+
+```text
+collect → history frames → history:settle → model/config refresh → strategy
+                                    │                  │
+                                    └──── replay ──────┘
+```
 
 ## Commands
 
-| Command                                                                                        | Purpose                                                              |
-| ------------------------------------------------------------------------------------------------| ----------------------------------------------------------------------|
-| `npm run build`                                                                                | Compile `src/` into `dist/`.                                         |
-| `npm run check`                                                                                | Run type-checking, linting and tests.                                |
-| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 700 --cycle`     | Retain a 700-frame DOGE buffer for 500+100 model evaluation.         |
-| `npm run history:settle`                                                                       | Confirm outcomes for collected V3 frames.                            |
-| `npm run backtest -- --history history/frames --strategy v2`                                   | Replay one registered reference preset.                              |
-| `npm run backtest:matrix -- --history history/frames`                                          | Compare all registered reference presets.                            |
-| `npm run research:doge-baseline-model -- --count 500`                                          | Train and publish the two-mode DOGE model.                           |
-| `npm run research:doge-baseline-config -- --count 500`                                         | Tune and publish per-mode entry and exit configuration.              |
-| `npm run replay:doge-baseline -- --model <file> --config <file> --history history/frames --count 100 --balance 100 --trade-value 10` | Replay a specified model and matching configuration. |
-| `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10`                      | Run DOGE with a virtual wallet.                                       |
-| `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`                       | Run DOGE with real orders.                                            |
-| `npm run refresh:doge-baseline -- --frame 5m --count 100 --train-count 500 --replay 100`       | Tune two model/config pairs and compare them on 100 later frames.    |
-
-## Data lifecycle
-
-```text
-selected-source prices + CLOB order books
-                  │
-                  ▼
-collect → HistoryFrameV3 → history:settle → model/config research → model.json + config.json
-                              │                                           │
-                              └──────────── replay:doge-baseline ◀────────┘
-                                                                     │
-                                                                     ▼
-                                                      strategy:doge-baseline
-```
+| Command | Purpose |
+| --- | --- |
+| `npm run check` | Type-check, lint, and run tests. |
+| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60` | Collect DOGE HistoryFrameV3 data. |
+| `npm run history:settle` | Confirm outcomes in recorded frames. |
+| `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10` | Replay the published DOGE pair. |
+| `npm run research:doge-baseline-model -- --count 500` | Train and publish a DOGE model. |
+| `npm run research:doge-baseline-config -- --count 500` | Tune and publish DOGE configuration. |
+| `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs. |
+| `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10` | Run with a virtual wallet. |
+| `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10` | Submit real orders. |
 
 ## Deployment archive
 
-Build a Linux x64 deployment archive after a full project check:
+Create a Linux x64 archive after the full project check:
 
 ```bash
 # Binary and deployment instructions only.
 npm run deploy -- --tiny
 
-# Binary, current DOGE model artifacts and HistoryFrameV3 files.
+# Binary, current DOGE model artifacts, and history frames.
 npm run deploy -- --full
 ```
 
-The archive is written to `release/`. It contains one executable named
-`pm-bot-linux-x64`; Node.js and `node_modules` are not required on the server.
-After extraction, enter the package directory and use the same command names
-without npm:
+The archive in `release/` contains `pm-bot-linux-x64`; Node.js and
+`node_modules` are not required on the server. After extraction:
 
 ```bash
 cd pm-bot-linux-x64
 chmod +x pm-bot-linux-x64
 ./pm-bot-linux-x64 help
-./pm-bot-linux-x64 collect --coin doge --frame 5m --source chainlink-twap-60
 ```
 
-`--tiny` does not include models or history. `--full` includes
-`models/doge-baseline/*.json` and `history/frames/`, but excludes reports, logs,
-lock files and secrets. Copy or create `.env` manually beside the executable for
-live trading; deployment archives never include `.env` or key material.
-
-`complete=true` describes collection quality: snapshot coverage, boundary prices
-and connection state. It does **not** mean that a strategy is profitable. Outcome
-confirmation is a separate later operation.
-
-Configuration research keeps the same eligible frames as model training, but reduces
-their snapshots in memory to a 250 ms cadence. This bounds memory use for a
-two-stage matrix: 80 coarse natural configurations per mode, then up to nine local
-edge/confidence variants around each coarse winner, nine combinations of the three
-best settings, and 12 emergency-exit variants for each of three finalists. Only
-drawdown-safe settings with enough trades enter the next stage. It does not modify
-the original history files. Normal replay keeps using every recorded snapshot.
-
-The DOGE model contains two independent logistic-regression modes. The early mode
-decides at 60 seconds from 15/30/60-second returns. If it does not enter, the late
-mode decides at 120 seconds from 75/90/120-second returns. The replay command uses
-the already published model and applies the same prediction-side entry rule. Market
-price can reject the predicted trade but cannot switch it to the opposite side. Ask
-depth, VWAP, taker fee and the minimum order value must preserve the configured edge
-before an entry is submitted. An emergency exit is allowed in the final 60 seconds
-after DOGE remains 0.05% against the position for five seconds. It walks
-available bid depth and retries an unsold remainder no more than once per second
-without placing duplicate active orders. Positions held through a
-natural frame end are settled at $1 for the winning side or $0 for the losing side;
-they are not sold at the final bid and do not incur an exit fee.
-
-Candidate refresh requires profitable replay, sufficient prediction quality and a
-trade count equal to 10% of replay frames, bounded by the sample size and from 5 to
-20 for normal samples. It divides the replay window into chronological segments of
-25–50 frames: 100 frames become four segments of 25, while 400 become eight segments
-of 50. Before the replay reaches four full 50-frame segments, at least 50% must have
-positive PnL; the requirement then rises with the number of full segments to 75% at
-eight segments. Each segment also needs independent minimum activity of 10% of its
-own frames, with a floor of two trades. A candidate cannot trail a
-profitable working model by more than 20% net PnL on the same frames.
-If all four working/candidate model-and-configuration combinations have non-positive
-net PnL on the replay window, refresh writes `"tradingEnabled": false` to the
-published DOGE `config.json`. The live strategy then skips entries and logs the
-configuration pause once per frame; replay and research continue normally. Trading
-is re-enabled only when a later refresh publishes a pair that passes the normal
-promotion safeguards. DOGE configuration is strict V4: older configuration files
-are rejected. To migrate a local file manually, set `"version": 4` and add
-`"tradingEnabled": true`.
-
-DOGE replay writes `entry-decisions.json` and an `Entry decisions` table in
-`summary.md`. They show, separately for `early-60` and `late-120`, how often a
-decision was evaluated, accepted, or rejected for confidence, deviation, token
-availability, book liquidity, minimum value, post-execution edge, or balance. Model
-research and `latest-evaluation.json` also include confidence-calibration buckets:
-mean predicted confidence and actual directional accuracy for each 5% range.
-
-## Live mode and secrets
-
-`strategy:doge-baseline` requires exactly one explicit mode: `--debug` creates a
-virtual wallet, while `--live` enables real orders. Both modes require a positive
-`--balance` and `--trade-value`; the latter cannot exceed the balance. The scheduler
-still initialises an authenticated client in both modes. Configure it in a local
-`.env`, which must never be committed or written to logs. The complete variable list
-and a placeholder-only example are in [docs/env.md](docs/env.md). Review the model
-and its latest replay report first.
+The executable embeds an 8 GB V8 old-space limit. Copy or create `.env` manually
+beside it for live access; archives never include secrets.
 
 ## Documentation
 
-| Document                                    | Read it when you need to...                                      |
-| ------------------------------------------- | ---------------------------------------------------------------- |
-| [Environment](docs/env.md)                  | Configure collection, logs, dumps or live access.                |
-| [Architecture](docs/abstractions.md)        | Understand watchers, history and replay layers.                  |
-| [Strategy guide](docs/strategies.md)        | Add or change an event strategy safely.                          |
-| [Virtual wallets](docs/wallets.md)          | Understand balances, orders and shutdown behaviour.              |
-| [Live integration example](docs/example.md) | See minimal scheduler, watcher and strategy wiring.              |
-
-## Canonical registries
-
-Do not copy lists of coins, frames, sources or strategy presets into callers.
-Change the central registry instead; derived types and command-line validation
-update with it.
-
-| Registry                                  | Owns                                                             |
-| ----------------------------------------- | ---------------------------------------------------------------- |
-| `src/market/coins.ts`                     | Supported coins and external-price precision.                    |
-| `src/market/frame.ts`                     | Supported frames and their durations.                            |
-| `src/market/price/price_source.ts`        | Price sources, timeouts and quality criteria.                    |
-| `src/app/defaults.ts`                     | Default values for collection and replay.                        |
-| `src/app/core/backtest/replay_presets.ts` | Presets available to single and matrix replay.                   |
+| Document | Use it for |
+| --- | --- |
+| [Environment](docs/env.md) | Environment variables, logging, collection, and live credentials. |
+| [Architecture](docs/abstractions.md) | Watchers, history, replay, and domain registries. |
+| [Strategy guide](docs/strategies.md) | DOGE behavior and safe strategy changes. |
+| [Virtual wallets](docs/wallets.md) | Balances, orders, and shutdown behavior. |
+| [Live integration example](docs/example.md) | Minimal scheduler, watcher, and strategy wiring. |
