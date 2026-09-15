@@ -55,7 +55,7 @@ npm run backtest:matrix -- --history history/frames --output history/reports/mat
 # Train and publish a DOGE model while retaining its current trading configuration.
 npm run research:doge-baseline-model -- --count 500
 
-# Select and atomically publish per-mode edges and emergency-exit parameters for the working model.
+# Select and atomically publish per-mode entry and emergency-exit parameters for the working model.
 npm run research:doge-baseline-config -- --count 500
 
 # Replay the published model on the newest 100 eligible frames.
@@ -80,7 +80,7 @@ outcome. Its `manifest.json` lists excluded files and their reasons.
 | `npm run backtest -- --history history/frames --strategy v2`                                   | Replay one registered reference preset.                              |
 | `npm run backtest:matrix -- --history history/frames`                                          | Compare all registered reference presets.                            |
 | `npm run research:doge-baseline-model -- --count 500`                                          | Train and publish the two-mode DOGE model.                           |
-| `npm run research:doge-baseline-config -- --count 500`                                         | Tune and publish per-mode edge and exit configuration.               |
+| `npm run research:doge-baseline-config -- --count 500`                                         | Tune and publish per-mode entry and exit configuration.              |
 | `npm run replay:doge-baseline -- --model <file> --config <file> --history history/frames --count 100 --balance 100 --trade-value 10` | Replay a specified model and matching configuration. |
 | `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10`                      | Run DOGE with a virtual wallet.                                       |
 | `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`                       | Run DOGE with real orders.                                            |
@@ -134,10 +134,12 @@ and connection state. It does **not** mean that a strategy is profitable. Outcom
 confirmation is a separate later operation.
 
 Configuration research keeps the same eligible frames as model training, but reduces
-their snapshots in memory to a 250 ms cadence. This bounds memory use for the
-two-stage matrix: 35 natural entry configurations, then 12 emergency-exit variants
-for each of three finalists. It does not modify the original history files. Normal replay keeps
-using every recorded snapshot.
+their snapshots in memory to a 250 ms cadence. This bounds memory use for a
+two-stage matrix: 80 coarse natural configurations per mode, then up to nine local
+edge/confidence variants around each coarse winner, nine combinations of the three
+best settings, and 12 emergency-exit variants for each of three finalists. Only
+drawdown-safe settings with enough trades enter the next stage. It does not modify
+the original history files. Normal replay keeps using every recorded snapshot.
 
 The DOGE model contains two independent logistic-regression modes. The early mode
 decides at 60 seconds from 15/30/60-second returns. If it does not enter, the late
@@ -153,8 +155,29 @@ natural frame end are settled at $1 for the winning side or $0 for the losing si
 they are not sold at the final bid and do not incur an exit fee.
 
 Candidate refresh requires profitable replay, sufficient prediction quality and a
-trade count equal to 10% of replay frames, bounded from 5 to 20. A candidate also
-cannot trail a profitable working model by more than 20% net PnL on the same frames.
+trade count equal to 10% of replay frames, bounded by the sample size and from 5 to
+20 for normal samples. It divides the replay window into chronological segments of
+25–50 frames: 100 frames become four segments of 25, while 400 become eight segments
+of 50. Before the replay reaches four full 50-frame segments, at least 50% must have
+positive PnL; the requirement then rises with the number of full segments to 75% at
+eight segments. Each segment also needs independent minimum activity of 10% of its
+own frames, with a floor of two trades. A candidate cannot trail a
+profitable working model by more than 20% net PnL on the same frames.
+If all four working/candidate model-and-configuration combinations have non-positive
+net PnL on the replay window, refresh writes `"tradingEnabled": false` to the
+published DOGE `config.json`. The live strategy then skips entries and logs the
+configuration pause once per frame; replay and research continue normally. Trading
+is re-enabled only when a later refresh publishes a pair that passes the normal
+promotion safeguards. DOGE configuration is strict V4: older configuration files
+are rejected. To migrate a local file manually, set `"version": 4` and add
+`"tradingEnabled": true`.
+
+DOGE replay writes `entry-decisions.json` and an `Entry decisions` table in
+`summary.md`. They show, separately for `early-60` and `late-120`, how often a
+decision was evaluated, accepted, or rejected for confidence, deviation, token
+availability, book liquidity, minimum value, post-execution edge, or balance. Model
+research and `latest-evaluation.json` also include confidence-calibration buckets:
+mean predicted confidence and actual directional accuracy for each 5% range.
 
 ## Live mode and secrets
 

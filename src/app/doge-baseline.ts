@@ -49,7 +49,7 @@ export async function runDogeBaselineStrategy(): Promise<void> {
                 const watcher = await CoinFrameEventTimerWatcher.create(DOGE_BASELINE_COIN, DOGE_BASELINE_FRAME, TIMER_FAST, coinWatcher);
                 logger.info(`[DogeBaseline] Starting trading frame ${watcher.getEventId()}`);
                 const strategy = await CoinDogeBaselineStrategy.create(
-                    watcher.getEventId(), isDebug, masterScheduler, trade.balance, trade.tradeValue,
+                    watcher.getEventId(), isDebug, trade.balance, trade.tradeValue,
                 );
                 return new ExecManager(client, [watcher], [strategy], isDebug);
             },

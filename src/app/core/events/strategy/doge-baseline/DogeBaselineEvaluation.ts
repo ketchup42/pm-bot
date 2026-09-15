@@ -1,18 +1,27 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { ReplayExecutionConfig, ReplayMetrics, runReplay } from '../../../backtest/replay.js';
-import { DogeBaselineReplayStrategy } from '../../../backtest/strategy/DogeBaselineReplayStrategy.js';
+import {
+    DogeBaselineEntryDecisionMetricsByMode,
+    DogeBaselineReplayStrategy,
+} from '../../../backtest/strategy/DogeBaselineReplayStrategy.js';
 import { HistoryFrameV3 } from '../../../history/history_frame.js';
 import {
     DOGE_BASELINE_CANDIDATE_MAXIMUM_BRIER_SCORE,
     DOGE_BASELINE_CANDIDATE_MAXIMUM_PNL_UNDERPERFORMANCE_RATIO,
-    DOGE_BASELINE_CANDIDATE_MAXIMUM_TRADE_COUNT,
     DOGE_BASELINE_CANDIDATE_MINIMUM_ACCURACY,
-    DOGE_BASELINE_CANDIDATE_MINIMUM_TRADE_COUNT,
-    DOGE_BASELINE_CANDIDATE_MINIMUM_TRADE_RATIO,
     DOGE_BASELINE_LATEST_EVALUATION_FILE,
     DOGE_BASELINE_MODES,
+    DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_FRAME_COUNT,
+    DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_COUNT,
+    DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_FRAME_COUNT,
+    DOGE_BASELINE_REPLAY_SEGMENT_INITIAL_MINIMUM_PROFITABLE_RATIO,
+    DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_MINIMUM_PROFITABLE_RATIO,
+    DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_RATIO_FULL_SEGMENT_COUNT,
+    DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_COUNT,
+    DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_RATIO,
     DogeBaselineModeName,
+    getDogeBaselineMinimumReplayTradeCount,
 } from './DogeBaselineConfig.js';
 import { DogeBaselineModel, DogeBaselineObservation, getDogeBaselineArtifactPath, makeDogeBaselineObservation } from './DogeBaselineModel.js';
 import { DogeBaselineTrainingMetrics, calculateDogeBaselineTrainingMetrics } from './DogeBaselineResearch.js';
@@ -22,6 +31,18 @@ export interface DogeBaselineEvaluationModel {
     trainedAt: number;
     validationMetrics: Record<DogeBaselineModeName, DogeBaselineTrainingMetrics>;
     replayMetrics: ReplayMetrics;
+    replaySegments: DogeBaselineReplaySegment[];
+    entryDecisions: DogeBaselineEntryDecisionMetricsByMode;
+}
+
+export interface DogeBaselineReplaySegment {
+    firstFrameStart: number;
+    lastFrameStart: number;
+    frames: number;
+    minimumTradeCount: number;
+    tradeCount: number;
+    netPnl: number;
+    profitable: boolean;
 }
 
 export interface DogeBaselineEvaluationCombination extends DogeBaselineEvaluationModel {
@@ -36,18 +57,20 @@ export interface DogeBaselineConfigurationEvaluation {
     replayFirstFrameStart: number;
     replayLastFrameStart: number;
     minimumCandidateTradeCount: number;
+    minimumProfitableSegmentCount: number;
     replayConfig: ReplayExecutionConfig;
     combinations: DogeBaselineEvaluationCombination[];
     selected: DogeBaselineEvaluationCombination;
     promoted: boolean;
-    reasons: DogeBaselineCandidateRejectionReason[];
+    reasons: DogeBaselineSelectionRejectionReason[];
 }
 
-export type DogeBaselineCandidateRejectionReason =
+export type DogeBaselineSelectionRejectionReason =
     | 'candidate_trade_count_below_minimum'
     | 'candidate_net_pnl_not_positive'
     | 'candidate_net_pnl_significantly_below_working'
     | 'candidate_profit_factor_not_above_one'
+    | 'candidate_profitable_segment_count_below_minimum'
     | `${DogeBaselineModeName}_accuracy_below_minimum`
     | `${DogeBaselineModeName}_brier_score_not_below_maximum`;
 
@@ -65,9 +88,22 @@ function createEvaluationModel(
     config: ReplayExecutionConfig,
     strategyConfig: Readonly<DogeBaselineStrategyConfig>,
 ): DogeBaselineEvaluationModel {
-    const replay = runReplay(frames, new DogeBaselineReplayStrategy(
-        model, toDogeBaselineRuntimeConfig(strategyConfig),
-    ), config);
+    const runtimeConfig = toDogeBaselineRuntimeConfig(strategyConfig);
+    const replayStrategy = new DogeBaselineReplayStrategy(model, runtimeConfig);
+    const replay = runReplay(frames, replayStrategy, config);
+    const replaySegments = splitDogeBaselineReplayFrames(frames).map(segment => {
+        const metrics = runReplay(segment, new DogeBaselineReplayStrategy(model, runtimeConfig), config).metrics;
+        const minimumTradeCount = getDogeBaselineMinimumSegmentTradeCount(segment.length);
+        return {
+            firstFrameStart: segment[0]!.start_time,
+            lastFrameStart: segment.at(-1)!.start_time,
+            frames: segment.length,
+            minimumTradeCount,
+            tradeCount: metrics.trade_count,
+            netPnl: metrics.net_pnl,
+            profitable: metrics.net_pnl > 0 && metrics.trade_count >= minimumTradeCount,
+        };
+    });
     return {
         trainedAt: model.trainedAt,
         validationMetrics: Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
@@ -75,6 +111,8 @@ function createEvaluationModel(
             calculateDogeBaselineTrainingMetrics(observations, model, mode.name),
         ])) as Record<DogeBaselineModeName, DogeBaselineTrainingMetrics>,
         replayMetrics: replay.metrics,
+        replaySegments,
+        entryDecisions: replayStrategy.getEntryDecisionMetrics(),
     };
 }
 
@@ -115,7 +153,7 @@ export function evaluateDogeBaselineModelConfigurations(
     const baseline = combinations[0]!;
     const candidates = combinations.slice(1).map(value => ({
         value,
-        reasons: getDogeBaselineCandidateRejectionReasons(
+        reasons: getDogeBaselineSelectionRejectionReasons(
             frames.length, baseline, value, value.model === 'candidate',
         ),
     }));
@@ -125,31 +163,81 @@ export function evaluateDogeBaselineModelConfigurations(
     return {
         trainingFrames, replayFrames: frames.length,
         replayFirstFrameStart: frames[0]!.start_time, replayLastFrameStart: frames.at(-1)!.start_time,
-        minimumCandidateTradeCount: getDogeBaselineMinimumCandidateTradeCount(frames.length), replayConfig: { ...config },
+        minimumCandidateTradeCount: getDogeBaselineMinimumReplayTradeCount(frames.length),
+        minimumProfitableSegmentCount: getDogeBaselineMinimumProfitableSegmentCount(frames.length),
+        replayConfig: { ...config },
         combinations, selected, promoted: selected.id !== 'working-current', reasons: selectedReasons,
     };
 }
 
-export function getDogeBaselineMinimumCandidateTradeCount(replayFrames: number): number {
-    return Math.min(DOGE_BASELINE_CANDIDATE_MAXIMUM_TRADE_COUNT, Math.max(
-        DOGE_BASELINE_CANDIDATE_MINIMUM_TRADE_COUNT,
-        Math.ceil(replayFrames * DOGE_BASELINE_CANDIDATE_MINIMUM_TRADE_RATIO),
-    ));
+export function splitDogeBaselineReplayFrames(frames: readonly HistoryFrameV3[]): HistoryFrameV3[][] {
+    if (frames.length === 0) return [];
+    const segmentCount = getDogeBaselineReplaySegmentCount(frames.length);
+    const baseSize = Math.floor(frames.length / segmentCount);
+    const remainder = frames.length % segmentCount;
+    const segments: HistoryFrameV3[][] = [];
+    let start = 0;
+    for (let index = 0; index < segmentCount; index++) {
+        const size = baseSize + (index < remainder ? 1 : 0);
+        segments.push(frames.slice(start, start + size));
+        start += size;
+    }
+    return segments;
 }
 
-export function getDogeBaselineCandidateRejectionReasons(
+export function getDogeBaselineReplaySegmentCount(replayFrames: number): number {
+    if (replayFrames <= 0) return 0;
+    if (replayFrames < DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_FRAME_COUNT) return 1;
+    return Math.min(
+        Math.floor(replayFrames / DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_FRAME_COUNT),
+        Math.max(
+            DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_COUNT,
+            Math.ceil(replayFrames / DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_FRAME_COUNT),
+        ),
+    );
+}
+
+export function getDogeBaselineMinimumProfitableSegmentCount(replayFrames: number): number {
+    const segmentCount = getDogeBaselineReplaySegmentCount(replayFrames);
+    const fullSegmentCount = Math.floor(replayFrames / DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_FRAME_COUNT);
+    const ratioProgress = Math.min(1, Math.max(0,
+        (fullSegmentCount - DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_COUNT) /
+        (DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_RATIO_FULL_SEGMENT_COUNT -
+            DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_COUNT),
+    ));
+    const profitableRatio = DOGE_BASELINE_REPLAY_SEGMENT_INITIAL_MINIMUM_PROFITABLE_RATIO +
+        (DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_MINIMUM_PROFITABLE_RATIO -
+            DOGE_BASELINE_REPLAY_SEGMENT_INITIAL_MINIMUM_PROFITABLE_RATIO) * ratioProgress;
+    return Math.max(1, Math.ceil(segmentCount * profitableRatio));
+}
+
+export function getDogeBaselineMinimumSegmentTradeCount(segmentFrames: number): number {
+    return Math.min(
+        segmentFrames,
+        Math.max(
+            DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_COUNT,
+            Math.ceil(segmentFrames * DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_RATIO),
+        ),
+    );
+}
+
+export function getDogeBaselineSelectionRejectionReasons(
     replayFrames: number,
     working: Readonly<DogeBaselineEvaluationModel>,
     candidate: Readonly<DogeBaselineEvaluationModel>,
     requireModelQuality: boolean = true,
-): DogeBaselineCandidateRejectionReason[] {
-    const reasons: DogeBaselineCandidateRejectionReason[] = [];
+): DogeBaselineSelectionRejectionReason[] {
+    const reasons: DogeBaselineSelectionRejectionReason[] = [];
     const metrics = candidate.replayMetrics;
-    if (metrics.trade_count < getDogeBaselineMinimumCandidateTradeCount(replayFrames)) reasons.push('candidate_trade_count_below_minimum');
+    if (metrics.trade_count < getDogeBaselineMinimumReplayTradeCount(replayFrames)) reasons.push('candidate_trade_count_below_minimum');
     if (metrics.net_pnl <= 0) reasons.push('candidate_net_pnl_not_positive');
     if (working.replayMetrics.net_pnl > 0 && metrics.net_pnl < working.replayMetrics.net_pnl *
         (1 - DOGE_BASELINE_CANDIDATE_MAXIMUM_PNL_UNDERPERFORMANCE_RATIO)) reasons.push('candidate_net_pnl_significantly_below_working');
     if (metrics.profit_factor === undefined || metrics.profit_factor <= 1) reasons.push('candidate_profit_factor_not_above_one');
+    const profitableSegments = candidate.replaySegments.filter(segment => segment.profitable).length;
+    if (profitableSegments < getDogeBaselineMinimumProfitableSegmentCount(replayFrames)) {
+        reasons.push('candidate_profitable_segment_count_below_minimum');
+    }
     if (requireModelQuality) for (const mode of DOGE_BASELINE_MODES) {
         const validation = candidate.validationMetrics[mode.name];
         if (validation.accuracy < DOGE_BASELINE_CANDIDATE_MINIMUM_ACCURACY) reasons.push(`${mode.name}_accuracy_below_minimum`);

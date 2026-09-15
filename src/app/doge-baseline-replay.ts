@@ -13,6 +13,7 @@ import {
     toDogeBaselineRuntimeConfig,
 } from './core/events/strategy/doge-baseline/artifacts.js';
 import { DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT, DOGE_BASELINE_MODES } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
+import { DOGE_BASELINE_ENTRY_REJECTION_REASONS } from './core/events/strategy/doge-baseline/DogeBaselineDecision.js';
 import { logger } from '../log.js';
 import { fileWrite } from '../utils.js';
 
@@ -52,6 +53,12 @@ export async function runDogeBaselineReplayCommand(): Promise<void> {
         `${value.result.metrics.net_pnl.toFixed(6).padStart(11)} | ${value.result.metrics.profit_factor?.toFixed(4).padStart(8) ?? '       -'} | ` +
         `${value.result.metrics.max_drawdown.toFixed(6).padStart(12)} |`,
     );
+    const decisionRows = DOGE_BASELINE_MODES.map(mode => {
+        const decisions = replay.entryDecisions[mode.name];
+        return `| ${mode.name.padEnd(9)} | ${String(decisions.evaluated).padStart(9)} | ` +
+            `${String(decisions.accepted).padStart(8)} | ${DOGE_BASELINE_ENTRY_REJECTION_REASONS.map(reason =>
+                String(decisions.rejectedByReason[reason] ?? 0).padStart(5)).join(' | ')} |`;
+    });
     await fileWrite(`${output}/summary.md`, [
         '# DOGE baseline replay', '',
         `Model: ${modelPath ?? 'working model'}`,
@@ -60,10 +67,18 @@ export async function runDogeBaselineReplayCommand(): Promise<void> {
         '| Mode      | Trades |     Net PnL | Profit factor | Max drawdown |',
         '| --------- | -----: | ----------: | ------------: | -----------: |',
         ...rows, '',
+        '## Entry decisions', '',
+        '| Mode      | Evaluated | Accepted | Neutral | Confidence | Deviation | Side unavailable | Liquidity | Minimum value | Edge | Balance |',
+        '| --------- | --------: | -------: | ------: | ---------: | --------: | ---------------: | --------: | ------------: | ---: | ------: |',
+        ...decisionRows, '',
     ].join('\n'));
+    await fileWrite(`${output}/entry-decisions.json`, `${JSON.stringify(replay.entryDecisions, undefined, 2)}\n`);
     logger.info(
         `[DogeBaselineReplay] Result:\n${JSON.stringify(
-            Object.fromEntries(results.map(value => [value.mode, value.result.metrics])),
+            {
+                metrics: Object.fromEntries(results.map(value => [value.mode, value.result.metrics])),
+                entryDecisions: replay.entryDecisions,
+            },
             undefined,
             2,
         )}`,

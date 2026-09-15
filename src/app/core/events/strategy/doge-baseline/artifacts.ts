@@ -25,7 +25,7 @@ import {
 } from './DogeBaselineModel.js';
 import type { DogeBaselineEmergencyExitConfig } from './DogeBaselineDecision.js';
 
-const DOGE_BASELINE_STRATEGY_CONFIG_VERSION = 2 as const;
+const DOGE_BASELINE_STRATEGY_CONFIG_VERSION = 4 as const;
 const DOGE_BASELINE_PUBLISH_BACKUP_DIRECTORY = '.publish-backup';
 const DOGE_BASELINE_ARTIFACT_READ_RETRIES = 3;
 const DOGE_BASELINE_ARTIFACT_READ_RETRY_MS = 10;
@@ -42,6 +42,7 @@ export interface DogeBaselineStrategyConfig {
     version: typeof DOGE_BASELINE_STRATEGY_CONFIG_VERSION;
     strategy: typeof DOGE_BASELINE_STRATEGY;
     model: DogeBaselineModelReference;
+    tradingEnabled: boolean;
     entry: DogeBaselineEntrySettings;
     exit: DogeBaselineEmergencyExitSettings;
 }
@@ -106,7 +107,12 @@ function validateEntry(config: Readonly<DogeBaselineEntrySettings>): void {
     for (const mode of DOGE_BASELINE_MODES) {
         const settings = config.modes[mode.name];
         if (!settings || typeof settings.enabled !== 'boolean' || !Number.isFinite(settings.minimumEdge) ||
-            settings.minimumEdge < 0) throw new Error('invalid_doge_baseline_strategy_config_entry');
+            settings.minimumEdge < 0 || !Number.isFinite(settings.minimumConfidence) ||
+            settings.minimumConfidence < 0.5 || settings.minimumConfidence > 1 ||
+            !Number.isFinite(settings.minimumAbsoluteDeviationBps) ||
+            settings.minimumAbsoluteDeviationBps < 0) {
+            throw new Error('invalid_doge_baseline_strategy_config_entry');
+        }
         if (settings.enabled) enabledCount++;
     }
     if (enabledCount === 0) throw new Error('invalid_doge_baseline_strategy_config_entry');
@@ -128,6 +134,7 @@ export function createDogeBaselineStrategyConfig(
         version: DOGE_BASELINE_STRATEGY_CONFIG_VERSION,
         strategy: DOGE_BASELINE_STRATEGY,
         model: getModelReference(model),
+        tradingEnabled: values.tradingEnabled ?? true,
         entry: values.entry ?? createDogeBaselineEntrySettings(),
         exit: { ...exit },
     };
@@ -139,6 +146,7 @@ export function rebindDogeBaselineStrategyConfig(
     config: Readonly<DogeBaselineStrategyConfig>,
 ): DogeBaselineStrategyConfig {
     return createDogeBaselineStrategyConfig(model, {
+        tradingEnabled: config.tradingEnabled,
         entry: config.entry,
         exit: config.exit,
     });
@@ -155,6 +163,7 @@ export function validateDogeBaselineStrategyConfig(
         !config.model || !hasSameModelReference(config.model, getModelReference(model))) {
         throw new Error('incompatible_doge_baseline_strategy_config');
     }
+    if (typeof config.tradingEnabled !== 'boolean') throw new Error('invalid_doge_baseline_strategy_config_trading_enabled');
     validateEntry(config.entry);
     validateEmergencyExit(config.exit);
     return config;

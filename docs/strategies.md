@@ -92,14 +92,16 @@ and probabilities below 0.5 select `down`. The opposite side is never bought mer
 because its token is cheaper. Before entry, the selected side is simulated through
 the visible ask depth. Its VWAP, taker fee and minimum order value must still leave
 the mode-specific expected edge from `config.json` (the default is $0.04 per token).
+Each mode may additionally require a minimum predicted-side probability (default `0.50`)
+and an absolute DOGE movement from the frame start (default `0 bps`).
 Entry value is capped at $10 from a $100
 strategy balance.
 
 An emergency exit is available during the final 60 seconds. It requires DOGE
 to remain at least 0.05% beyond the frame start price against the held
 side for five continuous seconds. The strategy then sells against the available bid
-depth, retries any unsold remainder no more than once per second without duplicating active orders, and pauses
-the main scheduler. A separate relative crossing observer retains its ±0.05% band
+depth, retries any unsold remainder no more than once per second without duplicating active orders.
+A separate relative crossing observer retains its ±0.05% band
 for frame-level volatility; a calm following frame resumes the scheduler.
 
 This taker execution applies only to an exit made before the frame ends. At a
@@ -110,7 +112,9 @@ liquidate the open position against the visible bid depth.
 
 Training requires an explicit history size and never publishes a partial model. Its
 output includes classification accuracy, probability errors, a confusion matrix,
-the continuation baseline, and outcomes grouped by signed DOGE displacement:
+the continuation baseline, outcomes grouped by signed DOGE displacement, and a
+confidence-calibration table. Each 5% confidence range reports its frame count,
+mean predicted confidence and actual directional accuracy:
 
 ```bash
 npm run research:doge-baseline-model -- --count 500
@@ -124,7 +128,9 @@ npm run replay:doge-baseline -- --history history/frames \
 
 The replay loads the published model without fitting it and uses the normal replay
 engine for depth, spread, slippage, fees, minimum order value and balance limits.
-It reads only the newest `--count N` eligible frames; the default is 100.
+It reads only the newest `--count N` eligible frames; the default is 100. Its
+`entry-decisions.json` and the matching table in `summary.md` split each mode's
+evaluated decisions into accepted entries and precise rejection reasons.
 Pass `--model models/doge-baseline/candidate.json --config <matching-file>` to
 replay a stored model; a model is never replayed with an unverified configuration.
 
@@ -150,30 +156,56 @@ an order ID is received, its order watcher retains the order until reconciliatio
 `--debug` and `--live` are flags. An omitted mode, duplicate mode, or a value passed
 to either flag is rejected before the scheduler starts.
 
-`research:doge-baseline-config -- --count N` evaluates 35 natural entry configurations:
-five early-only, five late-only and 25 configurations with independent early and late edges.
-It retains three finalists whose drawdown is no worse than the baseline, then evaluates
-12 emergency-exit variants for each finalist.
-The final choice is constrained to drawdown no worse than the baseline and ordered by
-net PnL, then lower total execution costs, then fewer trades. It atomically writes
-`models/doge-baseline/config.json` without generating a report.
+`research:doge-baseline-config -- --count N` evaluates 80 coarse natural entry
+configurations for each mode: five edge values, four probability thresholds and four
+minimum absolute-deviation thresholds. Around each eligible coarse winner it then
+tests a local 3×3 grid: edge ±$0.01 and confidence ±0.03, clamped to the supported
+ranges; the winning deviation filter stays fixed. It retains the strongest three
+early and late settings, tests their nine joint combinations, then advances three
+drawdown-safe finalists to 12 emergency-exit variants each. Natural settlement remains
+in the final comparison. Every configuration admitted to the next stage must make at
+least the dynamic minimum trade count: 10% of the supplied frames, normally bounded
+from 5 to 20 and clamped for a smaller sample. The final choice is constrained to
+drawdown no worse than the baseline and ordered by net PnL, then lower total execution
+costs, then fewer trades. It atomically writes `models/doge-baseline/config.json`
+without generating a report.
 
-The published V2 entry settings have an independent switch and minimum edge for each
-mode:
+Published configuration V4 contains a global trading switch and independent entry
+settings for each mode: an enable switch, minimum edge, probability threshold and
+DOGE-deviation threshold:
 
 ```json
 {
+  "version": 4,
+  "tradingEnabled": true,
   "entry": {
     "modes": {
-      "early-60": { "enabled": true, "minimumEdge": 0.04 },
-      "late-120": { "enabled": true, "minimumEdge": 0.04 }
+      "early-60": {
+        "enabled": true,
+        "minimumEdge": 0.04,
+        "minimumConfidence": 0.50,
+        "minimumAbsoluteDeviationBps": 0
+      },
+      "late-120": {
+        "enabled": true,
+        "minimumEdge": 0.04,
+        "minimumConfidence": 0.50,
+        "minimumAbsoluteDeviationBps": 0
+      }
     }
   }
 }
 ```
 
-At least one mode must be enabled. Legacy configuration versions are rejected rather
-than silently converted.
+At least one mode must be enabled. `tradingEnabled=false` makes the live strategy
+skip entries and log `Trading paused by config` once per trading frame. Replay and
+configuration research deliberately ignore this live guard, so they can continue
+evaluating the model and find a configuration that may resume trading.
+
+Configuration versions older than V4 are rejected rather than silently converted.
+When updating an existing local artifact manually, change `version` to `4` and add
+`"tradingEnabled": true` (or `false` to hold live entries) before starting the
+strategy or refresh process.
 
 `refresh:doge-baseline -- --frame 5m --count 100 --train-count 500 --replay 100`
 uses 500 frames to train a candidate and tune both the working and candidate model.
@@ -181,7 +213,20 @@ It then compares working/current, working/tuned, candidate/current and
 candidate/tuned pairs on 100 later frames. The selected pair must pass the existing
 trade and PnL safeguards; a model replacement also requires accuracy at least 55%
 and Brier score below 0.25 in both modes. The four-way decision is retained in
-`latest-evaluation.json`.
+`latest-evaluation.json`. The replay window is split chronologically into adaptive
+25–50-frame segments: 100 frames become four segments of 25, while 400 become eight
+segments of 50. A candidate needs positive PnL and at least 10% active frames in
+each qualifying segment, with a floor of two trades. Before the replay reaches four
+full 50-frame segments, at least 50% of segments must be profitable; the requirement
+then rises with the number of full segments to 75% at eight segments.
+The same evaluation file records the segments, entry-rejection statistics and
+confidence calibration for every combination.
+
+If every one of the four evaluated working/candidate model-and-configuration pairs
+has non-positive net PnL on the replay window, refresh writes
+`"tradingEnabled": false` to the current `config.json`. This stops new live entries
+without stopping research or refresh. A later refresh turns it back on only when it
+publishes a pair that passed the normal promotion safeguards.
 
 ## Before changing live behaviour
 

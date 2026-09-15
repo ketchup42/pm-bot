@@ -5,9 +5,15 @@ import {
     DOGE_BASELINE_CONFIG_FINALIST_COUNT,
     DOGE_BASELINE_EMERGENCY_EXIT_DEVIATION_FACTORS,
     DOGE_BASELINE_EMERGENCY_EXIT_WINDOWS_MS,
+    DOGE_BASELINE_LOCAL_CONFIDENCE_DELTA,
+    DOGE_BASELINE_LOCAL_EDGE_DELTA,
+    DOGE_BASELINE_MINIMUM_ABSOLUTE_DEVIATION_BPS_VALUES,
+    DOGE_BASELINE_MINIMUM_CONFIDENCE_VALUES,
     DOGE_BASELINE_MINIMUM_EDGE_VALUES,
     DOGE_BASELINE_MODES,
     createDogeBaselineEntrySettings,
+    formatDogeBaselineDeviationBps,
+    getDogeBaselineMinimumReplayTradeCount,
     type DogeBaselineEntrySettings,
     type DogeBaselineModeName,
 } from './DogeBaselineConfig.js';
@@ -32,16 +38,15 @@ export interface DogeBaselineConfigMatrix {
     selected: DogeBaselineConfigMatrixRow;
 }
 
-const DOGE_BASELINE_ENTRY_MODE_SETS: readonly (readonly DogeBaselineModeName[])[] = Object.freeze([
-    Object.freeze(['early-60'] as const),
-    Object.freeze(['late-120'] as const),
-    Object.freeze(['early-60', 'late-120'] as const),
-]);
-
 function getEntryId(entry: Readonly<DogeBaselineEntrySettings>): string {
     return DOGE_BASELINE_MODES
         .filter(mode => entry.modes[mode.name].enabled)
-        .map(mode => `${mode.name}-${entry.modes[mode.name].minimumEdge.toFixed(2)}`)
+        .map(mode => {
+            const settings = entry.modes[mode.name];
+            return `${mode.name}-edge${settings.minimumEdge.toFixed(2)}` +
+                `-confidence${settings.minimumConfidence.toFixed(2)}` +
+                `-deviation${formatDogeBaselineDeviationBps(settings.minimumAbsoluteDeviationBps)}bps`;
+        })
         .join('_');
 }
 
@@ -79,25 +84,134 @@ function compareRows(left: Readonly<DogeBaselineConfigMatrixRow>, right: Readonl
     return left.metrics.trade_count - right.metrics.trade_count;
 }
 
-function createEntryConfigs(model: Readonly<DogeBaselineModel>, baseline: Readonly<DogeBaselineStrategyConfig>): DogeBaselineStrategyConfig[] {
+function createModeEntryConfigs(
+    model: Readonly<DogeBaselineModel>,
+    baseline: Readonly<DogeBaselineStrategyConfig>,
+    mode: DogeBaselineModeName,
+): DogeBaselineStrategyConfig[] {
     const naturalExit = { ...baseline.exit, enabled: false };
-    return DOGE_BASELINE_ENTRY_MODE_SETS.flatMap(enabledModes => {
-        if (enabledModes.length === 1) return DOGE_BASELINE_MINIMUM_EDGE_VALUES.map(minimumEdge =>
-            createDogeBaselineStrategyConfig(model, {
-                entry: createDogeBaselineEntrySettings(enabledModes, { [enabledModes[0]!]: minimumEdge }),
-                exit: naturalExit,
-            }),
-        );
-        return DOGE_BASELINE_MINIMUM_EDGE_VALUES.flatMap(earlyEdge =>
-            DOGE_BASELINE_MINIMUM_EDGE_VALUES.map(lateEdge => createDogeBaselineStrategyConfig(model, {
-                entry: createDogeBaselineEntrySettings(enabledModes, {
-                    'early-60': earlyEdge,
-                    'late-120': lateEdge,
+    return DOGE_BASELINE_MINIMUM_EDGE_VALUES.flatMap(minimumEdge =>
+        DOGE_BASELINE_MINIMUM_CONFIDENCE_VALUES.flatMap(minimumConfidence =>
+            DOGE_BASELINE_MINIMUM_ABSOLUTE_DEVIATION_BPS_VALUES.map(minimumAbsoluteDeviationBps =>
+                createDogeBaselineStrategyConfig(model, {
+                    tradingEnabled: baseline.tradingEnabled,
+                    entry: createDogeBaselineEntrySettings(
+                        [mode],
+                        { [mode]: { minimumEdge, minimumConfidence, minimumAbsoluteDeviationBps } },
+                    ),
+                    exit: naturalExit,
                 }),
-                exit: naturalExit,
-            })),
-        );
+            ),
+        ),
+    );
+}
+
+function createCombinedEntryConfig(
+    model: Readonly<DogeBaselineModel>,
+    baseline: Readonly<DogeBaselineStrategyConfig>,
+    early: Readonly<DogeBaselineConfigMatrixRow>,
+    late: Readonly<DogeBaselineConfigMatrixRow>,
+): DogeBaselineStrategyConfig {
+    const earlySettings = early.config.entry.modes['early-60'];
+    const lateSettings = late.config.entry.modes['late-120'];
+    return createDogeBaselineStrategyConfig(model, {
+        tradingEnabled: baseline.tradingEnabled,
+        entry: createDogeBaselineEntrySettings(
+            DOGE_BASELINE_MODES.map(mode => mode.name),
+            {
+                'early-60': {
+                    minimumEdge: earlySettings.minimumEdge,
+                    minimumConfidence: earlySettings.minimumConfidence,
+                    minimumAbsoluteDeviationBps: earlySettings.minimumAbsoluteDeviationBps,
+                },
+                'late-120': {
+                    minimumEdge: lateSettings.minimumEdge,
+                    minimumConfidence: lateSettings.minimumConfidence,
+                    minimumAbsoluteDeviationBps: lateSettings.minimumAbsoluteDeviationBps,
+                },
+            },
+        ),
+        exit: { ...baseline.exit, enabled: false },
     });
+}
+
+function getLocalValues(value: number, delta: number, minimum: number, maximum: number): number[] {
+    return [...new Set([
+        Math.max(minimum, value - delta),
+        value,
+        Math.min(maximum, value + delta),
+    ])];
+}
+
+function createLocalEntryConfigs(
+    model: Readonly<DogeBaselineModel>,
+    baseline: Readonly<DogeBaselineStrategyConfig>,
+    winner: Readonly<DogeBaselineConfigMatrixRow>,
+    mode: DogeBaselineModeName,
+): DogeBaselineStrategyConfig[] {
+    const settings = winner.config.entry.modes[mode];
+    return getLocalValues(settings.minimumEdge, DOGE_BASELINE_LOCAL_EDGE_DELTA, 0.02, 0.10).flatMap(minimumEdge =>
+        getLocalValues(settings.minimumConfidence, DOGE_BASELINE_LOCAL_CONFIDENCE_DELTA, 0.5, 0.65)
+            .map(minimumConfidence => createDogeBaselineStrategyConfig(model, {
+                tradingEnabled: baseline.tradingEnabled,
+                entry: createDogeBaselineEntrySettings([mode], {
+                    [mode]: {
+                        minimumEdge,
+                        minimumConfidence,
+                        minimumAbsoluteDeviationBps: settings.minimumAbsoluteDeviationBps,
+                    },
+                }),
+                exit: { ...baseline.exit, enabled: false },
+            })),
+    );
+}
+
+function isEligibleForTuning(
+    row: Readonly<DogeBaselineConfigMatrixRow>,
+    baseline: Readonly<DogeBaselineConfigMatrixRow>,
+    frameCount: number,
+): boolean {
+    return isEligible(row, baseline) && row.metrics.trade_count >= getDogeBaselineMinimumReplayTradeCount(frameCount);
+}
+
+function getTuningFinalists(
+    rows: readonly DogeBaselineConfigMatrixRow[],
+    baseline: Readonly<DogeBaselineConfigMatrixRow>,
+    frameCount: number,
+): DogeBaselineConfigMatrixRow[] {
+    return rows.filter(row => isEligibleForTuning(row, baseline, frameCount))
+        .sort(compareRows)
+        .slice(0, DOGE_BASELINE_CONFIG_FINALIST_COUNT);
+}
+
+function createEntryRows(
+    frames: readonly HistoryFrameV3[],
+    model: Readonly<DogeBaselineModel>,
+    executionConfig: ReplayExecutionConfig,
+    baseline: Readonly<DogeBaselineStrategyConfig>,
+    baselineRow: Readonly<DogeBaselineConfigMatrixRow>,
+): DogeBaselineConfigMatrixRow[] {
+    const frameCount = frames.length;
+    const coarseEarlyRows = createModeEntryConfigs(model, baseline, 'early-60')
+        .map(config => replayConfigRow(frames, model, executionConfig, config));
+    const coarseLateRows = createModeEntryConfigs(model, baseline, 'late-120')
+        .map(config => replayConfigRow(frames, model, executionConfig, config));
+    const coarseEarlyWinner = getTuningFinalists(coarseEarlyRows, baselineRow, frameCount)[0];
+    const coarseLateWinner = getTuningFinalists(coarseLateRows, baselineRow, frameCount)[0];
+    const localEarlyRows = coarseEarlyWinner === undefined ? [] : createLocalEntryConfigs(
+        model, baseline, coarseEarlyWinner, 'early-60',
+    ).map(config => replayConfigRow(frames, model, executionConfig, config));
+    const localLateRows = coarseLateWinner === undefined ? [] : createLocalEntryConfigs(
+        model, baseline, coarseLateWinner, 'late-120',
+    ).map(config => replayConfigRow(frames, model, executionConfig, config));
+    const earlyRows = [...coarseEarlyRows, ...localEarlyRows];
+    const lateRows = [...coarseLateRows, ...localLateRows];
+    const earlyFinalists = getTuningFinalists(earlyRows, baselineRow, frameCount);
+    const lateFinalists = getTuningFinalists(lateRows, baselineRow, frameCount);
+    const combinedRows = earlyFinalists.flatMap(early => lateFinalists.map(late =>
+        replayConfigRow(frames, model, executionConfig, createCombinedEntryConfig(model, baseline, early, late)),
+    ));
+    return [...earlyRows, ...lateRows, ...combinedRows];
 }
 
 function createExitConfigs(
@@ -106,6 +220,7 @@ function createExitConfigs(
 ): DogeBaselineStrategyConfig[] {
     return DOGE_BASELINE_EMERGENCY_EXIT_WINDOWS_MS.flatMap(windowMs =>
         DOGE_BASELINE_EMERGENCY_EXIT_DEVIATION_FACTORS.map(deviationFactor => createDogeBaselineStrategyConfig(model, {
+            tradingEnabled: finalist.config.tradingEnabled,
             entry: finalist.config.entry,
             exit: {
                 enabled: true,
@@ -130,16 +245,16 @@ export function researchDogeBaselineConfigMatrix(
 ): DogeBaselineConfigMatrix {
     if (frames.length === 0) throw new Error('doge_baseline_empty_config_research_set');
     const baseline = replayConfigRow(frames, model, executionConfig, createDogeBaselineStrategyConfig(model, {
+        tradingEnabled: baselineConfig.tradingEnabled,
         entry: baselineConfig.entry,
         exit: baselineConfig.exit,
     }));
-    const entryRows = createEntryConfigs(model, baselineConfig)
-        .map(config => replayConfigRow(frames, model, executionConfig, config));
-    const finalists = entryRows.filter(row => isEligible(row, baseline)).sort(compareRows)
-        .slice(0, DOGE_BASELINE_CONFIG_FINALIST_COUNT);
+    const entryRows = createEntryRows(frames, model, executionConfig, baselineConfig, baseline);
+    const finalists = getTuningFinalists(entryRows, baseline, frames.length);
     const exitRows = finalists.flatMap(finalist => createExitConfigs(model, finalist)
         .map(config => replayConfigRow(frames, model, executionConfig, config)));
     const rows = [...entryRows, ...exitRows];
-    const selected = [...rows.filter(row => isEligible(row, baseline)), baseline].sort(compareRows)[0]!;
+    const selected = [...rows.filter(row => isEligibleForTuning(row, baseline, frames.length)), baseline]
+        .sort(compareRows)[0]!;
     return { baseline, entryRows, finalists, rows, selected };
 }

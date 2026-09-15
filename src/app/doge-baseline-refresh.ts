@@ -14,6 +14,7 @@ import {
     createDogeBaselineStrategyConfig,
     readDogeBaselineStrategyConfigOrDefault,
     rebindDogeBaselineStrategyConfig,
+    type DogeBaselineStrategyConfig,
     writeDogeBaselineArtifacts,
     writeDogeBaselineStrategyConfig,
 } from './core/events/strategy/doge-baseline/artifacts.js';
@@ -45,6 +46,28 @@ export function formatDogeBaselineRefreshSelection(
         return `Working model and config retained: selected=${selected.id} ${details}`;
     }
     return `Published ${selected.id}: ${details}`;
+}
+
+export function getDogeBaselineTradingEnabled(
+    currentTradingEnabled: boolean,
+    evaluation: Pick<DogeBaselineConfigurationEvaluation, 'combinations' | 'promoted'>,
+): boolean {
+    if (evaluation.combinations.length > 0 && evaluation.combinations.every(value => value.replayMetrics.net_pnl <= 0)) {
+        return false;
+    }
+    return evaluation.promoted ? true : currentTradingEnabled;
+}
+
+function withDogeBaselineTradingEnabled(
+    model: Readonly<DogeBaselineModel>,
+    config: Readonly<DogeBaselineStrategyConfig>,
+    tradingEnabled: boolean,
+): DogeBaselineStrategyConfig {
+    return createDogeBaselineStrategyConfig(model, {
+        tradingEnabled,
+        entry: config.entry,
+        exit: config.exit,
+    });
 }
 
 async function refreshModel(
@@ -99,12 +122,26 @@ async function refreshModel(
     );
     await writeDogeBaselineEvaluation(evaluation);
     const selectionMessage = formatDogeBaselineRefreshSelection(evaluation);
-    if (!evaluation.promoted) return selectionMessage;
+    const tradingEnabled = getDogeBaselineTradingEnabled(workingConfig.tradingEnabled, evaluation);
+    if (!evaluation.promoted) {
+        if (tradingEnabled === workingConfig.tradingEnabled) return selectionMessage;
+        await writeDogeBaselineStrategyConfig(
+            withDogeBaselineTradingEnabled(workingModel, workingConfig, tradingEnabled),
+            workingModel,
+        );
+        return `${selectionMessage}, trading paused: all combinations have non-positive net PnL`;
+    }
 
     if (evaluation.selected.model === 'working') {
-        await writeDogeBaselineStrategyConfig(evaluation.selected.strategyConfig, workingModel);
+        await writeDogeBaselineStrategyConfig(
+            withDogeBaselineTradingEnabled(workingModel, evaluation.selected.strategyConfig, tradingEnabled),
+            workingModel,
+        );
     } else {
-        await writeDogeBaselineArtifacts(candidate, evaluation.selected.strategyConfig);
+        await writeDogeBaselineArtifacts(
+            candidate,
+            withDogeBaselineTradingEnabled(candidate, evaluation.selected.strategyConfig, tradingEnabled),
+        );
     }
     return selectionMessage;
 }

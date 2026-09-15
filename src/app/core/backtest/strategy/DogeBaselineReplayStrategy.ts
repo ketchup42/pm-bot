@@ -6,11 +6,13 @@ import {
     DOGE_BASELINE_STRATEGY,
     createDogeBaselineEntrySettings,
     type DogeBaselineEntrySettings,
+    type DogeBaselineEntryModeSettings,
     type DogeBaselineModeName,
 } from '../../events/strategy/doge-baseline/DogeBaselineConfig.js';
 import {
     DogeBaselineModel,
     DogeBaselinePricePoint,
+    getDogeBaselineFrameStartDeviationBps,
     makeDogeBaselineFeaturesFromPrices,
     predictDogeBaseline,
 } from '../../events/strategy/doge-baseline/DogeBaselineModel.js';
@@ -20,8 +22,9 @@ import {
     type DogeBaselineEmergencyExitConfig,
     evaluateDogeBaselineEmergencyExit,
     getDogeBaselineEmergencyExitConfig,
-    selectDogeBaselineExecutableEntry,
+    selectDogeBaselineExecutableEntryWithReason,
     selectDogeBaselineEntry,
+    type DogeBaselineEntryRejectionReason,
 } from '../../events/strategy/doge-baseline/DogeBaselineDecision.js';
 import {
     ReplayDecision,
@@ -33,6 +36,7 @@ import {
     runReplay,
 } from '../replay.js';
 import { HistoryFrameV3 } from '../../history/history_frame.js';
+import type { DogeBaselineRuntimeConfig } from '../../events/strategy/doge-baseline/artifacts.js';
 
 interface DogeBaselineReplayState {
     prices: DogeBaselinePricePoint[];
@@ -44,10 +48,7 @@ interface DogeBaselineReplayState {
     nextEmergencyExitAttemptTimestamp: number | undefined;
 }
 
-export interface DogeBaselineReplayStrategyConfig {
-    entry?: Readonly<DogeBaselineEntrySettings>;
-    emergencyExitEnabled?: boolean;
-    emergencyExitConfig?: Readonly<DogeBaselineEmergencyExitConfig>;
+export interface DogeBaselineReplayStrategyConfig extends Partial<DogeBaselineRuntimeConfig> {
     minimumOrderValue?: number;
     tradeValue?: number;
     executableEntry?: boolean;
@@ -56,7 +57,16 @@ export interface DogeBaselineReplayStrategyConfig {
 export interface DogeBaselineReplayResults {
     combined: ReplayResult;
     modes: Record<DogeBaselineModeName, ReplayResult>;
+    entryDecisions: DogeBaselineEntryDecisionMetricsByMode;
 }
+
+export interface DogeBaselineEntryDecisionMetrics {
+    evaluated: number;
+    accepted: number;
+    rejectedByReason: Partial<Record<DogeBaselineEntryRejectionReason, number>>;
+}
+
+export type DogeBaselineEntryDecisionMetricsByMode = Record<DogeBaselineModeName, DogeBaselineEntryDecisionMetrics>;
 
 export function runDogeBaselineReplay(
     frames: readonly HistoryFrameV3[],
@@ -65,20 +75,25 @@ export function runDogeBaselineReplay(
     strategyConfig: Readonly<DogeBaselineReplayStrategyConfig> = {},
 ): DogeBaselineReplayResults {
     const entry = strategyConfig.entry ?? createDogeBaselineEntrySettings();
-    const minimumEdges = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
+    const strategies = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
         mode.name,
-        entry.modes[mode.name].minimumEdge,
-    ])) as Record<DogeBaselineModeName, number>;
+        new DogeBaselineReplayStrategy(model, {
+            ...strategyConfig,
+            entry: createDogeBaselineSingleModeEntrySettings(entry, mode.name),
+        }),
+    ])) as Record<DogeBaselineModeName, DogeBaselineReplayStrategy>;
     const modes = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
         mode.name,
-        runReplay(frames, new DogeBaselineReplayStrategy(model, {
-            ...strategyConfig,
-            entry: createDogeBaselineEntrySettings([mode.name], minimumEdges),
-        }), config),
+        runReplay(frames, strategies[mode.name], config),
     ])) as Record<DogeBaselineModeName, ReplayResult>;
+    const combinedStrategy = new DogeBaselineReplayStrategy(model, strategyConfig);
     return {
-        combined: runReplay(frames, new DogeBaselineReplayStrategy(model, strategyConfig), config),
+        combined: runReplay(frames, combinedStrategy, config),
         modes,
+        entryDecisions: Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
+            mode.name,
+            strategies[mode.name].getEntryDecisionMetrics()[mode.name],
+        ])) as DogeBaselineEntryDecisionMetricsByMode,
     };
 }
 
@@ -91,6 +106,13 @@ export class DogeBaselineReplayStrategy implements ReplayStrategy {
     private readonly minimumOrderValue: number | undefined;
     private readonly tradeValue: number;
     private readonly executableEntry: boolean;
+    private readonly entryDecisionMetrics: DogeBaselineEntryDecisionMetricsByMode = Object.fromEntries(
+        DOGE_BASELINE_MODES.map(mode => [mode.name, {
+            evaluated: 0,
+            accepted: 0,
+            rejectedByReason: {},
+        }]),
+    ) as DogeBaselineEntryDecisionMetricsByMode;
 
     public constructor(
         private readonly model: Readonly<DogeBaselineModel>,
@@ -132,7 +154,8 @@ export class DogeBaselineReplayStrategy implements ReplayStrategy {
             );
             if (!features) continue;
             const upProbability = predictDogeBaseline(this.model.modes[mode.name], features);
-            const decision = this.entry(context, mode.name, upProbability, modeConfig.minimumEdge);
+            const deviationBps = getDogeBaselineFrameStartDeviationBps(features);
+            const decision = this.entry(context, mode.name, upProbability, deviationBps, modeConfig);
             if (decision) {
                 return decision;
             }
@@ -149,11 +172,22 @@ export class DogeBaselineReplayStrategy implements ReplayStrategy {
         } else if (fill.status === 'filled') state.exited = true;
     }
 
+    public getEntryDecisionMetrics(): DogeBaselineEntryDecisionMetricsByMode {
+        return Object.fromEntries(DOGE_BASELINE_MODES.map(mode => {
+            const metrics = this.entryDecisionMetrics[mode.name];
+            return [mode.name, {
+                ...metrics,
+                rejectedByReason: { ...metrics.rejectedByReason },
+            }];
+        })) as DogeBaselineEntryDecisionMetricsByMode;
+    }
+
     private entry(
         context: Readonly<ReplayStrategyContext>,
         mode: DogeBaselineModeName,
         upProbability: number,
-        minimumEdge: number,
+        deviationBps: number,
+        modeConfig: Readonly<DogeBaselineEntryModeSettings>,
     ): ReplayDecision | undefined {
         const prices = {
             upAsk: safeToNum(context.snapshot.up.asks[0]?.price, Number.NaN),
@@ -162,13 +196,21 @@ export class DogeBaselineReplayStrategy implements ReplayStrategy {
             takerBaseFee: context.frame.market_data.taker_base_fee,
         };
         if (this.executableEntry) {
-            const candidate = selectDogeBaselineExecutableEntry(upProbability, prices, {
+            const metrics = this.entryDecisionMetrics[mode];
+            metrics.evaluated++;
+            const selection = selectDogeBaselineExecutableEntryWithReason(upProbability, deviationBps, prices, {
                 upAsks: context.snapshot.up.asks,
                 downAsks: context.snapshot.down.asks,
                 tickSize: context.frame.market_data.tick_size,
                 minimumOrderValue: this.minimumOrderValue ?? 0,
-            }, minimumEdge, this.tradeValue);
-            if (!candidate) return undefined;
+            }, modeConfig, this.tradeValue, context.cash);
+            if (selection.candidate === undefined) {
+                const rejected = metrics.rejectedByReason;
+                rejected[selection.reason] = (rejected[selection.reason] ?? 0) + 1;
+                return undefined;
+            }
+            metrics.accepted++;
+            const { candidate } = selection;
             return {
                 action: 'buy',
                 reason_code: `${mode}_entry`,
@@ -178,7 +220,7 @@ export class DogeBaselineReplayStrategy implements ReplayStrategy {
                 },
             };
         }
-        const candidate = selectDogeBaselineEntry(upProbability, prices, minimumEdge);
+        const candidate = selectDogeBaselineEntry(upProbability, deviationBps, prices, modeConfig);
         if (!candidate) return undefined;
         const limitPrice = calculateDogeBaselineEntryLimit(candidate.ask, context.frame.market_data.tick_size);
         const quantity = this.tradeValue / limitPrice;
@@ -237,4 +279,16 @@ export class DogeBaselineReplayStrategy implements ReplayStrategy {
     private hold(reasonCode: string): ReplayDecision {
         return { action: 'hold', reason_code: reasonCode, order: undefined };
     }
+}
+
+function createDogeBaselineSingleModeEntrySettings(
+    entry: Readonly<DogeBaselineEntrySettings>,
+    enabledMode: DogeBaselineModeName,
+): DogeBaselineEntrySettings {
+    return {
+        modes: Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [mode.name, {
+            ...entry.modes[mode.name],
+            enabled: mode.name === enabledMode,
+        }])) as Record<DogeBaselineModeName, DogeBaselineEntryModeSettings>,
+    };
 }

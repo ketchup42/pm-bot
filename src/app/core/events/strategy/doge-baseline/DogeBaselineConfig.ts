@@ -29,6 +29,10 @@ export const DOGE_BASELINE_DEFAULT_BALANCE = 100;
 export const DOGE_BASELINE_DEFAULT_TRADE_VALUE = 10;
 /** Minimum expected net advantage over the selected token price, in USDC. */
 export const DOGE_BASELINE_DEFAULT_MINIMUM_EDGE = 0.04;
+/** Minimum probability assigned to the predicted token side. */
+export const DOGE_BASELINE_DEFAULT_MINIMUM_CONFIDENCE = 0.5;
+/** Minimum absolute DOGE movement from frame start, in basis points. */
+export const DOGE_BASELINE_DEFAULT_MINIMUM_ABSOLUTE_DEVIATION_BPS = 0;
 
 /** L2 penalty that limits the size of logistic-regression weights during training. */
 export const DOGE_BASELINE_L2 = 1;
@@ -45,6 +49,23 @@ export const DOGE_BASELINE_CANDIDATE_MINIMUM_ACCURACY = 0.55;
 /** Strict upper bound for the Brier probability error of each entry mode. */
 export const DOGE_BASELINE_CANDIDATE_MAXIMUM_BRIER_SCORE = 0.25;
 
+/** Smallest chronological replay-validation segment, except for a shorter whole replay. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_FRAME_COUNT = 25;
+/** Largest chronological replay-validation segment. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_FRAME_COUNT = 50;
+/** Smallest number of segments for a normal replay-validation window. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_COUNT = 4;
+/** Required profitable-segment share before the replay has four full 50-frame segments. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_INITIAL_MINIMUM_PROFITABLE_RATIO = 0.5;
+/** Required profitable-segment share once the replay has at least eight full 50-frame segments. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_MINIMUM_PROFITABLE_RATIO = 0.75;
+/** Number of full 50-frame segments at which the profitable-segment requirement reaches its maximum. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_RATIO_FULL_SEGMENT_COUNT = 8;
+/** Minimum trade activity required inside one replay-validation segment. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_COUNT = 2;
+/** Minimum share of a segment that must contain trades. */
+export const DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_RATIO = 0.1;
+
 /** Default number of completed frames used to compare working and candidate models. */
 export const DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT = 100;
 /** Snapshot interval in milliseconds used to bound configuration-research memory use. */
@@ -52,6 +73,14 @@ export const DOGE_BASELINE_CONFIG_RESEARCH_SNAPSHOT_INTERVAL_MS = 250;
 
 /** Candidate entry advantages, in USDC, evaluated during configuration research. */
 export const DOGE_BASELINE_MINIMUM_EDGE_VALUES = Object.freeze([0.02, 0.04, 0.06, 0.08, 0.10]);
+/** Candidate predicted-side probabilities evaluated during configuration research. */
+export const DOGE_BASELINE_MINIMUM_CONFIDENCE_VALUES = Object.freeze([0.5, 0.55, 0.6, 0.65]);
+/** Candidate absolute DOGE movements from frame start, in basis points. */
+export const DOGE_BASELINE_MINIMUM_ABSOLUTE_DEVIATION_BPS_VALUES = Object.freeze([0, 0.5, 1, 2]);
+/** Local edge adjustment around a coarse configuration winner, in USDC. */
+export const DOGE_BASELINE_LOCAL_EDGE_DELTA = 0.01;
+/** Local confidence adjustment around a coarse configuration winner. */
+export const DOGE_BASELINE_LOCAL_CONFIDENCE_DELTA = 0.03;
 /** Number of strongest entry configurations advanced to emergency-exit research. */
 export const DOGE_BASELINE_CONFIG_FINALIST_COUNT = 3;
 
@@ -90,23 +119,41 @@ export function isDogeBaselineModeName(value: string): value is DogeBaselineMode
     return DOGE_BASELINE_MODES.some(mode => mode.name === value);
 }
 
+/** Minimum number of filled orders required for a replay sample of the given size. */
+export function getDogeBaselineMinimumReplayTradeCount(frameCount: number): number {
+    return Math.min(frameCount, DOGE_BASELINE_CANDIDATE_MAXIMUM_TRADE_COUNT, Math.max(
+        DOGE_BASELINE_CANDIDATE_MINIMUM_TRADE_COUNT,
+        Math.ceil(frameCount * DOGE_BASELINE_CANDIDATE_MINIMUM_TRADE_RATIO),
+    ));
+}
+
 export interface DogeBaselineEntryModeSettings {
     enabled: boolean;
     minimumEdge: number;
+    minimumConfidence: number;
+    minimumAbsoluteDeviationBps: number;
 }
 
 export interface DogeBaselineEntrySettings {
     modes: Record<DogeBaselineModeName, DogeBaselineEntryModeSettings>;
 }
 
+export type DogeBaselineEntryModeOverrides = Partial<Pick<DogeBaselineEntryModeSettings,
+    'minimumEdge' | 'minimumConfidence' | 'minimumAbsoluteDeviationBps'>>;
+
+export type DogeBaselineEntrySettingsOverrides = Partial<Record<DogeBaselineModeName, DogeBaselineEntryModeOverrides>>;
+
 export function createDogeBaselineEntrySettings(
     enabledModes: readonly DogeBaselineModeName[] = DOGE_BASELINE_MODES.map(mode => mode.name),
-    minimumEdges: Partial<Record<DogeBaselineModeName, number>> = {},
+    overrides: Readonly<DogeBaselineEntrySettingsOverrides> = {},
 ): DogeBaselineEntrySettings {
     return {
         modes: Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [mode.name, {
             enabled: enabledModes.includes(mode.name),
-            minimumEdge: minimumEdges[mode.name] ?? DOGE_BASELINE_DEFAULT_MINIMUM_EDGE,
+            minimumEdge: DOGE_BASELINE_DEFAULT_MINIMUM_EDGE,
+            minimumConfidence: DOGE_BASELINE_DEFAULT_MINIMUM_CONFIDENCE,
+            minimumAbsoluteDeviationBps: DOGE_BASELINE_DEFAULT_MINIMUM_ABSOLUTE_DEVIATION_BPS,
+            ...overrides[mode.name],
         }])) as Record<DogeBaselineModeName, DogeBaselineEntryModeSettings>,
     };
 }
@@ -114,6 +161,15 @@ export function createDogeBaselineEntrySettings(
 export function getDogeBaselineEntrySummary(entry: Readonly<DogeBaselineEntrySettings>): string {
     return DOGE_BASELINE_MODES
         .filter(mode => entry.modes[mode.name].enabled)
-        .map(mode => `${mode.name}=${entry.modes[mode.name].minimumEdge.toFixed(2)}`)
+        .map(mode => {
+            const settings = entry.modes[mode.name];
+            return `${mode.name}=edge${settings.minimumEdge.toFixed(2)}` +
+                `/confidence${settings.minimumConfidence.toFixed(2)}` +
+                `/deviation${formatDogeBaselineDeviationBps(settings.minimumAbsoluteDeviationBps)}bps`;
+        })
         .join(',');
+}
+
+export function formatDogeBaselineDeviationBps(deviationBps: number): string {
+    return Number.isInteger(deviationBps) ? deviationBps.toFixed(0) : String(deviationBps);
 }

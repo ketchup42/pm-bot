@@ -9,7 +9,6 @@ import { VirtualTakerLiveOrderWallet } from '../../../../../market/orders/Virtua
 import { MarketSide } from '../../../../../market/side.js';
 import { DEFAULT_BUY_ORDER_MIN_VALUE } from '../../../../../rest/orders.js';
 import { error_str, safeFloat } from '../../../../../utils.js';
-import { ExecScheduler } from '../../../ExecScheduler.js';
 import { CoinFrameEventMarketData } from '../../../history/coin_frame.js';
 import { EventWatcher } from '../../EventWatcher.js';
 import { EventStrategy } from '../EventStrategy.js';
@@ -17,10 +16,12 @@ import {
     DOGE_BASELINE_DEFAULT_BALANCE,
     DOGE_BASELINE_DEFAULT_TRADE_VALUE,
     DOGE_BASELINE_MODES,
+    type DogeBaselineEntryModeSettings,
     type DogeBaselineModeName,
 } from './DogeBaselineConfig.js';
 import {
     DogeBaselineModel,
+    getDogeBaselineFrameStartDeviationBps,
     makeDogeBaselineFeaturesFromPrices,
     predictDogeBaseline,
 } from './DogeBaselineModel.js';
@@ -29,7 +30,7 @@ import {
     type DogeBaselineExecutableEntry,
     evaluateDogeBaselineEmergencyExit,
     getDogeBaselinePredictedSide,
-    selectDogeBaselineExecutableEntry,
+    selectDogeBaselineExecutableEntryWithReason,
 } from './DogeBaselineDecision.js';
 import {
     DogeBaselineStrategyConfig,
@@ -54,12 +55,12 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
     private nextEmergencyExitAttemptTimestamp: number | undefined;
     private entered = false;
     private emergencyExitTriggered = false;
+    private tradingPauseLogged = false;
     private readonly evaluatedModes = new Set<DogeBaselineModeName>();
 
     private constructor(
         private readonly eventId: string,
         private readonly isDebug: boolean,
-        private readonly scheduler: ExecScheduler,
         private readonly balance: number,
         private readonly tradeValue: number,
         private readonly model: Readonly<DogeBaselineModel> | undefined,
@@ -69,7 +70,6 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
     public static async create(
         eventId: string,
         isDebug: boolean,
-        scheduler: ExecScheduler,
         balance: number = DOGE_BASELINE_DEFAULT_BALANCE,
         tradeValue: number = DOGE_BASELINE_DEFAULT_TRADE_VALUE,
     ): Promise<CoinDogeBaselineStrategy> {
@@ -82,7 +82,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         } catch (error) {
             logger.error(`[DogeBaseline][${eventId}] Model or config unavailable; frame will be skipped: ${error_str(error)}`);
         }
-        return new CoinDogeBaselineStrategy(eventId, isDebug, scheduler, balance, tradeValue, model, strategyConfig);
+        return new CoinDogeBaselineStrategy(eventId, isDebug, balance, tradeValue, model, strategyConfig);
     }
 
     public async execute(
@@ -91,6 +91,13 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
     ): Promise<boolean> {
         if (!this.initialize(watchers)) return false;
         if (!this.model || !this.strategyConfig) return false;
+        if (!this.strategyConfig.tradingEnabled) {
+            if (!this.tradingPauseLogged) {
+                this.tradingPauseLogged = true;
+                this.log('Trading paused by config');
+            }
+            return false;
+        }
         if (this.sellOrder && !this.wallet?.isLive(this.sellOrder.id)) this.sellOrder = undefined;
 
         const history = this.event!.getWatcherHistoryUp()[0];
@@ -114,10 +121,13 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
                 mode.offsetMs,
                 mode.lookbacksMs,
             );
-            if (!features) continue;
+            if (!features) {
+                this.log(`${mode.name}: no entry reason=insufficient_price_history`);
+                continue;
+            }
             const probability = predictDogeBaseline(this.model.modes[mode.name], features);
-            const deviationBps = (Math.exp(features.at(-1)!) - 1) * 10_000;
-            const candidate = this.selectCandidate(mode.name, probability, deviationBps, modeConfig.minimumEdge);
+            const deviationBps = getDogeBaselineFrameStartDeviationBps(features);
+            const candidate = this.selectCandidate(mode.name, probability, deviationBps, modeConfig);
             if (candidate && await this.enter(client, candidate, mode.name, probability, deviationBps)) return true;
         }
         return false;
@@ -157,12 +167,12 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         mode: DogeBaselineModeName,
         upProbability: number,
         deviationBps: number,
-        minimumEdge: number,
+        modeConfig: Readonly<DogeBaselineEntryModeSettings>,
     ): DogeBaselineExecutableEntry | undefined {
         const market = this.market!;
         const marketData = market.getMarketData();
         const predictedSide = getDogeBaselinePredictedSide(upProbability);
-        const candidate = selectDogeBaselineExecutableEntry(upProbability, {
+        const selection = selectDogeBaselineExecutableEntryWithReason(upProbability, deviationBps, {
             upAsk: market.getBestAsk('up'),
             downAsk: market.getBestAsk('down'),
             feesEnabled: marketData.fees_enabled,
@@ -172,14 +182,14 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
             downAsks: market.getAsksDown(),
             tickSize: marketData.tick_size,
             minimumOrderValue: DEFAULT_BUY_ORDER_MIN_VALUE,
-        }, minimumEdge, this.tradeValue);
-        if (!candidate) {
+        }, modeConfig, this.tradeValue, this.balance);
+        if (!selection.candidate) {
             this.log(
                 `${mode}: no entry predicted=${predictedSide ?? 'neutral'} pUp=${upProbability.toFixed(5)} ` +
-                `deviationBps=${deviationBps.toFixed(3)} reason=predicted_side_unavailable_or_insufficient_edge`,
+                `deviationBps=${deviationBps.toFixed(3)} reason=${selection.reason}`,
             );
         }
-        return candidate;
+        return selection.candidate;
     }
 
     private async enter(
@@ -195,7 +205,10 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
             const price = safeFloat(candidate.limitPrice, ORDER_WALLET_FRACTION);
             const quantity = candidate.requestedQuantity;
             const state = await wallet.buy(price, quantity);
-            if (!state) return false;
+            if (!state) {
+                this.log(`${mode}: no entry reason=entry_execution_rejected`);
+                return false;
+            }
             this.wallet = wallet;
             this.walletSide = candidate.side;
             this.entryPrice = state.value.price;
@@ -248,10 +261,9 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
             this.emergencyExitTriggered = true;
             this.emergencyExitCoinPrice = snapshot.coin_price;
             this.emergencyExitFrameStartPrice = history.coin_frame_start_price;
-            this.scheduler.pause();
             this.log(
                 `Emergency exit triggered: side=${this.walletSide} ` +
-                `coin=${snapshot.coin_price} start=${history.coin_frame_start_price} scheduler=PAUSED`,
+                `coin=${snapshot.coin_price} start=${history.coin_frame_start_price}`,
             );
         }
 
@@ -283,7 +295,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         if (bid === undefined) {
             if (!this.emergencyExitNoLiquidityLogged) {
                 this.emergencyExitNoLiquidityLogged = true;
-                this.log(`Emergency exit has no bids; scheduler remains paused, retrying`);
+                this.log(`Emergency exit has no bids, retrying`);
             }
             return false;
         }
@@ -292,7 +304,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
         if (!state) {
             if (!this.emergencyExitSellFailureLogged) {
                 this.emergencyExitSellFailureLogged = true;
-                this.log(`Emergency exit sell failed; scheduler remains paused, retrying`);
+                this.log(`Emergency exit sell failed, retrying`);
             }
             return false;
         }
@@ -306,7 +318,7 @@ export class CoinDogeBaselineStrategy implements EventStrategy<CoinFrameEventMar
             `Emergency exit ${this.walletSide}: ${execution} remaining=${remaining} ` +
             `bestBid=${bid} entry=${this.entryPrice}; ` +
             `coin=${this.emergencyExitCoinPrice} start=${this.emergencyExitFrameStartPrice} ` +
-            `reason=adverse_coin_direction_exit scheduler=PAUSED`,
+            `reason=adverse_coin_direction_exit`,
         );
         return true;
     }

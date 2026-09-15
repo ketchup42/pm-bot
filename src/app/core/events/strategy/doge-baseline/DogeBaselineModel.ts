@@ -93,6 +93,11 @@ export function makeDogeBaselineFeaturesFromPrices(
     );
 }
 
+/** Converts the final frame-start log-return feature to basis points. */
+export function getDogeBaselineFrameStartDeviationBps(features: readonly number[]): number {
+    return (Math.exp(features.at(-1)!) - 1) * 10_000;
+}
+
 function calculateDogeBaselineFeatures(
     decisionTimestamp: number,
     lookbacksMs: readonly number[],

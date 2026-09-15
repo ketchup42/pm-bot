@@ -11,6 +11,7 @@ import {
     writeReplayReport,
 } from '../dist/app/core/backtest/replay.js';
 import { TrendLineReplayStrategy } from '../dist/app/core/backtest/strategy/TrendLineReplayStrategy.js';
+import { runDogeBaselineReplay } from '../dist/app/core/backtest/strategy/DogeBaselineReplayStrategy.js';
 import { REPLAY_STRATEGY_PRESETS } from '../dist/app/core/backtest/replay_presets.js';
 import { runReplayMatrix, writeReplayMatrixReport } from '../dist/app/core/backtest/replay_matrix.js';
 import { HISTORY_SCHEMA_VERSION, buildHistoryGaps, buildHistoryQuality } from '../dist/app/core/history/history_frame.js';
@@ -25,6 +26,7 @@ import { createDogeBaselineSettlementReport } from '../dist/app/core/events/stra
 import { csvValue } from '../dist/utils.js';
 import {
     makeDogeBaselineFeaturesFromPrices,
+    getDogeBaselineFrameStartDeviationBps,
     predictDogeBaseline,
     trainDogeBaselineWeights,
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineModel.js';
@@ -33,8 +35,10 @@ import {
     collectDogeBaselineTrainReplaySplit,
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineResearch.js';
 import {
-    getDogeBaselineCandidateRejectionReasons,
-    getDogeBaselineMinimumCandidateTradeCount,
+    getDogeBaselineSelectionRejectionReasons,
+    getDogeBaselineMinimumProfitableSegmentCount,
+    getDogeBaselineMinimumSegmentTradeCount,
+    splitDogeBaselineReplayFrames,
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
 import {
     createDogeBaselineStrategyConfig,
@@ -51,8 +55,14 @@ import {
     evaluateDogeBaselineEmergencyExit,
     getDogeBaselinePredictedSide,
     selectDogeBaselineExecutableEntry,
+    selectDogeBaselineExecutableEntryWithReason,
     selectDogeBaselineEntry,
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineDecision.js';
+import {
+    createDogeBaselineEntrySettings,
+    formatDogeBaselineDeviationBps,
+    getDogeBaselineMinimumReplayTradeCount,
+} from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import {
     REPLAY_STRATEGY_TREND_LINE_V2,
 } from '../dist/app/defaults.js';
@@ -109,6 +119,38 @@ function makeFrame() {
 
 const config = { initial_balance: 100, latency_snapshots: 0, minimum_order_value: 1 };
 
+test('DOGE replay mode reports use decisions from their own single-mode runs', () => {
+    const frame = makeFrame();
+    frame.coin = 'doge';
+    frame.slug = 'doge-updown-5m-1000';
+    frame.coin_frame_start_price = 1;
+    frame.settlement.confirmed_outcome = 'up';
+    frame.snapshots = Array.from({ length: 121 }, (_, seconds) => {
+        const timestamp = frame.start_time * 1_000 + seconds * 1_000;
+        const price = 1 + seconds / 10_000;
+        return {
+            ...frame.snapshots[0],
+            timestamp,
+            coin_price: price,
+            coin_timestamp: timestamp,
+            indicator_prices: Object.fromEntries(getSupportedCoins().map(coin => [coin, { price, timestamp }])),
+        };
+    });
+    const weights = { means: [0, 0, 0], scales: [1, 1, 1], weights: [10, 0, 0, 0] };
+    const model = {
+        version: 1, strategy: 'doge-baseline', coin: 'doge', frame: '5m', source: PS_CHAINLINK_TWAP_60,
+        trainedAt: 1, requestedFrames: 1, actualFrames: 1, firstFrameStart: 1_000, lastFrameStart: 1_000,
+        modes: { 'early-60': weights, 'late-120': weights },
+    };
+
+    const replay = runDogeBaselineReplay([frame], model, config, { emergencyExitEnabled: false });
+
+    assert.equal(replay.modes['early-60'].metrics.trade_count, 1);
+    assert.equal(replay.modes['late-120'].metrics.trade_count, 1);
+    assert.equal(replay.entryDecisions['early-60'].accepted, 1);
+    assert.equal(replay.entryDecisions['late-120'].accepted, 1);
+});
+
 test('DOGE baseline features use only prices available at the decision timestamp', () => {
     const start = 1_000_000;
     const prices = [15, 30, 45, 60, 75].map(seconds => ({
@@ -119,6 +161,10 @@ test('DOGE baseline features use only prices available at the decision timestamp
         makeDogeBaselineFeaturesFromPrices(100, start, prices, 60_000, [15_000, 30_000, 60_000]),
         [Math.log(160 / 145), Math.log(160 / 130), Math.log(160 / 100)],
     );
+});
+
+test('DOGE frame-start deviation uses the final log-return feature', () => {
+    assert.ok(Math.abs(getDogeBaselineFrameStartDeviationBps([0, Math.log(1.0001)]) - 1) < 1e-12);
 });
 
 test('DOGE baseline probability applies saved normalization and logistic weights', () => {
@@ -160,6 +206,7 @@ test('DOGE training metrics compare predictions and signed price continuation wi
     assert.equal(metrics.confusion.predictedUpActualUp, 1);
     assert.equal(metrics.confusion.predictedDownActualDown, 1);
     assert.equal(metrics.outcomesByDeviation.reduce((sum, value) => sum + value.frames, 0), 2);
+    assert.equal(metrics.calibrationByConfidence.reduce((sum, value) => sum + value.frames, 0), 2);
 });
 
 test('DOGE candidate replay window follows the training window chronologically', async () => {
@@ -197,6 +244,7 @@ test('DOGE candidate publication requires profitable replay and direction qualit
             'early-60': { accuracy: 0.55, brierScore: 0.24 },
             'late-120': { accuracy: 0.55, brierScore: 0.24 },
         },
+        replaySegments: Array.from({ length: 4 }, () => ({ profitable: true })),
     };
     const candidate = {
         replayMetrics: { trade_count: 10, net_pnl: 0.01, profit_factor: 1.01 },
@@ -204,9 +252,10 @@ test('DOGE candidate publication requires profitable replay and direction qualit
             'early-60': { accuracy: 0.55, brierScore: 0.24 },
             'late-120': { accuracy: 0.55, brierScore: 0.24 },
         },
+        replaySegments: Array.from({ length: 4 }, () => ({ profitable: true })),
     };
-    assert.deepEqual(getDogeBaselineCandidateRejectionReasons(100, working, candidate), []);
-    assert.deepEqual(getDogeBaselineCandidateRejectionReasons(100, working, {
+    assert.deepEqual(getDogeBaselineSelectionRejectionReasons(100, working, candidate), []);
+    assert.deepEqual(getDogeBaselineSelectionRejectionReasons(100, working, {
         ...candidate,
         replayMetrics: { ...candidate.replayMetrics, net_pnl: 0 },
     }), [
@@ -216,16 +265,62 @@ test('DOGE candidate publication requires profitable replay and direction qualit
 });
 
 test('DOGE candidate minimum trade count follows replay size within bounds', () => {
-    assert.equal(getDogeBaselineMinimumCandidateTradeCount(1), 5);
-    assert.equal(getDogeBaselineMinimumCandidateTradeCount(50), 5);
-    assert.equal(getDogeBaselineMinimumCandidateTradeCount(100), 10);
-    assert.equal(getDogeBaselineMinimumCandidateTradeCount(101), 11);
-    assert.equal(getDogeBaselineMinimumCandidateTradeCount(150), 15);
-    assert.equal(getDogeBaselineMinimumCandidateTradeCount(200), 20);
-    assert.equal(getDogeBaselineMinimumCandidateTradeCount(500), 20);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(1), 1);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(4), 4);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(5), 5);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(50), 5);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(100), 10);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(101), 11);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(150), 15);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(200), 20);
+    assert.equal(getDogeBaselineMinimumReplayTradeCount(500), 20);
 });
 
-test('DOGE configuration research keeps three natural-entry finalists for exit evaluation', () => {
+test('DOGE replay segmentation adapts between twenty-five and fifty frames', () => {
+    const frames = Array.from({ length: 500 }, (_, start_time) => ({ start_time }));
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 1)).map(segment => segment.length), [1]);
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 50)).map(segment => segment.length), [25, 25]);
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 75)).map(segment => segment.length), [25, 25, 25]);
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 99)).map(segment => segment.length), [33, 33, 33]);
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 100)).map(segment => segment.length), [25, 25, 25, 25]);
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 150)).map(segment => segment.length), [38, 38, 37, 37]);
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 200)).map(segment => segment.length), [50, 50, 50, 50]);
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames.slice(0, 400)).map(segment => segment.length), Array(8).fill(50));
+    assert.deepEqual(splitDogeBaselineReplayFrames(frames).map(segment => segment.length), Array(10).fill(50));
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(1), 1);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(50), 1);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(75), 2);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(100), 2);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(200), 2);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(250), 3);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(300), 4);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(350), 5);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(400), 6);
+    assert.equal(getDogeBaselineMinimumProfitableSegmentCount(500), 8);
+    assert.equal(getDogeBaselineMinimumSegmentTradeCount(25), 3);
+    assert.equal(getDogeBaselineMinimumSegmentTradeCount(33), 4);
+    assert.equal(getDogeBaselineMinimumSegmentTradeCount(50), 5);
+});
+
+test('DOGE candidate requires profitable chronological replay segments', () => {
+    const evaluationModel = replaySegments => ({
+        replayMetrics: { trade_count: 10, net_pnl: 1, profit_factor: 1.01 },
+        validationMetrics: {
+            'early-60': { accuracy: 0.55, brierScore: 0.24 },
+            'late-120': { accuracy: 0.55, brierScore: 0.24 },
+        },
+        replaySegments,
+    });
+    const profitable = Array.from({ length: 4 }, () => ({ profitable: true }));
+    assert.deepEqual(
+        getDogeBaselineSelectionRejectionReasons(100, evaluationModel(profitable), evaluationModel([
+            ...profitable.slice(0, 1), { profitable: false }, { profitable: false }, { profitable: false },
+        ])),
+        ['candidate_profitable_segment_count_below_minimum'],
+    );
+});
+
+test('DOGE configuration research excludes inactive entry settings from finalists', () => {
     const frame = makeFrame();
     frame.coin = 'doge';
     frame.slug = 'doge-updown-5m-1000';
@@ -237,14 +332,14 @@ test('DOGE configuration research keeps three natural-entry finalists for exit e
         modes: { 'early-60': weights, 'late-120': weights },
     };
     const matrix = researchDogeBaselineConfigMatrix([frame], model, config, createDogeBaselineStrategyConfig(model));
-    assert.equal(matrix.entryRows.length, 35);
-    assert.equal(matrix.finalists.length, 3);
-    assert.equal(matrix.rows.length, 71);
+    assert.equal(matrix.entryRows.length, 160);
+    assert.equal(matrix.finalists.length, 0);
+    assert.equal(matrix.rows.length, 160);
     assert.ok(matrix.entryRows.every(row => row.config.exit.enabled === false));
     assert.ok(matrix.rows.slice(matrix.entryRows.length).every(row => row.config.exit.enabled === true));
 });
 
-test('DOGE strategy config V2 requires an enabled entry mode', () => {
+test('DOGE strategy config V4 requires a trade flag and an enabled entry mode', () => {
     const weights = { means: [0, 0, 0], scales: [1, 1, 1], weights: [0, 0, 0, 0] };
     const model = {
         version: 1, strategy: 'doge-baseline', coin: 'doge', frame: '5m', source: PS_CHAINLINK_TWAP_60,
@@ -252,13 +347,23 @@ test('DOGE strategy config V2 requires an enabled entry mode', () => {
         modes: { 'early-60': weights, 'late-120': weights },
     };
     const strategyConfig = createDogeBaselineStrategyConfig(model);
-    assert.equal(strategyConfig.version, 2);
+    assert.equal(strategyConfig.version, 4);
+    assert.equal(strategyConfig.tradingEnabled, true);
     assert.equal(strategyConfig.entry.modes['early-60'].minimumEdge, 0.04);
     assert.equal(strategyConfig.entry.modes['late-120'].minimumEdge, 0.04);
+    assert.equal(strategyConfig.entry.modes['early-60'].minimumConfidence, 0.5);
+    assert.equal(strategyConfig.entry.modes['late-120'].minimumAbsoluteDeviationBps, 0);
     strategyConfig.entry.modes['early-60'].enabled = false;
     strategyConfig.entry.modes['late-120'].enabled = false;
     assert.throws(() => validateDogeBaselineStrategyConfig(strategyConfig, model),
         /invalid_doge_baseline_strategy_config_entry/);
+
+    const withoutTradeFlag = { ...createDogeBaselineStrategyConfig(model) };
+    delete withoutTradeFlag.tradingEnabled;
+    assert.throws(() => validateDogeBaselineStrategyConfig(withoutTradeFlag, model),
+        /invalid_doge_baseline_strategy_config_trading_enabled/);
+    assert.throws(() => validateDogeBaselineStrategyConfig({ ...createDogeBaselineStrategyConfig(model), version: 3 }, model),
+        /incompatible_doge_baseline_strategy_config/);
 });
 
 test('DOGE artifact reader restores a stale interrupted pair publication', async () => {
@@ -302,32 +407,33 @@ test('DOGE candidate may trail profitable working model by at most twenty percen
             'early-60': { accuracy: 0.55, brierScore: 0.24 },
             'late-120': { accuracy: 0.55, brierScore: 0.24 },
         },
+        replaySegments: Array.from({ length: 4 }, () => ({ profitable: true })),
     });
     assert.deepEqual(
-        getDogeBaselineCandidateRejectionReasons(100, evaluationModel(10), evaluationModel(7.99)),
+        getDogeBaselineSelectionRejectionReasons(100, evaluationModel(10), evaluationModel(7.99)),
         ['candidate_net_pnl_significantly_below_working'],
     );
     assert.deepEqual(
-        getDogeBaselineCandidateRejectionReasons(100, evaluationModel(10), evaluationModel(8)),
+        getDogeBaselineSelectionRejectionReasons(100, evaluationModel(10), evaluationModel(8)),
         [],
     );
     assert.deepEqual(
-        getDogeBaselineCandidateRejectionReasons(100, evaluationModel(-1), evaluationModel(0.01)),
+        getDogeBaselineSelectionRejectionReasons(100, evaluationModel(-1), evaluationModel(0.01)),
         [],
     );
 });
 
 test('DOGE baseline buys only the side predicted by the model', () => {
-    assert.equal(selectDogeBaselineEntry(0.51, {
+    assert.equal(selectDogeBaselineEntry(0.51, 1, {
         upAsk: 0.50, downAsk: 0.50, feesEnabled: false, takerBaseFee: 0,
     }), undefined);
-    assert.equal(selectDogeBaselineEntry(0.80, {
+    assert.equal(selectDogeBaselineEntry(0.80, 1, {
         upAsk: 0.50, downAsk: 0.05, feesEnabled: false, takerBaseFee: 0,
     })?.side, 'up');
-    assert.equal(selectDogeBaselineEntry(0.20, {
+    assert.equal(selectDogeBaselineEntry(0.20, -1, {
         upAsk: 0.05, downAsk: 0.50, feesEnabled: false, takerBaseFee: 0,
     })?.side, 'down');
-    assert.equal(selectDogeBaselineEntry(0.80, {
+    assert.equal(selectDogeBaselineEntry(0.80, 1, {
         upAsk: 0.90, downAsk: 0.05, feesEnabled: false, takerBaseFee: 0,
     }), undefined);
     assert.equal(getDogeBaselinePredictedSide(0.5), undefined);
@@ -362,13 +468,69 @@ test('DOGE baseline entry crosses one tick without producing an invalid unit pri
 
 test('DOGE executable entry rejects a top-of-book edge erased by depth and fees', () => {
     const prices = { upAsk: 0.51, downAsk: 0.51, feesEnabled: true, takerBaseFee: 700 };
-    assert.ok(selectDogeBaselineEntry(0.55, prices, 0.02));
-    assert.equal(selectDogeBaselineExecutableEntry(0.55, prices, {
+    const settings = createDogeBaselineEntrySettings(undefined, { 'early-60': { minimumEdge: 0.02 } }).modes['early-60'];
+    assert.ok(selectDogeBaselineEntry(0.55, 1, prices, settings));
+    assert.equal(selectDogeBaselineExecutableEntry(0.55, 1, prices, {
         upAsks: [{ price: '0.51', size: '5' }, { price: '0.52', size: '20' }],
         downAsks: [{ price: '0.51', size: '25' }],
         tickSize: 0.01,
         minimumOrderValue: 1,
-    }), undefined);
+    }, settings), undefined);
+});
+
+test('DOGE executable entry reports the exact rejection reason without changing replay selection', () => {
+    const book = {
+        upAsks: [{ price: '0.50', size: '50' }],
+        downAsks: [{ price: '0.50', size: '50' }],
+        tickSize: 0.01,
+        minimumOrderValue: 1,
+    };
+    const prices = { upAsk: 0.50, downAsk: 0.50, feesEnabled: false, takerBaseFee: 0 };
+
+    const strictEdge = createDogeBaselineEntrySettings(undefined, { 'early-60': { minimumEdge: 0.051 } }).modes['early-60'];
+    const minimumSize = createDogeBaselineEntrySettings(undefined, { 'early-60': { minimumEdge: 0.02 } }).modes['early-60'];
+    assert.equal(selectDogeBaselineExecutableEntryWithReason(0.5, 0, prices, book).reason, 'neutral_prediction');
+    assert.equal(selectDogeBaselineExecutableEntryWithReason(0.8, 1, { ...prices, upAsk: undefined }, book).reason, 'predicted_side_unavailable');
+    assert.equal(selectDogeBaselineExecutableEntryWithReason(0.8, 1, prices, { ...book, upAsks: [] }).reason, 'insufficient_book_liquidity');
+    assert.equal(selectDogeBaselineExecutableEntryWithReason(0.8, 1, prices, book, minimumSize, 0.5).reason, 'below_minimum_order_value');
+    assert.equal(selectDogeBaselineExecutableEntryWithReason(0.55, 1, prices, book, strictEdge).reason, 'insufficient_edge_after_execution_costs');
+
+    const pricedWithFees = { ...prices, feesEnabled: true, takerBaseFee: 700 };
+    assert.equal(
+        selectDogeBaselineExecutableEntryWithReason(0.8, 1, pricedWithFees, book, minimumSize, 10, 10).reason,
+        'insufficient_strategy_balance',
+    );
+
+    const selection = selectDogeBaselineExecutableEntryWithReason(0.8, 1, prices, book);
+    assert.ok(selection.candidate);
+    assert.deepEqual(selectDogeBaselineExecutableEntry(0.8, 1, prices, book), selection.candidate);
+});
+
+test('DOGE entry applies mode-specific confidence and absolute-deviation filters', () => {
+    const book = {
+        upAsks: [{ price: '0.50', size: '50' }],
+        downAsks: [{ price: '0.50', size: '50' }],
+        tickSize: 0.01,
+        minimumOrderValue: 1,
+    };
+    const prices = { upAsk: 0.50, downAsk: 0.50, feesEnabled: false, takerBaseFee: 0 };
+    const confidenceSettings = createDogeBaselineEntrySettings(undefined, {
+        'early-60': { minimumConfidence: 0.55 },
+    }).modes['early-60'];
+    const deviationSettings = createDogeBaselineEntrySettings(undefined, {
+        'early-60': { minimumAbsoluteDeviationBps: 0.5 },
+    }).modes['early-60'];
+
+    assert.equal(
+        selectDogeBaselineExecutableEntryWithReason(0.54, 2, prices, book, confidenceSettings).reason,
+        'below_minimum_confidence',
+    );
+    assert.equal(
+        selectDogeBaselineExecutableEntryWithReason(0.8, -0.49, prices, book, deviationSettings).reason,
+        'below_minimum_absolute_deviation',
+    );
+    assert.ok(selectDogeBaselineExecutableEntryWithReason(0.8, -0.5, prices, book, deviationSettings).candidate);
+    assert.equal(formatDogeBaselineDeviationBps(0.5), '0.5');
 });
 
 test('DOGE emergency exit retry waits for the configured retry interval', () => {

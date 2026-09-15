@@ -54,6 +54,13 @@ export interface DogeBaselineDeviationOutcome {
     upOutcomeRate: number | undefined;
 }
 
+export interface DogeBaselineConfidenceCalibration {
+    range: string;
+    frames: number;
+    averageConfidence: number | undefined;
+    accuracy: number | undefined;
+}
+
 export interface DogeBaselineTrainingMetrics {
     frames: number;
     accuracy: number;
@@ -65,6 +72,7 @@ export interface DogeBaselineTrainingMetrics {
     continuationAccuracy: number | undefined;
     confusion: DogeBaselineConfusionMatrix;
     outcomesByDeviation: DogeBaselineDeviationOutcome[];
+    calibrationByConfidence: DogeBaselineConfidenceCalibration[];
 }
 
 interface DogeBaselineDeviationRange {
@@ -83,6 +91,25 @@ const DOGE_BASELINE_DEVIATION_RANGES: readonly DogeBaselineDeviationRange[] = Ob
     { label: '2 .. 5', minimum: 2, maximum: 5 },
     { label: '5 .. 10', minimum: 5, maximum: 10 },
     { label: '>= 10', minimum: 10, maximum: Number.POSITIVE_INFINITY },
+]);
+
+interface DogeBaselineConfidenceRange {
+    label: string;
+    minimum: number;
+    maximum: number;
+}
+
+const DOGE_BASELINE_CONFIDENCE_RANGES: readonly DogeBaselineConfidenceRange[] = Object.freeze([
+    { label: '0.50 .. 0.55', minimum: 0.5, maximum: 0.55 },
+    { label: '0.55 .. 0.60', minimum: 0.55, maximum: 0.6 },
+    { label: '0.60 .. 0.65', minimum: 0.6, maximum: 0.65 },
+    { label: '0.65 .. 0.70', minimum: 0.65, maximum: 0.7 },
+    { label: '0.70 .. 0.75', minimum: 0.7, maximum: 0.75 },
+    { label: '0.75 .. 0.80', minimum: 0.75, maximum: 0.8 },
+    { label: '0.80 .. 0.85', minimum: 0.8, maximum: 0.85 },
+    { label: '0.85 .. 0.90', minimum: 0.85, maximum: 0.9 },
+    { label: '0.90 .. 0.95', minimum: 0.9, maximum: 0.95 },
+    { label: '0.95 .. 1.00', minimum: 0.95, maximum: 1 },
 ]);
 
 export function calculateDogeBaselineTrainingMetrics(
@@ -120,7 +147,12 @@ export function calculateDogeBaselineTrainingMetrics(
             continuationFrames++;
             if ((displacement > 0) === actualUp) continuationCorrect++;
         }
-        return { observation, deviationBps: (Math.exp(displacement) - 1) * 10_000 };
+        return {
+            observation,
+            deviationBps: (Math.exp(displacement) - 1) * 10_000,
+            confidence: Math.max(probability, 1 - probability),
+            correct: predictsUp === actualUp,
+        };
     });
     const outcomesByDeviation = DOGE_BASELINE_DEVIATION_RANGES.map((range, index) => {
         const values = probabilities.filter(value => value.deviationBps >= range.minimum &&
@@ -134,6 +166,22 @@ export function calculateDogeBaselineTrainingMetrics(
             upOutcomeRate: values.length > 0 ? upOutcomes / values.length : undefined,
         };
     });
+    const calibrationByConfidence = DOGE_BASELINE_CONFIDENCE_RANGES.map((range, index) => {
+        const values = probabilities.filter(value => value.confidence >= range.minimum &&
+            (index === DOGE_BASELINE_CONFIDENCE_RANGES.length - 1
+                ? value.confidence <= range.maximum
+                : value.confidence < range.maximum));
+        return {
+            range: range.label,
+            frames: values.length,
+            averageConfidence: values.length > 0
+                ? values.reduce((total, value) => total + value.confidence, 0) / values.length
+                : undefined,
+            accuracy: values.length > 0
+                ? values.filter(value => value.correct).length / values.length
+                : undefined,
+        };
+    });
     return {
         frames: observations.length,
         accuracy: correct / observations.length,
@@ -145,6 +193,7 @@ export function calculateDogeBaselineTrainingMetrics(
         continuationAccuracy: continuationFrames > 0 ? continuationCorrect / continuationFrames : undefined,
         confusion,
         outcomesByDeviation,
+        calibrationByConfidence,
     };
 }
 
