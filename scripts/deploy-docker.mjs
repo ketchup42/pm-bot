@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { closeSync, openSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,9 +27,18 @@ function run(command, args, options = {}) {
     execFileSync(command, args, { cwd: root, stdio: 'inherit', ...options });
 }
 
-function runDocker(args, useSudo) {
+function runDocker(args, useSudo, options = {}) {
     const [command, commandArgs] = useSudo ? ['sudo', ['docker', ...args]] : ['docker', args];
-    run(command, commandArgs);
+    run(command, commandArgs, options);
+}
+
+function saveDockerImage(imagePath, useSudo) {
+    const descriptor = openSync(imagePath, 'w', 0o644);
+    try {
+        runDocker(['image', 'save', imageName], useSudo, { stdio: ['ignore', descriptor, 'inherit'] });
+    } finally {
+        closeSync(descriptor);
+    }
 }
 
 async function copyMatchingFiles(sourceDirectory, destinationDirectory, matches) {
@@ -72,7 +82,7 @@ async function build(mode, useSudo) {
             fs.mkdir(path.join(runtimeDirectory, 'models'), { recursive: true }),
             fs.mkdir(path.join(runtimeDirectory, 'logs'), { recursive: true }),
         ]);
-        runDocker(['image', 'save', '--output', imagePath, imageName], useSudo);
+        saveDockerImage(imagePath, useSudo);
         await fs.copyFile(path.join(root, 'compose.yaml'), path.join(packageDirectory, 'compose.yaml'));
         await fs.copyFile(path.join(root, 'README.md'), path.join(packageDirectory, 'README.md'));
         await fs.writeFile(path.join(runtimeDirectory, 'README.md'), [
