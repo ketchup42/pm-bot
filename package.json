@@ -19,6 +19,7 @@
     "strategy:doge-baseline": "npm run build && node dist/app/pm-bot.js strategy:doge-baseline",
     "refresh:doge-baseline": "npm run build && node dist/app/pm-bot.js refresh:doge-baseline",
     "deploy": "node scripts/deploy.mjs",
+    "deploy:docker": "node scripts/deploy-docker.mjs",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",

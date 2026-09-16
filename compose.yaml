@@ -1,0 +1,75 @@
+name: pm-bot
+
+x-pm-bot: &pm-bot
+  image: pm-bot:linux-amd64
+  init: true
+  restart: unless-stopped
+  user: "${PUID:-1000}:${PGID:-1000}"
+  volumes:
+    - ./runtime/.env:/app/.env:ro
+    - ./runtime/history:/app/history
+    - ./runtime/models:/app/models
+    - ./runtime/logs:/app/logs
+  environment: &pm-bot-environment
+    LOG_LEVEL: info
+    LOG_FILE_LEVEL: info
+    LOG_FILE_MAX_SIZE: "5242880"
+    LOG_FILE_MAX_FILES: "100"
+    NO_COLOR: "true"
+  logging: &pm-bot-logging
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  collector-doge-baseline:
+    <<: *pm-bot
+    environment:
+      <<: *pm-bot-environment
+      LOG_FILE: /app/logs/collector-doge-baseline.log
+      HISTORY_SNAPSHOT_MS: "50"
+      HISTORY_BOOK_DEPTH: "10"
+      HISTORY_GZIP: "true"
+    command:
+      - collect
+      - --coin
+      - doge
+      - --frame
+      - 5m
+      - --source
+      - chainlink-twap-60
+      - --count
+      - "700"
+      - --cycle
+
+  strategy-doge-baseline:
+    <<: *pm-bot
+    environment:
+      <<: *pm-bot-environment
+      LOG_FILE: /app/logs/strategy-doge-baseline.log
+    command:
+      - strategy:doge-baseline
+      - --debug
+      - --balance
+      - "100"
+      - --trade-value
+      - "10"
+
+  refresh-doge-baseline:
+    <<: *pm-bot
+    environment:
+      <<: *pm-bot-environment
+      LOG_FILE: /app/logs/refresh-doge-baseline.log
+    command:
+      - refresh:doge-baseline
+      - --frame
+      - 5m
+      - --count
+      - "50"
+      - --train-count
+      - "500"
+      - --replay
+      - "100"
+      - --latency-ms
+      - "250"

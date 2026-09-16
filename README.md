@@ -85,8 +85,27 @@ chmod +x pm-bot-linux-x64
 ./pm-bot-linux-x64 help
 ```
 
-The executable embeds an 8 GB V8 old-space limit. Copy or create `.env` manually
+The executable embeds a 6 GiB V8 old-space limit. Copy or create `.env` manually
 beside it for live access; archives never include secrets.
+
+## Docker deployment
+
+Docker deployment targets Linux x86-64 independently of the server distribution.
+It runs the three DOGE contours as `collector-doge-baseline`,
+`strategy-doge-baseline`, and `refresh-doge-baseline` with shared runtime data
+and separate logs.
+
+```bash
+npm run deploy:docker -- --tiny
+npm run deploy:docker -- --full
+
+# Use this when Docker is available only through sudo.
+npm run deploy:docker -- --tiny --sudo
+npm run deploy:docker -- --full --sudo
+```
+
+See [Deployment](docs/deployment.md) for Docker requirements, server setup, and
+Compose commands.
 
 ## Documentation
 
@@ -96,4 +115,5 @@ beside it for live access; archives never include secrets.
 | [Architecture](docs/abstractions.md) | Watchers, history, replay, and domain registries. |
 | [Strategy guide](docs/strategies.md) | DOGE behavior and safe strategy changes. |
 | [Virtual wallets](docs/wallets.md) | Balances, orders, and shutdown behavior. |
+| [Deployment](docs/deployment.md) | Native and Docker deployment. |
 | [Live integration example](docs/example.md) | Minimal scheduler, watcher, and strategy wiring. |
