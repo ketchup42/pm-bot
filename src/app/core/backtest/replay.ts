@@ -4,6 +4,7 @@ import { EventFrame } from '../../../market/frame.js';
 import { getPriceSourceConfig, PriceSource } from '../../../market/price/price_source.js';
 import { EventMarketData } from '../../../market/orderbook/watcher/MarketOrderBooksWatcher.js';
 import { calculateTakerExecution, type TakerExecutionAction } from '../../../market/orders/TakerExecution.js';
+import { calculateBuyTakerFeeReserve } from '../../../rest/fees.js';
 import { csvValue, fileWrite } from '../../../utils.js';
 import { HistoryFrameV3, HistorySnapshotV3 } from '../history/history_frame.js';
 import { REPLAY_STRATEGY_NO_TRADE } from '../../defaults.js';
@@ -41,8 +42,11 @@ export interface ReplayStrategyContext {
     snapshot: HistorySnapshotV3;
     snapshot_index: number;
     progress: number;
+    /** Cash available after reserving submitted orders that have not executed yet. */
     cash: number;
+    /** Available Up tokens after reserving submitted sell orders. */
     up_quantity: number;
+    /** Available Down tokens after reserving submitted sell orders. */
     down_quantity: number;
 }
 
@@ -63,12 +67,14 @@ export interface ReplayStrategy {
     readonly name: string;
     decide(context: Readonly<ReplayStrategyContext>): ReplayDecision;
     decideAll?(context: Readonly<ReplayStrategyContext>): readonly ReplayDecision[];
+    onOrderQueued?(order: Readonly<ReplayOrderSubmission>): void;
     onFill?(fill: Readonly<ReplayFill>): void;
 }
 
 export interface ReplayExecutionConfig {
     initial_balance: number;
-    latency_snapshots: 0 | 1;
+    /** Artificial delay between a strategy decision and its execution, in milliseconds. */
+    latency_ms: number;
     minimum_order_value: number;
 }
 
@@ -86,6 +92,22 @@ export interface ReplayFill {
     fee: number;
     spread_cost: number;
     slippage_cost: number;
+}
+
+/** An accepted decision that is waiting for its delayed execution snapshot. */
+export interface ReplayOrderSubmission {
+    timestamp: number;
+    execution_timestamp: number;
+    frame_start: number;
+    action: ReplayOrderAction;
+    side: MarketSide;
+}
+
+interface PendingReplayOrder {
+    decision: ReplayOrderDecision<ReplayOrderAction>;
+    executionIndex: number;
+    cashReserve: number;
+    tokenReserve: number;
 }
 
 export interface ReplayMetrics {
@@ -212,6 +234,35 @@ export function simulateTakerFill(
     };
 }
 
+function findReplayExecutionIndex(
+    snapshots: readonly HistorySnapshotV3[],
+    decisionIndex: number,
+    executionTimestamp: number,
+): number | undefined {
+    for (let index = decisionIndex; index < snapshots.length; index++) {
+        if (snapshots[index]!.timestamp >= executionTimestamp) return index;
+    }
+    return undefined;
+}
+
+function getReplayOrderReservation(
+    frame: Readonly<HistoryFrameV3>,
+    order: Readonly<ReplayOrder>,
+): Pick<PendingReplayOrder, 'cashReserve' | 'tokenReserve'> {
+    if (!Number.isFinite(order.quantity) || order.quantity <= 0) {
+        return { cashReserve: 0, tokenReserve: 0 };
+    }
+    if (order.action === 'sell') return { cashReserve: 0, tokenReserve: order.quantity };
+    if (!Number.isFinite(order.limit_price) || order.limit_price <= 0) return { cashReserve: 0, tokenReserve: 0 };
+    const feeReserve = calculateBuyTakerFeeReserve(
+        frame.market_data.fees_enabled,
+        frame.market_data.taker_base_fee,
+        order.limit_price,
+        order.quantity,
+    );
+    return { cashReserve: order.quantity * order.limit_price + feeReserve, tokenReserve: 0 };
+}
+
 export function runReplay(
     frames: readonly HistoryFrameV3[],
     strategy: ReplayStrategy,
@@ -219,7 +270,7 @@ export function runReplay(
 ): ReplayResult {
     if (!Number.isFinite(config.initial_balance) || config.initial_balance < 0) throw new Error('invalid_initial_balance');
     if (!Number.isFinite(config.minimum_order_value) || config.minimum_order_value < 0) throw new Error('invalid_minimum_order_value');
-    if (config.latency_snapshots !== 0 && config.latency_snapshots !== 1) throw new Error('invalid_latency_snapshots');
+    if (!Number.isSafeInteger(config.latency_ms) || config.latency_ms < 0) throw new Error('invalid_latency_ms');
     let cash = config.initial_balance;
     let fees = 0;
     let spreadCost = 0;
@@ -241,6 +292,18 @@ export function runReplay(
     const fills: ReplayFill[] = [];
     const equityCurve: Array<{ timestamp: number; equity: number }> = [];
 
+    const applyFill = (fill: ReplayFill): void => {
+        if (fill.status === 'rejected') return;
+        fees += fill.fee;
+        spreadCost += fill.spread_cost;
+        slippageCost += fill.slippage_cost;
+        if (fill.action === 'buy') {
+            cash -= fill.gross_value + fill.fee;
+        } else {
+            cash += fill.gross_value - fill.fee;
+        }
+    };
+
     for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
         const frame = frames[frameIndex]!;
         const previous = frames[frameIndex - 1];
@@ -260,6 +323,10 @@ export function runReplay(
         let upQuantity = 0;
         let downQuantity = 0;
         let hadPosition = false;
+        const pendingOrders: PendingReplayOrder[] = [];
+        let reservedCash = 0;
+        let reservedUpQuantity = 0;
+        let reservedDownQuantity = 0;
         const strategyFrame: ReplayFrameContext = {
             source: frame.source,
             coin: frame.coin,
@@ -271,16 +338,41 @@ export function runReplay(
             coin_frame_start_price: frame.coin_frame_start_price,
             market_data: frame.market_data,
         };
+        const executePendingOrders = (index: number, snapshot: HistorySnapshotV3): void => {
+            while (pendingOrders[0]?.executionIndex === index) {
+                const pending = pendingOrders.shift()!;
+                reservedCash -= pending.cashReserve;
+                if (pending.decision.order.side === 'up') reservedUpQuantity -= pending.tokenReserve;
+                else reservedDownQuantity -= pending.tokenReserve;
+                const order = pending.decision.order;
+                const tokens = order.side === 'up' ? upQuantity : downQuantity;
+                const fill = simulateTakerFill(frame, snapshot, order, cash, tokens, config);
+                if (fill.status !== 'rejected') fill.reason_code = pending.decision.reason_code;
+                fills.push(fill);
+                strategy.onFill?.(fill);
+                applyFill(fill);
+                if (fill.status === 'rejected') continue;
+                if (fill.action === 'buy') {
+                    if (fill.side === 'up') upQuantity += fill.filled_quantity;
+                    else downQuantity += fill.filled_quantity;
+                } else {
+                    if (fill.side === 'up') upQuantity -= fill.filled_quantity;
+                    else downQuantity -= fill.filled_quantity;
+                }
+                if (upQuantity > 0 || downQuantity > 0) hadPosition = true;
+            }
+        };
         for (let index = 0; index < frame.snapshots.length; index++) {
             const snapshot = frame.snapshots[index]!;
+            executePendingOrders(index, snapshot);
             const context: ReplayStrategyContext = {
                 frame: strategyFrame,
                 snapshot,
                 snapshot_index: index,
                 progress: (snapshot.timestamp - frame.start_time * 1_000) / ((frame.end_time - frame.start_time) * 1_000),
-                cash,
-                up_quantity: upQuantity,
-                down_quantity: downQuantity,
+                cash: cash - reservedCash,
+                up_quantity: upQuantity - reservedUpQuantity,
+                down_quantity: downQuantity - reservedDownQuantity,
             };
             const decisions = strategy.decideAll?.(context) ?? [strategy.decide(context)];
             for (const decision of decisions) {
@@ -290,29 +382,26 @@ export function runReplay(
                 if (order === undefined || order.action !== decision.action) {
                     throw new Error(`invalid_order_decision: ${strategy.name} at ${snapshot.timestamp}`);
                 }
-                const executionIndex = index + config.latency_snapshots;
-                const executionSnapshot = frame.snapshots[executionIndex];
-                if (!executionSnapshot) continue;
-                const tokens = order.side === 'up' ? upQuantity : downQuantity;
-                const fill = simulateTakerFill(frame, executionSnapshot, order, cash, tokens, config);
-                if (fill.status !== 'rejected') fill.reason_code = decision.reason_code;
-                fills.push(fill);
-                strategy.onFill?.(fill);
-                if (fill.status === 'rejected') continue;
-                fees += fill.fee;
-                spreadCost += fill.spread_cost;
-                slippageCost += fill.slippage_cost;
-                if (fill.action === 'buy') {
-                    cash -= fill.gross_value + fill.fee;
-                    if (fill.side === 'up') upQuantity += fill.filled_quantity;
-                    else downQuantity += fill.filled_quantity;
-                } else {
-                    cash += fill.gross_value - fill.fee;
-                    if (fill.side === 'up') upQuantity -= fill.filled_quantity;
-                    else downQuantity -= fill.filled_quantity;
-                }
-                if (upQuantity > 0 || downQuantity > 0) hadPosition = true;
+                const executionIndex = findReplayExecutionIndex(
+                    frame.snapshots,
+                    index,
+                    snapshot.timestamp + config.latency_ms,
+                );
+                if (executionIndex === undefined) continue;
+                const reservation = getReplayOrderReservation(frame, order);
+                pendingOrders.push({ decision, executionIndex, ...reservation });
+                reservedCash += reservation.cashReserve;
+                if (order.side === 'up') reservedUpQuantity += reservation.tokenReserve;
+                else reservedDownQuantity += reservation.tokenReserve;
+                strategy.onOrderQueued?.({
+                    timestamp: snapshot.timestamp,
+                    execution_timestamp: frame.snapshots[executionIndex]!.timestamp,
+                    frame_start: frame.start_time,
+                    action: order.action,
+                    side: order.side,
+                });
             }
+            executePendingOrders(index, snapshot);
         }
         cash += outcome === 'up' ? upQuantity : downQuantity;
         if (hadPosition) positionFrames++;
@@ -426,6 +515,7 @@ export async function writeReplayReport(result: ReplayResult, directory: string)
             fill.requested_quantity, fill.filled_quantity, fill.average_price, fill.gross_value, fill.fee, fill.spread_cost, fill.slippage_cost]),
     ];
     const markdown = `# Backtest report\n\nStrategy: ${result.metrics.strategy}\n\n` +
+        `- Replay latency: ${result.config.latency_ms} ms\n` +
         `- Net PnL: ${result.metrics.net_pnl}\n- Gross PnL before fees: ${result.metrics.gross_pnl}\n` +
         `- PnL before execution costs: ${result.metrics.pre_execution_cost_pnl}\n` +
         `- Fees: ${result.metrics.fees}\n- Spread cost: ${result.metrics.spread_cost}\n` +

@@ -20,7 +20,8 @@ export const DEFAULT_HISTORY_MAX_FRAMES = 0;
 export const DEFAULT_HISTORY_FRAME_COUNT = 0;
 
 export const DEFAULT_REPLAY_INITIAL_BALANCE = 100;
-export const DEFAULT_REPLAY_LATENCY_SNAPSHOTS = 0;
+/** Artificial delay between a replay decision and its execution, in milliseconds. */
+export const DEFAULT_REPLAY_LATENCY_MS = 0;
 export const DEFAULT_REPLAY_MINIMUM_ORDER_VALUE = 1;
 
 export const REPLAY_STRATEGY_NO_TRADE = 'no-trade' as const;

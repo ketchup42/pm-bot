@@ -12,7 +12,11 @@ import {
     readDogeBaselineArtifacts,
     toDogeBaselineRuntimeConfig,
 } from './core/events/strategy/doge-baseline/artifacts.js';
-import { DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT, DOGE_BASELINE_MODES } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
+import {
+    DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT,
+    DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
+    DOGE_BASELINE_MODES,
+} from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import { DOGE_BASELINE_ENTRY_REJECTION_REASONS } from './core/events/strategy/doge-baseline/DogeBaselineDecision.js';
 import { logger } from '../log.js';
 import { fileWrite } from '../utils.js';
@@ -38,7 +42,7 @@ export async function runDogeBaselineReplayCommand(): Promise<void> {
         ? await readDogeBaselineArtifacts()
         : await readDogeBaselineArtifacts(modelPath, configPath!);
     const trade = readRequiredTradeArguments();
-    const config = readReplayExecutionConfig(trade.balance);
+    const config = readReplayExecutionConfig(trade.balance, DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS);
     const replay = runDogeBaselineReplay(frames, artifacts.model, config, {
         ...toDogeBaselineRuntimeConfig(artifacts.config),
         tradeValue: trade.tradeValue,
@@ -63,7 +67,8 @@ export async function runDogeBaselineReplayCommand(): Promise<void> {
         '# DOGE baseline replay', '',
         `Model: ${modelPath ?? 'working model'}`,
         `Balance: $${trade.balance.toFixed(2)}`,
-        `Trade value: $${trade.tradeValue.toFixed(2)}`, '',
+        `Trade value: $${trade.tradeValue.toFixed(2)}`,
+        `Replay latency: ${config.latency_ms} ms`, '',
         '| Mode      | Trades |     Net PnL | Profit factor | Max drawdown |',
         '| --------- | -----: | ----------: | ------------: | -----------: |',
         ...rows, '',

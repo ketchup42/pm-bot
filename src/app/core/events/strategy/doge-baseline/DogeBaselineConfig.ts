@@ -68,6 +68,8 @@ export const DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_RATIO = 0.1;
 
 /** Default number of completed frames used to compare working and candidate models. */
 export const DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT = 100;
+/** Theoretical CLOB request-and-match delay used by DOGE replay and refresh, in milliseconds. */
+export const DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS = 250;
 /** Snapshot interval in milliseconds used to bound configuration-research memory use. */
 export const DOGE_BASELINE_CONFIG_RESEARCH_SNAPSHOT_INTERVAL_MS = 250;
 

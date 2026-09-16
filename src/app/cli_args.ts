@@ -2,7 +2,7 @@ import { ReplayExecutionConfig } from './core/backtest/replay.js';
 import { safeToNum } from '../utils.js';
 import {
     DEFAULT_REPLAY_INITIAL_BALANCE,
-    DEFAULT_REPLAY_LATENCY_SNAPSHOTS,
+    DEFAULT_REPLAY_LATENCY_MS,
     DEFAULT_REPLAY_MINIMUM_ORDER_VALUE,
 } from './defaults.js';
 
@@ -56,12 +56,17 @@ export function readPositiveNumberArgument(name: string): number {
     return value;
 }
 
-export function readReplayExecutionConfig(initialBalance: number | undefined = undefined): ReplayExecutionConfig {
-    const latency = safeToNum(readArgument('latency') ?? String(DEFAULT_REPLAY_LATENCY_SNAPSHOTS), Number.NaN);
-    if (latency !== 0 && latency !== 1) throw new Error(`latency must be 0 or 1, got ${latency}`);
+export function readReplayExecutionConfig(
+    initialBalance: number | undefined = undefined,
+    defaultLatencyMs: number = DEFAULT_REPLAY_LATENCY_MS,
+): ReplayExecutionConfig {
+    const latencyMs = safeToNum(readArgument('latency-ms') ?? String(defaultLatencyMs), Number.NaN);
+    if (!Number.isSafeInteger(latencyMs) || latencyMs < 0) {
+        throw new Error(`--latency-ms must be a non-negative integer, got ${latencyMs}`);
+    }
     return {
         initial_balance: initialBalance ?? safeToNum(readArgument('balance') ?? String(DEFAULT_REPLAY_INITIAL_BALANCE)),
-        latency_snapshots: latency,
+        latency_ms: latencyMs,
         minimum_order_value: safeToNum(readArgument('minimum-order-value') ?? String(DEFAULT_REPLAY_MINIMUM_ORDER_VALUE)),
     };
 }

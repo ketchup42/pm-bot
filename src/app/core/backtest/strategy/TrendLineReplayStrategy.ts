@@ -14,6 +14,7 @@ import {
 import {
     ReplayDecision,
     ReplayFill,
+    ReplayOrderSubmission,
     ReplayStrategy,
     ReplayStrategyContext,
 } from '../replay.js';
@@ -32,6 +33,7 @@ interface TrendLineReplayState {
     activated: boolean;
     entered: boolean;
     exited: boolean;
+    pendingAction: 'buy' | 'sell' | undefined;
 }
 
 const PRESET_OPTIONS: Readonly<Record<TrendLineReplayPreset, Readonly<TrendLineReplayOptions>>> = Object.freeze({
@@ -71,11 +73,17 @@ export class TrendLineReplayStrategy implements ReplayStrategy {
     }
 
     public onFill(fill: Readonly<ReplayFill>): void {
-        if (fill.status === 'rejected') return;
         const state = this.states.get(`${fill.frame_start}:${fill.side}`);
         if (!state) return;
+        state.pendingAction = undefined;
+        if (fill.status === 'rejected') return;
         if (fill.action === 'buy') state.entered = true;
         else state.exited = true;
+    }
+
+    public onOrderQueued(order: Readonly<ReplayOrderSubmission>): void {
+        const state = this.states.get(`${order.frame_start}:${order.side}`);
+        if (state) state.pendingAction = order.action;
     }
 
     private decideWithStartPrice(context: Readonly<ReplayStrategyContext>, frameStartPrice: number | undefined): readonly ReplayDecision[] {
@@ -97,8 +105,15 @@ export class TrendLineReplayStrategy implements ReplayStrategy {
         const bid = safeToNum(sideSnapshot.bids[0]?.price, Number.NaN);
         if (!Number.isFinite(ask) || !Number.isFinite(bid)) return [];
         const key = `${context.frame.start_time}:${side}`;
-        const state = this.states.get(key) ?? { mirror: false, activated: false, entered: false, exited: false };
+        const state = this.states.get(key) ?? {
+            mirror: false,
+            activated: false,
+            entered: false,
+            exited: false,
+            pendingAction: undefined,
+        };
         this.states.set(key, state);
+        if (state.pendingAction !== undefined) return [];
         if (!state.activated && this.config.startDiffPriceFactor !== undefined) {
             if (context.snapshot.coin_price === undefined || context.frame.coin_frame_start_price === undefined ||
                 Math.abs(context.snapshot.coin_price - context.frame.coin_frame_start_price) < this.config.startDiffPriceFactor) return [];

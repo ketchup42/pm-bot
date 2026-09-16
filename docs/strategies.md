@@ -69,7 +69,7 @@ npm run backtest -- --history history/frames --strategy your-preset
 npm run backtest:matrix -- --history history/frames
 ```
 
-`--balance`, `--latency` (`0` or `1` snapshots) and `--minimum-order-value` apply
+`--balance`, `--latency-ms` (a non-negative execution delay in milliseconds) and `--minimum-order-value` apply
 to both commands. Matrix replay includes only complete frames with a confirmed
 settlement and records excluded frames in its manifest.
 
@@ -123,6 +123,7 @@ npm run replay:doge-baseline -- --history history/frames \
   --count 100 \
   --balance 100 \
   --trade-value 10 \
+  --latency-ms 250 \
   --output history/reports/doge-baseline/latest
 ```
 
@@ -133,6 +134,11 @@ It reads only the newest `--count N` eligible frames; the default is 100. Its
 evaluated decisions into accepted entries and precise rejection reasons.
 Pass `--model models/doge-baseline/candidate.json --config <matching-file>` to
 replay a stored model; a model is never replayed with an unverified configuration.
+`--latency-ms` is a non-negative artificial delay between a replay decision and
+execution. DOGE commands default to `250`, so execution uses the first saved
+snapshot at or after the decision time plus 250 ms. The same value is used by
+`research:doge-baseline-config` and `refresh:doge-baseline`; pass the flag to
+either command to evaluate another latency assumption.
 
 Both `replay:doge-baseline` and `strategy:doge-baseline` require a positive
 `--balance` and `--trade-value` in USDC. `--trade-value` is the maximum value of one

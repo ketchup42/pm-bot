@@ -57,10 +57,10 @@ collect → history frames → history:settle → model/config refresh → strat
 | `npm run check` | Type-check, lint, and run tests. |
 | `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60` | Collect DOGE HistoryFrameV3 data. |
 | `npm run history:settle` | Confirm outcomes in recorded frames. |
-| `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10` | Replay the published DOGE pair. |
+| `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10` | Replay the published DOGE pair with the default 250 ms execution delay. |
 | `npm run research:doge-baseline-model -- --count 500` | Train and publish a DOGE model. |
 | `npm run research:doge-baseline-config -- --count 500` | Tune and publish DOGE configuration. |
-| `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs. |
+| `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs using the same delay. |
 | `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10` | Run with a virtual wallet. |
 | `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10` | Submit real orders. |
 

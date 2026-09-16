@@ -117,7 +117,7 @@ function makeFrame() {
     };
 }
 
-const config = { initial_balance: 100, latency_snapshots: 0, minimum_order_value: 1 };
+const config = { initial_balance: 100, latency_ms: 0, minimum_order_value: 1 };
 
 test('DOGE replay mode reports use decisions from their own single-mode runs', () => {
     const frame = makeFrame();
@@ -872,9 +872,15 @@ test('strategy context does not expose future snapshots or settlement', () => {
     runReplay([frame], strategy, config);
 });
 
-test('one-snapshot latency executes against the following book', () => {
+test('millisecond latency executes against the first eligible later book', () => {
     const frame = makeFrame();
-    frame.snapshots[1].up.asks = [{ price: '0.60', size: '10' }];
+    frame.snapshots[1].timestamp = frame.snapshots[0].timestamp + 100;
+    frame.snapshots[1].up.asks = [{ price: '0.55', size: '10' }];
+    frame.snapshots.push({
+        ...frame.snapshots[1],
+        timestamp: frame.snapshots[0].timestamp + 250,
+        up: { ...frame.snapshots[1].up, asks: [{ price: '0.60', size: '10' }] },
+    });
     let entered = false;
     const strategy = {
         name: 'latency-check',
@@ -884,8 +890,63 @@ test('one-snapshot latency executes against the following book', () => {
             return { action: 'buy', reason_code: 'fixture', order: { action: 'buy', side: 'up', quantity: 5, limit_price: 0.60 } };
         },
     };
-    const result = runReplay([frame], strategy, { ...config, latency_snapshots: 1 });
+    const result = runReplay([frame], strategy, { ...config, latency_ms: 250 });
     assert.equal(result.fills[0].average_price, 0.60);
+    assert.equal(result.fills[0].timestamp, frame.snapshots[2].timestamp);
+});
+
+test('delayed replay execution hides future fills and reserves its funds', () => {
+    const frame = makeFrame();
+    frame.snapshots.push({
+        ...frame.snapshots[1],
+        timestamp: frame.snapshots[0].timestamp + 250,
+        up: { ...frame.snapshots[1].up, asks: [{ price: '0.60', size: '10' }] },
+    });
+    const contexts = [];
+    const events = [];
+    const strategy = {
+        name: 'delayed-state-check',
+        decide(context) {
+            contexts.push({ index: context.snapshot_index, cash: context.cash, upQuantity: context.up_quantity });
+            if (context.snapshot_index !== 0) return { action: 'hold', reason_code: 'done', order: undefined };
+            return { action: 'buy', reason_code: 'fixture', order: { action: 'buy', side: 'up', quantity: 5, limit_price: 0.60 } };
+        },
+        onOrderQueued(order) {
+            events.push(`queued:${order.execution_timestamp}`);
+        },
+        onFill(fill) {
+            events.push(`filled:${fill.timestamp}`);
+        },
+    };
+    runReplay([frame], strategy, { ...config, initial_balance: 3.10, latency_ms: 250 });
+    assert.equal(contexts[1].index, 1);
+    assert.ok(contexts[1].cash > 0 && contexts[1].cash < 0.02);
+    assert.equal(contexts[1].upQuantity, 0);
+    assert.deepEqual(events, [
+        `queued:${frame.snapshots[2].timestamp}`,
+        `filled:${frame.snapshots[2].timestamp}`,
+    ]);
+});
+
+test('millisecond latency does not execute when the frame has no later eligible snapshot', () => {
+    const frame = makeFrame();
+    const lastSnapshot = frame.snapshots.at(-1);
+    lastSnapshot.timestamp = frame.end_time * 1_000 - 50;
+    const lastTimestamp = lastSnapshot.timestamp;
+    let entered = false;
+    const strategy = {
+        name: 'latency-frame-end-check',
+        decide(context) {
+            if (context.snapshot.timestamp !== lastTimestamp) {
+                return { action: 'hold', reason_code: 'waiting', order: undefined };
+            }
+            if (entered) return { action: 'hold', reason_code: 'done', order: undefined };
+            entered = true;
+            return { action: 'buy', reason_code: 'fixture', order: { action: 'buy', side: 'up', quantity: 5, limit_price: 0.60 } };
+        },
+    };
+    const result = runReplay([frame], strategy, { ...config, latency_ms: 250 });
+    assert.equal(result.fills.length, 0);
 });
 
 test('no-trade baseline leaves equity unchanged', () => {

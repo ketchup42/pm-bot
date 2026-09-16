@@ -8,6 +8,7 @@ import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/Do
 import {
     DOGE_BASELINE_DEFAULT_BALANCE,
     getDogeBaselineEntrySummary,
+    DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import { logger } from '../log.js';
 
@@ -22,7 +23,10 @@ export async function runDogeBaselineConfigResearch(): Promise<void> {
             history, { trainingCount: count, replayCount: 0 },
         );
         const matrix = researchDogeBaselineConfigMatrix(
-            trainingFrames, model, readReplayExecutionConfig(DOGE_BASELINE_DEFAULT_BALANCE), baselineConfig,
+            trainingFrames, model, readReplayExecutionConfig(
+                DOGE_BASELINE_DEFAULT_BALANCE,
+                DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
+            ), baselineConfig,
         );
         await writeDogeBaselineStrategyConfig(matrix.selected.config, model);
         const exit = matrix.selected.config.exit;

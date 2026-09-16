@@ -6,6 +6,7 @@ import { DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
 import {
     DOGE_BASELINE_CANDIDATE_MODEL_FILE,
     DOGE_BASELINE_DEFAULT_BALANCE,
+    DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
     getDogeBaselineEntrySummary,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import { buildDogeBaselineModel, readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
@@ -76,7 +77,10 @@ async function refreshModel(
     replayFrames: number,
     shouldStop: () => boolean,
 ): Promise<string> {
-    const executionConfig = readReplayExecutionConfig(DOGE_BASELINE_DEFAULT_BALANCE);
+    const executionConfig = readReplayExecutionConfig(
+        DOGE_BASELINE_DEFAULT_BALANCE,
+        DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
+    );
     const { trainingObservations, trainingFrames, replay } = await readDogeBaselineTrainReplaySplit(
         history, { trainingCount: trainFrames, replayCount: replayFrames }, shouldStop,
     );
