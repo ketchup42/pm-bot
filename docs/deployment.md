@@ -24,47 +24,65 @@ npm run deploy:docker -- --tiny --sudo
 npm run deploy:docker -- --full --sudo
 ```
 
+Before loading and starting the contour, add the server user to the `docker`
+group, log out of SSH completely, and log in again:
+
+```bash
+sudo groupadd --force docker
+sudo usermod -aG docker "$USER"
+id -nG
+docker info
+```
+
 Upload and unpack the selected archive on the server, then load its image:
 
 ```bash
 7z x pm-bot-docker-linux-amd64-tiny.7z
 cd pm-bot-docker-linux-amd64
-sudo docker load -i image.tar
+docker load -i image.tar
 ```
 
-Create `runtime/.env` manually. It is mounted read-only into containers and is
-never included in an archive. The full archive additionally contains
-`runtime/models` and `runtime/history`; the tiny archive requires those to be
-copied separately before strategy or refresh can use them.
-
-Start a contour. These commands do not require adding the user to the `docker`
-group: Docker runs through `sudo`, while `PUID` and `PGID` ensure that runtime
-files remain owned by the current user.
+Create the local Compose parameters file:
 
 ```bash
-sudo PUID="$(id -u)" PGID="$(id -g)" \
-  docker compose up -d collector-doge-baseline
+cp compose.env.example compose.env
+```
 
-sudo PUID="$(id -u)" PGID="$(id -g)" \
-  docker compose up -d strategy-doge-baseline
+`runtime/.env` is mounted read-only and contains application settings and
+secrets. It is never included in an archive. The full archive additionally
+contains `runtime/models` and `runtime/history`; the tiny archive requires those
+to be copied separately before strategy or refresh can use them.
 
-sudo PUID="$(id -u)" PGID="$(id -g)" \
-  docker compose up -d refresh-doge-baseline
+Application environment variables such as `LOG_LEVEL`, log rotation, and
+`HISTORY_SNAPSHOT_MS` belong in `runtime/.env`. Command parameters of the DOGE
+Baseline contour belong in `compose.env`.
+
+Start a contour:
+
+```bash
+export PUID=$(id -u)
+export PGID=$(id -g)
+
+docker compose --env-file compose.env up -d collector-doge-baseline
+
+docker compose --env-file compose.env up -d strategy-doge-baseline
+
+docker compose --env-file compose.env up -d refresh-doge-baseline
 ```
 
 The three services share `runtime/history` and `runtime/models`. Their separate
 file logs are written to `runtime/logs`; Docker logs remain available too:
 
 ```bash
-sudo docker compose logs -f collector-doge-baseline
-sudo docker compose logs -f strategy-doge-baseline
-sudo docker compose logs -f refresh-doge-baseline
+docker compose --env-file compose.env logs -f collector-doge-baseline
+docker compose --env-file compose.env logs -f strategy-doge-baseline
+docker compose --env-file compose.env logs -f refresh-doge-baseline
 ```
 
 Stop all services gracefully:
 
 ```bash
-sudo docker compose stop
+docker compose --env-file compose.env stop
 ```
 
 ## Native Linux x64 archive

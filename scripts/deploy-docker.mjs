@@ -84,6 +84,7 @@ async function build(mode, useSudo) {
         ]);
         saveDockerImage(imagePath, useSudo);
         await fs.copyFile(path.join(root, 'compose.yaml'), path.join(packageDirectory, 'compose.yaml'));
+        await fs.copyFile(path.join(root, 'compose.env.example'), path.join(packageDirectory, 'compose.env.example'));
         await fs.copyFile(path.join(root, 'README.md'), path.join(packageDirectory, 'README.md'));
         await fs.writeFile(path.join(runtimeDirectory, 'README.md'), [
             '# Runtime data',

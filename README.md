@@ -105,7 +105,8 @@ npm run deploy:docker -- --full --sudo
 ```
 
 See [Deployment](docs/deployment.md) for Docker requirements, server setup, and
-Compose commands.
+Compose commands. Runtime application settings remain in `runtime/.env`; DOGE
+Baseline command parameters are configured separately in `compose.env`.
 
 ## Documentation
 
