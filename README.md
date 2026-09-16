@@ -2,7 +2,7 @@
 
 PM-BOT collects Polymarket up/down market data, replays strategies with execution
 costs, and runs the DOGE baseline strategy. Start with research and virtual
-trading; `--live` can submit real orders.
+trading. `--live` can submit real orders.
 
 ## Quick start
 
@@ -26,7 +26,7 @@ before its `Saved ... complete=true` message.
 ## DOGE virtual working loop
 
 Run these three commands in separate terminals. The collector retains the newest
-700 frames; the strategy uses a virtual wallet; refresh confirms outcomes,
+700 frames. The strategy uses a virtual wallet. Refresh confirms outcomes,
 re-trains, tunes configuration, and compares the working and candidate pairs.
 
 ```bash
@@ -52,17 +52,17 @@ collect → history frames → history:settle → model/config refresh → strat
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `npm run check` | Type-check, lint, and run tests. |
-| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60` | Collect DOGE HistoryFrameV3 data. |
-| `npm run history:settle` | Confirm outcomes in recorded frames. |
-| `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10` | Replay the published DOGE pair with the default 250 ms execution delay. |
-| `npm run research:doge-baseline-model -- --count 500` | Train and publish a DOGE model. |
-| `npm run research:doge-baseline-config -- --count 500` | Tune and publish DOGE configuration. |
-| `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs using the same delay. |
-| `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10` | Run with a virtual wallet. |
-| `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10` | Submit real orders. |
+| Command                                                                                 | Purpose                                                                 |
+| -----------------------------------------------------------------------------------------| -------------------------------------------------------------------------|
+| `npm run check`                                                                         | Type-check, lint, and run tests.                                        |
+| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60`                  | Collect DOGE HistoryFrameV3 data.                                       |
+| `npm run history:settle`                                                                | Confirm outcomes in recorded frames.                                    |
+| `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10`            | Replay the published DOGE pair with the default 250 ms execution delay. |
+| `npm run research:doge-baseline-model -- --count 500`                                   | Train and publish a DOGE model.                                         |
+| `npm run research:doge-baseline-config -- --count 500`                                  | Tune and publish DOGE configuration.                                    |
+| `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs using the same delay.       |
+| `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10`              | Run with a virtual wallet.                                              |
+| `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`               | Submit real orders.                                                     |
 
 ## Deployment archive
 
@@ -76,7 +76,7 @@ npm run deploy -- --tiny
 npm run deploy -- --full
 ```
 
-The archive in `release/` contains `pm-bot-linux-x64`; Node.js and
+The archive in `release/` contains `pm-bot-linux-x64`. Node.js and
 `node_modules` are not required on the server. After extraction:
 
 ```bash
@@ -86,7 +86,7 @@ chmod +x pm-bot-linux-x64
 ```
 
 The executable embeds a 6 GiB V8 old-space limit. Copy or create `.env` manually
-beside it for live access; archives never include secrets.
+beside it for live access. Archives never include secrets.
 
 ## Docker deployment
 
@@ -105,7 +105,7 @@ npm run deploy:docker -- --full --sudo
 ```
 
 See [Deployment](docs/deployment.md) for Docker requirements, server setup, and
-Compose commands. Runtime application settings remain in `runtime/.env`; DOGE
+Compose commands. Runtime application settings remain in `runtime/.env`. DOGE
 Baseline command parameters are configured separately in `compose.env`.
 
 ## Documentation

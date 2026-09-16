@@ -26,7 +26,7 @@ An `EventStrategy` implements `execute()` and `cancel()`.
    `cancel(client, watchers, isSignal)` and disposes the watchers.
 
 `isSignal=false` means a natural frame completion. `isSignal=true` means shutdown
-or an abnormal stop; strategies must make their position-handling decision
+or an abnormal stop. Strategies must make their position-handling decision
 explicitly for that case.
 
 ## Add a live strategy
@@ -37,7 +37,7 @@ explicitly for that case.
    watcher and current best bid/ask. Treat unavailable data as `undefined`, not as
    zero.
 3. Create a wallet only after market metadata is available. Use the supplied token
-   ID, tick size and minimum order constraints; see [wallets.md](wallets.md).
+   ID, tick size and minimum order constraints. See [wallets.md](wallets.md).
 4. Add the strategy explicitly to the relevant scheduler composition and its
    dedicated application entry point.
 5. In `cancel`, release orders, dispose the wallet and reset every per-frame field.
@@ -102,7 +102,7 @@ to remain at least 0.05% beyond the frame start price against the held
 side for five continuous seconds. The strategy then sells against the available bid
 depth, retries any unsold remainder no more than once per second without duplicating active orders.
 A separate relative crossing observer retains its ±0.05% band
-for frame-level volatility; a calm following frame resumes the scheduler.
+for frame-level volatility. A calm following frame resumes the scheduler.
 
 This taker execution applies only to an exit made before the frame ends. At a
 natural frame end, the virtual wallet does not sell at the final bid: remaining
@@ -129,15 +129,15 @@ npm run replay:doge-baseline -- --history history/frames \
 
 The replay loads the published model without fitting it and uses the normal replay
 engine for depth, spread, slippage, fees, minimum order value and balance limits.
-It reads only the newest `--count N` eligible frames; the default is 100. Its
+It reads only the newest `--count N` eligible frames. The default is 100. Its
 `entry-decisions.json` and the matching table in `summary.md` split each mode's
 evaluated decisions into accepted entries and precise rejection reasons.
 Pass `--model models/doge-baseline/candidate.json --config <matching-file>` to
-replay a stored model; a model is never replayed with an unverified configuration.
+replay a stored model. A model is never replayed with an unverified configuration.
 `--latency-ms` is a non-negative artificial delay between a replay decision and
 execution. DOGE commands default to `250`, so execution uses the first saved
 snapshot at or after the decision time plus 250 ms. The same value is used by
-`research:doge-baseline-config` and `refresh:doge-baseline`; pass the flag to
+`research:doge-baseline-config` and `refresh:doge-baseline`. Pass the flag to
 either command to evaluate another latency assumption.
 
 Both `replay:doge-baseline` and `strategy:doge-baseline` require a positive
@@ -156,7 +156,7 @@ npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10
 
 `--live` uses `TakerLiveOrderWallet`: each DOGE order is submitted as a marketable
 GTC limit order and any unfilled remainder is cancelled immediately. The strategy
-records only the resulting full or partial execution; if the connection fails after
+records only the resulting full or partial execution. If the connection fails after
 an order ID is received, its order watcher retains the order until reconciliation.
 
 `--debug` and `--live` are flags. An omitted mode, duplicate mode, or a value passed
@@ -166,7 +166,7 @@ to either flag is rejected before the scheduler starts.
 configurations for each mode: five edge values, four probability thresholds and four
 minimum absolute-deviation thresholds. Around each eligible coarse winner it then
 tests a local 3×3 grid: edge ±$0.01 and confidence ±0.03, clamped to the supported
-ranges; the winning deviation filter stays fixed. It retains the strongest three
+ranges. The winning deviation filter stays fixed. It retains the strongest three
 early and late settings, tests their nine joint combinations, then advances three
 drawdown-safe finalists to 12 emergency-exit variants each. Natural settlement remains
 in the final comparison. Every configuration admitted to the next stage must make at
@@ -217,13 +217,13 @@ strategy or refresh process.
 uses 500 frames to train a candidate and tune both the working and candidate model.
 It then compares working/current, working/tuned, candidate/current and
 candidate/tuned pairs on 100 later frames. The selected pair must pass the existing
-trade and PnL safeguards; a model replacement also requires accuracy at least 55%
+trade and PnL safeguards. A model replacement also requires accuracy at least 55%
 and Brier score below 0.25 in both modes. The four-way decision is retained in
 `latest-evaluation.json`. The replay window is split chronologically into adaptive
 25–50-frame segments: 100 frames become four segments of 25, while 400 become eight
 segments of 50. A candidate needs positive PnL and at least 10% active frames in
 each qualifying segment, with a floor of two trades. Before the replay reaches four
-full 50-frame segments, at least 50% of segments must be profitable; the requirement
+full 50-frame segments, at least 50% of segments must be profitable. The requirement
 then rises with the number of full segments to 75% at eight segments.
 The same evaluation file records the segments, entry-rejection statistics and
 confidence calibration for every combination.
@@ -240,5 +240,5 @@ publishes a pair that passed the normal promotion safeguards.
 - Run the preset matrix on the same confirmed frame set before comparing results.
 - Inspect net PnL together with fees, spread, slippage, drawdown and rejected-order
   reasons. A positive gross PnL is not enough.
-- Keep strategy identifiers and defaults in their central registries; do not copy
+- Keep strategy identifiers and defaults in their central registries. Do not copy
   names or instrument lists into a new caller.

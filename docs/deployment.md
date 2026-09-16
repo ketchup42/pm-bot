@@ -16,7 +16,7 @@ npm run deploy:docker -- --full
 ```
 
 If the local user is not in the `docker` group, do not run npm itself through
-`sudo`. Use the optional flag instead; only Docker receives elevated privileges
+`sudo`. Use the optional flag instead. Only Docker receives elevated privileges
 and the resulting archive remains owned by the local user:
 
 ```bash
@@ -50,7 +50,7 @@ cp compose.env.example compose.env
 
 `runtime/.env` is mounted read-only and contains application settings and
 secrets. It is never included in an archive. The full archive additionally
-contains `runtime/models` and `runtime/history`; the tiny archive requires those
+contains `runtime/models` and `runtime/history`. The tiny archive requires those
 to be copied separately before strategy or refresh can use them. All archives
 already contain the writable `runtime/history`, `runtime/models`, and
 `runtime/logs` directories, so Docker does not create them as root.
@@ -73,7 +73,7 @@ docker compose --env-file compose.env up -d refresh-doge-baseline
 ```
 
 The three services share `runtime/history` and `runtime/models`. Their separate
-file logs are written to `runtime/logs`; Docker logs remain available too:
+file logs are written to `runtime/logs`. Docker logs remain available too:
 
 ```bash
 docker compose --env-file compose.env logs -f collector-doge-baseline

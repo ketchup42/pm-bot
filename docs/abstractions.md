@@ -60,7 +60,7 @@ boundary. It is not a generic "latest price" lookup. Books expose bids, asks,
 midpoint, spread, liquidity and market constraints for both token sides.
 
 The history collector requests a shared feed for all registry coins. TWAP uses one
-subscription with a symbol array; RTDS uses one client with one filtered subscription
+subscription with a symbol array. RTDS uses one client with one filtered subscription
 per symbol. A ten-second silence for any active coin reconnects the shared transport.
 
 ## History V3 and settlement
@@ -84,7 +84,7 @@ coin does not invalidate earlier V3 files. `complete=true` requires a healthy ta
 `history:settle` independently
 fetches the event again and writes `confirmed_outcome` once the market is closed.
 Snapshot scheduling allows a 25 ms local event-loop tolerance in addition to three
-sampling intervals; price and connection-quality checks remain unchanged.
+sampling intervals. Price and connection-quality checks remain unchanged.
 Legacy live scheduler dumps are retained for external analysis but are not
 `HistoryFrameV3` and are not replay inputs.
 

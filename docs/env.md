@@ -2,7 +2,7 @@
 
 Use a local `.env` only for values that belong on the machine running the bot.
 Never commit it. The history collector and offline replay do not require wallet or
-API credentials; live trading does.
+API credentials. Live trading does.
 
 ## Which mode needs which settings?
 
@@ -17,7 +17,7 @@ API credentials; live trading does.
 ## Live trading credentials
 
 These values are read only when creating an authenticated trading client. Keep the
-examples as placeholders; replace them locally, never in source control.
+examples as placeholders. Replace them locally, never in source control.
 
 | Variable         | Required | Meaning                                                                    |
 | ---------------- | -------- | -------------------------------------------------------------------------- |
@@ -25,17 +25,17 @@ examples as placeholders; replace them locally, never in source control.
 | `API_KEY`        | Yes      | Polymarket CLOB API key derived for the wallet.                            |
 | `API_SECRET`     | Yes      | Secret paired with `API_KEY`.                                              |
 | `API_PASSPHRASE` | Yes      | Passphrase paired with the API credentials.                                |
-| `FUNDER_ADDRESS` | Yes      | Collateral/gas payer; must be a valid `0x` address.                        |
-| `SIGNATURE_TYPE` | No       | `0` EOA, `1` POLY_PROXY, `2` GNOSIS_SAFE, `3` deposit wallet; default `2`. |
+| `FUNDER_ADDRESS` | Yes      | Collateral/gas payer. Must be a valid `0x` address.                        |
+| `SIGNATURE_TYPE` | No       | `0` EOA, `1` POLY_PROXY, `2` GNOSIS_SAFE, `3` deposit wallet. Default `2`. |
 
 ## Network and logging
 
 | Variable             | Default                    | Meaning                                                                  |
 | -------------------- | -------------------------- | ------------------------------------------------------------------------ |
 | `POLYGON_RPC_URL`    | `https://polygon-rpc.com`  | Polygon RPC endpoint used by live trading and balance reads.             |
-| `LOG_LEVEL`          | unset                      | Console level: `debug`, `info`, `warn` or `error`; unset disables it.    |
-| `LOG_FILE`           | unset                      | Output file for rotating logs.                                           |
-| `LOG_FILE_LEVEL`     | unset                      | File log level; use with `LOG_FILE`.                                     |
+| `LOG_LEVEL`          | unset                      | Console level: `debug`, `info`, `warn` or `error`. Unset disables it.    |
+| `LOG_FILE`           | unset                      | Output file for rotating logs.                                            |
+| `LOG_FILE_LEVEL`     | unset                      | File log level. Use with `LOG_FILE`.                                     |
 | `LOG_FILE_MAX_SIZE`  | `5242880`                  | Maximum log-file size in bytes before rotation.                          |
 | `LOG_FILE_MAX_FILES` | `5`                        | Number of rotated log files retained.                                    |
 | `NO_COLOR`           | `0`                        | Set `1` or `true` to disable ANSI colours in console output.             |
@@ -52,10 +52,10 @@ select the frame, common price source and number of frames.
 | Variable              | Default          | Accepted values / meaning                                                 |
 | --------------------- | ---------------- | ------------------------------------------------------------------------- |
 | `HISTORY_DIR`         | `history/frames` | Directory for versioned frame files.                                      |
-| `HISTORY_SNAPSHOT_MS` | `50`             | Snapshot interval in milliseconds; integer, at least `25`.                |
-| `HISTORY_BOOK_DEPTH`  | `10`             | Best bid/ask levels saved for each side; integer from `1` to `100`.       |
-| `HISTORY_GZIP`        | `true`           | `true`/`false` or `1`/`0`; gzip each frame file.                          |
-| `HISTORY_MAX_FRAMES`  | `0`              | Number of retained files; `0` disables collector-side rotation.           |
+| `HISTORY_SNAPSHOT_MS` | `50`             | Snapshot interval in milliseconds. Integer, at least `25`.                |
+| `HISTORY_BOOK_DEPTH`  | `10`             | Best bid/ask levels saved for each side. Integer from `1` to `100`.       |
+| `HISTORY_GZIP`        | `true`           | `true`/`false` or `1`/`0`. Gzip each frame file.                          |
+| `HISTORY_MAX_FRAMES`  | `0`              | Number of retained files. `0` disables collector-side rotation.           |
 
 Recommended multi-coin 5-minute collection configuration:
 
@@ -69,7 +69,7 @@ At the default 50 ms interval, a five-minute target frame expects 6,000 snapshot
 and needs at least 5,700 for the 95% coverage criterion. The current six-target
 `--coin all` run can therefore write up to 36,000 snapshots per five-minute
 interval. Set `HISTORY_SNAPSHOT_MS` explicitly to a larger value only when
-diagnosing host or network capacity; 50 ms is the project default.
+diagnosing host or network capacity. 50 ms is the project default.
 
 The collector uses one shared price connection per selected source for the complete
 coin basket. It reconnects after 10 seconds without an update for any active coin.
