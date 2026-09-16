@@ -51,7 +51,9 @@ cp compose.env.example compose.env
 `runtime/.env` is mounted read-only and contains application settings and
 secrets. It is never included in an archive. The full archive additionally
 contains `runtime/models` and `runtime/history`; the tiny archive requires those
-to be copied separately before strategy or refresh can use them.
+to be copied separately before strategy or refresh can use them. All archives
+already contain the writable `runtime/history`, `runtime/models`, and
+`runtime/logs` directories, so Docker does not create them as root.
 
 Application environment variables such as `LOG_LEVEL`, log rotation, and
 `HISTORY_SNAPSHOT_MS` belong in `runtime/.env`. Command parameters of the DOGE

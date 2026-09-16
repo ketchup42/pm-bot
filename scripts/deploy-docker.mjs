@@ -82,6 +82,11 @@ async function build(mode, useSudo) {
             fs.mkdir(path.join(runtimeDirectory, 'models'), { recursive: true }),
             fs.mkdir(path.join(runtimeDirectory, 'logs'), { recursive: true }),
         ]);
+        await Promise.all([
+            fs.writeFile(path.join(runtimeDirectory, 'history', '.keep'), ''),
+            fs.writeFile(path.join(runtimeDirectory, 'models', '.keep'), ''),
+            fs.writeFile(path.join(runtimeDirectory, 'logs', '.keep'), ''),
+        ]);
         saveDockerImage(imagePath, useSudo);
         await fs.copyFile(path.join(root, 'compose.yaml'), path.join(packageDirectory, 'compose.yaml'));
         await fs.copyFile(path.join(root, 'compose.env.example'), path.join(packageDirectory, 'compose.env.example'));
@@ -90,7 +95,7 @@ async function build(mode, useSudo) {
             '# Runtime data',
             '',
             'Create `.env` here manually. It is never included in deployment archives.',
-            'The `history`, `models`, and `logs` directories are created by Docker Compose.',
+            'The `history`, `models`, and `logs` directories are included in this archive.',
             '',
         ].join('\n'));
 

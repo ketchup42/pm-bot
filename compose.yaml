@@ -2,6 +2,7 @@ name: pm-bot
 
 x-pm-bot: &pm-bot
   image: pm-bot:linux-amd64
+  cpus: 1.0
   init: true
   restart: unless-stopped
   user: "${PUID:-1000}:${PGID:-1000}"
