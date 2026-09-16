@@ -70,7 +70,7 @@ async function build(mode) {
             output: binaryPath,
             disableExperimentalSEAWarning: true,
             useCodeCache: false,
-            execArgv: ['--max-old-space-size=8192'],
+            execArgv: ['--max-old-space-size=6144'],
         }, undefined, 2)}\n`);
         run(process.execPath, ['--build-sea', seaConfigPath]);
         await fs.chmod(binaryPath, 0o755);
