@@ -59,6 +59,38 @@ Application environment variables such as `LOG_LEVEL`, log rotation, and
 `HISTORY_SNAPSHOT_MS` belong in `runtime/.env`. Command parameters of the DOGE
 Baseline contour belong in `compose.env`.
 
+## WireGuard bridge
+
+The optional Docker override directs the complete network traffic of the contour
+through a WireGuard client container. Copy the existing client configuration to
+`runtime/wireguard/wg_confs/wg0.conf`. This file contains private credentials and
+is never included in Git, the Docker build context, or deployment archives.
+
+Enable the override only after stopping the host WireGuard client that uses the
+same key:
+
+```bash
+cp compose.override.yaml.example compose.override.yaml
+```
+
+The client configuration must route IPv4 traffic through the tunnel with
+`AllowedIPs = 0.0.0.0/0`. Do not set `Table = off`. Use an IP address in
+`Endpoint` so the initial tunnel connection does not depend on DNS. Add
+`DNS = 1.1.1.1` to `[Interface]`. IPv6 is disabled inside the WireGuard network
+namespace. The remote WireGuard server must forward and NAT client traffic to
+the internet.
+
+Add the following line to `[Interface]` as a kill switch. It blocks ordinary
+external traffic unless it goes through `wg0`, while allowing WireGuard's marked
+encrypted packets to reach the VPN server:
+
+```ini
+PostUp = iptables -I OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT
+```
+
+The override assigns `1.1.1.1` as DNS for `wireguard-bridge`. Docker does not
+allow individual DNS settings on services that share its network namespace.
+
 Start a contour:
 
 ```bash

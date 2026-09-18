@@ -9,6 +9,7 @@ const releaseDirectory = path.join(root, 'release');
 const stagingDirectory = path.join(releaseDirectory, '.docker-staging');
 const packageName = 'pm-bot-docker-linux-amd64';
 const imageName = 'pm-bot:linux-amd64';
+const wireguardImageName = 'lscr.io/linuxserver/wireguard:latest';
 
 /** @typedef {'tiny' | 'full'} DeploymentMode */
 
@@ -32,10 +33,10 @@ function runDocker(args, useSudo, options = {}) {
     run(command, commandArgs, options);
 }
 
-function saveDockerImage(imagePath, useSudo) {
+function saveDockerImages(imagePath, useSudo) {
     const descriptor = openSync(imagePath, 'w', 0o644);
     try {
-        runDocker(['image', 'save', imageName], useSudo, { stdio: ['ignore', descriptor, 'inherit'] });
+        runDocker(['image', 'save', imageName, wireguardImageName], useSudo, { stdio: ['ignore', descriptor, 'inherit'] });
     } finally {
         closeSync(descriptor);
     }
@@ -76,14 +77,17 @@ async function build(mode, useSudo) {
             'buildx', 'build', '--platform', 'linux/amd64', '--load',
             '--tag', imageName, '--file', 'Dockerfile', '.',
         ], useSudo);
+        runDocker(['pull', '--platform', 'linux/amd64', wireguardImageName], useSudo);
         await fs.mkdir(runtimeDirectory, { recursive: true });
         await Promise.all([
             fs.mkdir(path.join(runtimeDirectory, 'history'), { recursive: true }),
             fs.mkdir(path.join(runtimeDirectory, 'models'), { recursive: true }),
             fs.mkdir(path.join(runtimeDirectory, 'logs'), { recursive: true }),
+            fs.mkdir(path.join(runtimeDirectory, 'wireguard', 'wg_confs'), { recursive: true }),
         ]);
-        saveDockerImage(imagePath, useSudo);
+        saveDockerImages(imagePath, useSudo);
         await fs.copyFile(path.join(root, 'compose.yaml'), path.join(packageDirectory, 'compose.yaml'));
+        await fs.copyFile(path.join(root, 'compose.override.yaml.example'), path.join(packageDirectory, 'compose.override.yaml.example'));
         await fs.copyFile(path.join(root, 'compose.env.example'), path.join(packageDirectory, 'compose.env.example'));
         await fs.copyFile(path.join(root, 'README.md'), path.join(packageDirectory, 'README.md'));
         await fs.writeFile(path.join(runtimeDirectory, 'README.md'), [
@@ -91,6 +95,7 @@ async function build(mode, useSudo) {
             '',
             'Create `.env` here manually. It is never included in deployment archives.',
             'The `history`, `models`, and `logs` directories are included in this archive.',
+            'Copy a WireGuard client config to `wireguard/wg_confs/wg0.conf` only when enabling the VPN override.',
             '',
         ].join('\n'));
 

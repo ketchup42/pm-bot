@@ -19,6 +19,7 @@ out/
 .env.local
 .env.*.local
 compose.env
+compose.override.yaml
 
 # Logs
 logs/
@@ -74,6 +75,7 @@ jest.config.js
 /backup/
 /history/
 /secret/
+/runtime/wireguard/
 
 TODO.txt
 AGENTS.md

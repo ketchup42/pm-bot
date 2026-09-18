@@ -1,0 +1,45 @@
+services:
+  wireguard-bridge:
+    image: lscr.io/linuxserver/wireguard:latest
+    cap_add:
+      - NET_ADMIN
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+    dns:
+      - 1.1.1.1
+    volumes:
+      - ./runtime/wireguard:/config
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+      net.ipv6.conf.all.disable_ipv6: "1"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          last_handshake=$$(wg show wg0 latest-handshakes | awk 'NR == 1 { print $$2 }');
+          test -n "$$last_handshake" && test "$$last_handshake" -gt 0 &&
+          test "$$last_handshake" -ge "$$(( $$(date +%s) - 90 ))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  collector-doge-baseline:
+    network_mode: service:wireguard-bridge
+    depends_on:
+      wireguard-bridge:
+        condition: service_healthy
+
+  strategy-doge-baseline:
+    network_mode: service:wireguard-bridge
+    depends_on:
+      wireguard-bridge:
+        condition: service_healthy
+
+  refresh-doge-baseline:
+    network_mode: service:wireguard-bridge
+    depends_on:
+      wireguard-bridge:
+        condition: service_healthy

@@ -12,6 +12,7 @@ history/
 models/
 logs/
 dumps/
+/runtime/wireguard/
 backup/
 .git/
 .agents/
