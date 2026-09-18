@@ -15,6 +15,8 @@ import {
 } from '../dist/app/core/history/HistorySettlementService.js';
 import {
     HISTORY_SCHEMA_VERSION,
+    HISTORY_MAX_COMPLETE_SNAPSHOT_GAP_MS,
+    HISTORY_MAX_COMPLETE_TARGET_PRICE_GAP_MS,
     HISTORY_SNAPSHOT_SCHEDULING_TOLERANCE_MS,
     buildHistoryGaps,
     buildHistoryQuality,
@@ -103,11 +105,55 @@ function makeFrame(startTime, stoppedEarly = false) {
         connection_events: [],
         data_gaps: buildHistoryGaps(snapshots, interval, 'btc', PS_CHAINLINK_TWAP_60, getSupportedCoins()),
         snapshots,
-        data_quality: buildHistoryQuality(
-            snapshots, startPrice, endPrice, indicatorPrices(startTime * 1_000), indicatorPrices((startTime + 300) * 1_000),
-            1_000, interval, stoppedEarly, PS_CHAINLINK_TWAP_60, getSupportedCoins(),
-        ),
+        data_quality: buildHistoryQuality({
+            snapshots,
+            startPrice,
+            endPrice,
+            indicatorStartPrices: indicatorPrices(startTime * 1_000),
+            indicatorEndPrices: indicatorPrices((startTime + 300) * 1_000),
+            frameStartMs: startTime * 1_000,
+            frameDurationMs: 1_000,
+            snapshotIntervalMs: interval,
+            stoppedEarly,
+            source: PS_CHAINLINK_TWAP_60,
+            indicatorCoins: getSupportedCoins(),
+        }),
     };
+}
+
+function buildTestFrameQuality(frame, frameDurationMs = 1_000) {
+    return buildHistoryQuality({
+        snapshots: frame.snapshots,
+        startPrice: frame.coin_frame_start_price,
+        endPrice: frame.coin_frame_end_price,
+        indicatorStartPrices: frame.indicator_frame_start_prices,
+        indicatorEndPrices: frame.indicator_frame_end_prices,
+        frameStartMs: frame.start_time * 1_000,
+        frameDurationMs,
+        snapshotIntervalMs: frame.snapshot_interval_ms,
+        stoppedEarly: false,
+        source: frame.source,
+        indicatorCoins: frame.indicator_coins,
+    });
+}
+
+function makeFrameSnapshotSeries(frame, { snapshotCount, intervalMs, gapStart, gapSnapshotCount }) {
+    const templates = frame.snapshots;
+    return Array.from({ length: snapshotCount }, (_, index) => {
+        const template = templates[index % templates.length];
+        const timestamp = frame.start_time * 1_000 + index * intervalMs;
+        const missingTargetPrice = index >= gapStart && index < gapStart + gapSnapshotCount;
+        return {
+            ...template,
+            timestamp,
+            coin_price: missingTargetPrice ? undefined : template.coin_price,
+            coin_timestamp: missingTargetPrice ? undefined : timestamp,
+            indicator_prices: Object.fromEntries(Object.entries(template.indicator_prices).map(([coin, price]) => [coin, {
+                ...price,
+                timestamp,
+            }])),
+        };
+    });
 }
 
 test('selectBestLevels returns existing book levels in best-price-first order', () => {
@@ -132,22 +178,48 @@ test('quality marks stopped frames incomplete and validator accepts the structur
     const incomplete = makeFrame(1_300, true);
     assert.equal(complete.data_quality.complete, true);
     assert.equal(incomplete.data_quality.complete, false);
-    assert.ok(incomplete.data_quality.warnings.includes('collection_stopped_early'));
+    assert.ok(incomplete.data_quality.blocking_warnings.includes('collection_stopped_early'));
     assert.deepEqual(validateHistoryFrame(complete), []);
     assert.deepEqual(validateHistoryFrame(incomplete), []);
 });
 
-test('quality marks a frame incomplete when one required indicator is absent', () => {
+test('first snapshot delay is diagnostic and does not change completeness', () => {
+    const frame = makeFrame(1_350);
+    for (const snapshot of frame.snapshots) {
+        snapshot.timestamp += 500;
+        snapshot.coin_timestamp += 500;
+        Object.values(snapshot.indicator_prices).forEach(price => { price.timestamp += 500; });
+    }
+    frame.data_quality = buildTestFrameQuality(frame);
+    assert.equal(frame.data_quality.first_snapshot_delay_ms, 500);
+    assert.equal(frame.data_quality.complete, true);
+});
+
+test('an empty frame omits first snapshot delay and remains incomplete', () => {
+    const frame = makeFrame(1_375);
+    frame.snapshots = [];
+    const quality = buildTestFrameQuality(frame);
+    assert.equal('first_snapshot_delay_ms' in quality, false);
+    assert.equal(quality.complete, false);
+    assert.ok(quality.blocking_warnings.includes('no_snapshots'));
+});
+
+test('indicator gaps remain diagnostic and do not make a target-complete frame incomplete', () => {
     const frame = makeFrame(1_400);
     delete frame.snapshots[2].indicator_prices.eth;
     delete frame.snapshots[3].indicator_prices.eth;
-    frame.data_quality = buildHistoryQuality(
-        frame.snapshots, frame.coin_frame_start_price, frame.coin_frame_end_price,
-        frame.indicator_frame_start_prices, frame.indicator_frame_end_prices,
-        1_000, frame.snapshot_interval_ms, false, frame.source, frame.indicator_coins,
-    );
-    assert.equal(frame.data_quality.complete, false);
-    assert.ok(frame.data_quality.warnings.includes('excessive_indicator_data_gap'));
+    frame.data_quality = buildTestFrameQuality(frame);
+    assert.equal(frame.data_quality.complete, true);
+    assert.ok(frame.data_quality.diagnostic_warnings.includes('excessive_indicator_data_gap'));
+});
+
+test('CLOB gaps remain diagnostic and do not make a target-complete frame incomplete', () => {
+    const frame = makeFrame(1_425);
+    frame.snapshots[2].book_watching = false;
+    frame.snapshots[3].book_watching = false;
+    frame.data_quality = buildTestFrameQuality(frame);
+    assert.equal(frame.data_quality.complete, true);
+    assert.ok(frame.data_quality.diagnostic_warnings.includes('excessive_clob_disconnect'));
 });
 
 test('history validates source and coin for every connection event', () => {
@@ -389,10 +461,7 @@ test('quality accepts one-sided and unchanged books while CLOB is connected', ()
         snapshot.up.asks = [];
         snapshot.down.bids = [];
     }
-    const quality = buildHistoryQuality(
-        frame.snapshots, 60_000, 60_010, frame.indicator_frame_start_prices, frame.indicator_frame_end_prices,
-        1_000, 100, false, PS_CHAINLINK_TWAP_60, getSupportedCoins(),
-    );
+    const quality = buildTestFrameQuality(frame);
 
     assert.equal(quality.disconnected_book_snapshots, 0);
     assert.equal(quality.complete, true);
@@ -407,15 +476,12 @@ test('gaps distinguish coin data and actual CLOB disconnects', () => {
     const gaps = buildHistoryGaps(frame.snapshots, 100, 'btc', PS_CHAINLINK_TWAP_60, getSupportedCoins());
     assert.ok(gaps.some(gap => gap.source === PS_CHAINLINK_TWAP_60));
     assert.ok(gaps.some(gap => gap.source === 'clob'));
-    const quality = buildHistoryQuality(
-        frame.snapshots, 60_000, 60_010, frame.indicator_frame_start_prices, frame.indicator_frame_end_prices,
-        1_000, 100, false, PS_CHAINLINK_TWAP_60, getSupportedCoins(),
-    );
+    const quality = buildTestFrameQuality(frame);
     assert.equal(quality.complete, false);
     assert.equal(quality.target_price.stale_snapshots, 2);
 });
 
-test('snapshot scheduling tolerance accepts 175ms and rejects 176ms at a 50ms interval', () => {
+test('snapshot gaps above 500ms are diagnostic and gaps above one second block completeness', () => {
     const frame = makeFrame(1_650);
     const updateTimestamps = gapMs => {
         const start = frame.start_time * 1_000;
@@ -426,26 +492,110 @@ test('snapshot scheduling tolerance accepts 175ms and rejects 176ms at a 50ms in
             Object.values(snapshot.indicator_prices).forEach(price => { price.timestamp = timestamp; });
         });
     };
-    updateTimestamps(175);
-    const accepted = buildHistoryQuality(
-        frame.snapshots, frame.coin_frame_start_price, frame.coin_frame_end_price,
-        frame.indicator_frame_start_prices, frame.indicator_frame_end_prices,
-        500, 50, false, frame.source, frame.indicator_coins,
-    );
-    assert.equal(HISTORY_SNAPSHOT_SCHEDULING_TOLERANCE_MS, 25);
-    assert.equal(accepted.warnings.includes('large_snapshot_gap'), false);
-    assert.equal(buildHistoryGaps(frame.snapshots, 50, 'btc', frame.source, frame.indicator_coins)
-        .some(gap => gap.source === 'snapshots'), false);
-
-    updateTimestamps(176);
-    const rejected = buildHistoryQuality(
-        frame.snapshots, frame.coin_frame_start_price, frame.coin_frame_end_price,
-        frame.indicator_frame_start_prices, frame.indicator_frame_end_prices,
-        500, 50, false, frame.source, frame.indicator_coins,
-    );
-    assert.ok(rejected.warnings.includes('large_snapshot_gap'));
-    assert.ok(buildHistoryGaps(frame.snapshots, 50, 'btc', frame.source, frame.indicator_coins)
+    updateTimestamps(501);
+    const accepted = buildTestFrameQuality(frame);
+    assert.equal(HISTORY_SNAPSHOT_SCHEDULING_TOLERANCE_MS, 200);
+    assert.equal(accepted.complete, true);
+    assert.equal(accepted.blocking_warnings.includes('large_snapshot_gap'), false);
+    assert.ok(buildHistoryGaps(frame.snapshots, 100, 'btc', frame.source, frame.indicator_coins)
         .some(gap => gap.source === 'snapshots'));
+
+    updateTimestamps(HISTORY_MAX_COMPLETE_SNAPSHOT_GAP_MS + 1);
+    const rejected = buildTestFrameQuality(frame);
+    assert.equal(rejected.complete, false);
+    assert.ok(rejected.blocking_warnings.includes('large_snapshot_gap'));
+    assert.ok(buildHistoryGaps(frame.snapshots, 100, 'btc', frame.source, frame.indicator_coins)
+        .some(gap => gap.source === 'snapshots'));
+});
+
+test('target price quality allows five percent short gaps and records their maximum duration', () => {
+    const frame = makeFrame(1_700);
+    const additionalSnapshots = frame.snapshots.map(snapshot => ({
+        ...snapshot,
+        timestamp: snapshot.timestamp + 1_000,
+        coin_timestamp: snapshot.coin_timestamp + 1_000,
+        indicator_prices: Object.fromEntries(Object.entries(snapshot.indicator_prices).map(([coin, price]) => [coin, {
+            ...price,
+            timestamp: price.timestamp + 1_000,
+        }])),
+    }));
+    frame.snapshots.push(...additionalSnapshots);
+    frame.snapshots[4].coin_price = undefined;
+    frame.snapshots[4].coin_timestamp = undefined;
+    const quality = buildTestFrameQuality(frame, 2_000);
+    assert.equal(quality.complete, true);
+    assert.equal(quality.target_price.missing_snapshots, 1);
+    assert.equal(quality.max_target_price_gap_ms, 100);
+});
+
+test('a ten-second target gap passes and a longer gap blocks independently of its ratio', () => {
+    const frame = makeFrame(1_800);
+    frame.snapshots = makeFrameSnapshotSeries(frame, {
+        snapshotCount: 2_020,
+        intervalMs: 100,
+        gapStart: 500,
+        gapSnapshotCount: 100,
+    });
+    const accepted = buildTestFrameQuality(frame, 202_000);
+    assert.equal(accepted.max_target_price_gap_ms, HISTORY_MAX_COMPLETE_TARGET_PRICE_GAP_MS);
+    assert.equal(accepted.complete, true);
+
+    frame.snapshots[600].coin_price = undefined;
+    frame.snapshots[600].coin_timestamp = undefined;
+    const rejected = buildTestFrameQuality(frame, 202_000);
+    assert.equal(rejected.complete, false);
+    assert.ok(rejected.max_target_price_gap_ms > HISTORY_MAX_COMPLETE_TARGET_PRICE_GAP_MS);
+    assert.ok(rejected.blocking_warnings.includes('target_price_gap_too_long'));
+    assert.equal(rejected.blocking_warnings.includes('excessive_target_price_gap_ratio'), false);
+});
+
+test('target price gaps above five percent block completeness independently of their duration', () => {
+    const frame = makeFrame(1_850);
+    for (const snapshot of [frame.snapshots[1], frame.snapshots[3]]) {
+        snapshot.coin_price = undefined;
+        snapshot.coin_timestamp = undefined;
+    }
+    const quality = buildTestFrameQuality(frame);
+    assert.equal(quality.complete, false);
+    assert.ok(quality.blocking_warnings.includes('excessive_target_price_gap_ratio'));
+    assert.equal(quality.blocking_warnings.includes('target_price_gap_too_long'), false);
+});
+
+test('target price ratio and duration violations are both preserved', () => {
+    const frame = makeFrame(1_875);
+    frame.snapshots = makeFrameSnapshotSeries(frame, {
+        snapshotCount: 110,
+        intervalMs: 100,
+        gapStart: 0,
+        gapSnapshotCount: 110,
+    });
+    const quality = buildTestFrameQuality(frame, 11_000);
+    assert.ok(quality.blocking_warnings.includes('excessive_target_price_gap_ratio'));
+    assert.ok(quality.blocking_warnings.includes('target_price_gap_too_long'));
+});
+
+test('new and legacy warning formats both validate', () => {
+    const currentFrame = makeFrame(1_900);
+    assert.deepEqual(validateHistoryFrame(currentFrame), []);
+
+    const legacyFrame = makeFrame(2_000);
+    const { blocking_warnings, diagnostic_warnings, first_snapshot_delay_ms, max_target_price_gap_ms, ...legacyQuality } = legacyFrame.data_quality;
+    legacyFrame.data_quality = { ...legacyQuality, complete: false, warnings: ['excessive_coin_data_gap'] };
+    assert.deepEqual(validateHistoryFrame(legacyFrame), []);
+});
+
+test('history rejects invalid split warning values', () => {
+    const negativeGapFrame = makeFrame(2_100);
+    negativeGapFrame.data_quality.max_target_price_gap_ms = -1;
+    assert.ok(validateHistoryFrame(negativeGapFrame).includes('invalid_quality_warning_format'));
+
+    const unknownWarningFrame = makeFrame(2_200);
+    unknownWarningFrame.data_quality.diagnostic_warnings.push('unknown_warning');
+    assert.ok(validateHistoryFrame(unknownWarningFrame).includes('invalid_quality_warning_format'));
+
+    const negativeFirstDelayFrame = makeFrame(2_300);
+    negativeFirstDelayFrame.data_quality.first_snapshot_delay_ms = -1;
+    assert.ok(validateHistoryFrame(negativeFirstDelayFrame).includes('invalid_first_snapshot_delay'));
 });
 
 test('history schema accepts every coin and frame from the canonical registries', () => {

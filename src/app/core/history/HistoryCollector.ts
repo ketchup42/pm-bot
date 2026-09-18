@@ -219,18 +219,19 @@ export class HistoryCollector {
         const endPrice = historyNumberOrUndefined(await endPricePromise);
         const indicatorStartPrices = await indicatorStartPricesPromise;
         const indicatorEndPrices = indicatorEndPricesPromise === undefined ? {} : await indicatorEndPricesPromise;
-        const quality = buildHistoryQuality(
+        const quality = buildHistoryQuality({
             snapshots,
             startPrice,
             endPrice,
             indicatorStartPrices,
             indicatorEndPrices,
-            durationMs,
-            this.options.snapshotIntervalMs,
+            frameStartMs: startTime * 1_000,
+            frameDurationMs: durationMs,
+            snapshotIntervalMs: this.options.snapshotIntervalMs,
             stoppedEarly,
-            this.coinWatcher.getSource(),
-            getSupportedCoins(),
-        );
+            source: this.coinWatcher.getSource(),
+            indicatorCoins: getSupportedCoins(),
+        });
         const frame: HistoryFrameV3 = {
             schema_version: HISTORY_SCHEMA_VERSION,
             source: this.coinWatcher.getSource(),
@@ -262,8 +263,11 @@ export class HistoryCollector {
             data_quality: quality,
         };
         const result = await this.writer.write(frame);
-        const qualityDetails = quality.warnings.length === 0 ? '' :
-            ` warnings=${quality.warnings.join(',')} targetGaps=${quality.target_price.missing_snapshots + quality.target_price.stale_snapshots} ` +
+        const qualityDetails = ` blockingWarnings=${quality.blocking_warnings!.join(',') || 'none'} ` +
+            `diagnosticWarnings=${quality.diagnostic_warnings!.join(',') || 'none'} ` +
+            `targetGaps=${quality.target_price.missing_snapshots + quality.target_price.stale_snapshots} ` +
+            `maxTargetGap=${quality.max_target_price_gap_ms}ms ` +
+            `firstSnapshotDelay=${quality.first_snapshot_delay_ms === undefined ? 'none' : `${quality.first_snapshot_delay_ms}ms`} ` +
             `clobDisconnects=${quality.disconnected_book_snapshots}`;
         logger.info(
             `[HistoryCollector] Saved ${result.path} (${result.bytes} bytes, ` +

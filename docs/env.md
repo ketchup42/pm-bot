@@ -52,7 +52,7 @@ select the frame, common price source and number of frames.
 | Variable              | Default          | Accepted values / meaning                                                 |
 | --------------------- | ---------------- | ------------------------------------------------------------------------- |
 | `HISTORY_DIR`         | `history/frames` | Directory for versioned frame files.                                      |
-| `HISTORY_SNAPSHOT_MS` | `50`             | Snapshot interval in milliseconds. Integer, at least `25`.                |
+| `HISTORY_SNAPSHOT_MS` | `100`            | Snapshot interval in milliseconds. Integer, at least `25`.                |
 | `HISTORY_BOOK_DEPTH`  | `10`             | Best bid/ask levels saved for each side. Integer from `1` to `100`.       |
 | `HISTORY_GZIP`        | `true`           | `true`/`false` or `1`/`0`. Gzip each frame file.                          |
 | `HISTORY_MAX_FRAMES`  | `0`              | Number of retained files. `0` disables collector-side rotation.           |
@@ -60,16 +60,16 @@ select the frame, common price source and number of frames.
 Recommended multi-coin 5-minute collection configuration:
 
 ```bash
-env HISTORY_DIR='history/frames' HISTORY_SNAPSHOT_MS=50 HISTORY_BOOK_DEPTH=10 \
+env HISTORY_DIR='history/frames' HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 \
   HISTORY_GZIP=true HISTORY_MAX_FRAMES=0 \
   npm run collect -- --coin all --frame 5m --source chainlink-twap-60
 ```
 
-At the default 50 ms interval, a five-minute target frame expects 6,000 snapshots
-and needs at least 5,700 for the 95% coverage criterion. The current six-target
-`--coin all` run can therefore write up to 36,000 snapshots per five-minute
-interval. Set `HISTORY_SNAPSHOT_MS` explicitly to a larger value only when
-diagnosing host or network capacity. 50 ms is the project default.
+At the default 100 ms interval, a five-minute target frame expects 3,000 snapshots
+and needs at least 2,850 for the 95% coverage criterion. The current six-target
+`--coin all` run can therefore write up to 18,000 snapshots per five-minute
+interval. Set `HISTORY_SNAPSHOT_MS` explicitly when diagnosing host or network
+capacity. 100 ms is the project default.
 
 The collector uses one shared price connection per selected source for the complete
 coin basket. It reconnects after 10 seconds without an update for any active coin.
@@ -124,7 +124,7 @@ LOG_FILE_LEVEL=info
 
 # Optional read-only history collection.
 HISTORY_DIR=history/frames
-HISTORY_SNAPSHOT_MS=50
+HISTORY_SNAPSHOT_MS=100
 HISTORY_BOOK_DEPTH=10
 HISTORY_GZIP=true
 HISTORY_MAX_FRAMES=0

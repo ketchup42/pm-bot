@@ -80,11 +80,20 @@ every coin from the canonical registry. All prices in the basket use the same
 | `settlement`                     | Derived outcome plus later-confirmed market result.         |
 
 `indicator_coins` records the registry at collection time, so a later addition of a
-coin does not invalidate earlier V3 files. `complete=true` requires a healthy target source, CLOB and complete same-source basket.
-`history:settle` independently
-fetches the event again and writes `confirmed_outcome` once the market is closed.
-Snapshot scheduling allows a 25 ms local event-loop tolerance in addition to three
-sampling intervals. Price and connection-quality checks remain unchanged.
+coin does not invalidate earlier V3 files. `complete=true` requires target start
+and end prices, at least 95% snapshot coverage, no snapshot gap above one second,
+and healthy target-price continuity. Target missing or stale prices may occupy up to
+5% of snapshots, but no continuous target gap may exceed ten seconds. These target
+conditions are reported separately as `excessive_target_price_gap_ratio` and
+`target_price_gap_too_long`. Indicator diagnostics use the same aggregate 5%
+threshold. Indicator and CLOB gaps remain diagnostic and are retained for replay
+without making the frame incomplete. New frames separate `blocking_warnings` from
+`diagnostic_warnings`, record `max_target_price_gap_ms`, and keep
+`first_snapshot_delay_ms` as a non-blocking collection diagnostic. Legacy V3 frames
+retain their flat `warnings`, including `excessive_coin_data_gap`.
+`history:settle` independently fetches the event again and writes
+`confirmed_outcome` once the market is closed. Snapshot scheduling records a gap
+after three sampling intervals plus 200 ms.
 Legacy live scheduler dumps are retained for external analysis but are not
 `HistoryFrameV3` and are not replay inputs.
 

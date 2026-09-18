@@ -2,7 +2,7 @@ import { logger } from '../log.js';
 import { FRAME_CONFIGS } from '../market/frame.js';
 import { PriceWatcherFactory } from '../market/price/PriceWatcherFactory.js';
 import { getTradingClient } from '../rest/client-env.js';
-import { TIMER_FAST, TIMER_NORM } from '../timer.js';
+import { TIMER_FAST, TIMER_SLOW } from '../timer.js';
 import { readFlag, readRequiredTradeArguments } from './cli_args.js';
 import { ExecManager } from './core/ExecManager.js';
 import { ExecScheduler } from './core/ExecScheduler.js';
@@ -76,8 +76,8 @@ export async function runDogeBaselineStrategy(): Promise<void> {
         const frameDurationMs = FRAME_CONFIGS[DOGE_BASELINE_FRAME].durationMs;
         logger.info(`[DogeBaseline] Ready, waiting for the next ${DOGE_BASELINE_FRAME} frame boundary`);
         await Promise.all([
-            masterScheduler.start(frameDurationMs, TIMER_NORM),
-            shadowScheduler.start(frameDurationMs, TIMER_NORM),
+            masterScheduler.start(frameDurationMs, TIMER_SLOW),
+            shadowScheduler.start(frameDurationMs, TIMER_SLOW),
         ]);
     } finally {
         PriceWatcherFactory.destroyCoinWatcher(DOGE_BASELINE_COIN, DOGE_BASELINE_SOURCE);

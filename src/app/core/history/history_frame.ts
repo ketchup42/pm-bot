@@ -6,8 +6,12 @@ import { getPriceSourceConfig, isPriceSource, type PriceSource } from '../../../
 import { positiveFiniteNumberOrUndefined } from '../../../utils.js';
 
 export const HISTORY_SCHEMA_VERSION = 3 as const;
-/** Allows small local event-loop jitter without accepting a material collection gap. */
-export const HISTORY_SNAPSHOT_SCHEDULING_TOLERANCE_MS = 25;
+/** Extra delay tolerated before recording a scheduling gap. */
+export const HISTORY_SNAPSHOT_SCHEDULING_TOLERANCE_MS = 200;
+/** A scheduling gap larger than this makes a frame incomplete. */
+export const HISTORY_MAX_COMPLETE_SNAPSHOT_GAP_MS = 1_000;
+export const HISTORY_MAX_PRICE_GAP_RATIO = 0.05;
+export const HISTORY_MAX_COMPLETE_TARGET_PRICE_GAP_MS = 10_000;
 
 export interface HistoryPriceV3 { price: number; timestamp: number; }
 
@@ -35,17 +39,22 @@ export type HistoryOutcomeV3 = MarketSide | 'tie' | 'unknown';
 export type HistoryConnectionStateV3 = 'open' | 'close' | 'error' | 'stale' | 'reconnect';
 export type HistoryConnectionSourceV3 = 'clob' | PriceSource;
 export type HistoryGapSourceV3 = 'snapshots' | 'clob' | PriceSource;
-export type HistoryQualityWarning =
-    | 'collection_stopped_early'
-    | 'missing_frame_start_price'
-    | 'missing_frame_end_price'
-    | 'missing_indicator_frame_price'
-    | 'no_snapshots'
-    | 'insufficient_snapshot_coverage'
-    | 'excessive_coin_data_gap'
-    | 'excessive_indicator_data_gap'
-    | 'excessive_clob_disconnect'
-    | 'large_snapshot_gap';
+export const HISTORY_QUALITY_WARNINGS = Object.freeze([
+    'collection_stopped_early',
+    'missing_frame_start_price',
+    'missing_frame_end_price',
+    'missing_indicator_frame_price',
+    'no_snapshots',
+    'insufficient_snapshot_coverage',
+    /** Legacy flat-warning code retained for existing V3 frames. */
+    'excessive_coin_data_gap',
+    'excessive_target_price_gap_ratio',
+    'target_price_gap_too_long',
+    'excessive_indicator_data_gap',
+    'excessive_clob_disconnect',
+    'large_snapshot_gap',
+] as const);
+export type HistoryQualityWarning = typeof HISTORY_QUALITY_WARNINGS[number];
 
 export interface HistoryConnectionEventV3 {
     timestamp: number;
@@ -81,12 +90,21 @@ export interface HistoryDataQualityV3 {
     expected_snapshots: number;
     snapshot_count: number;
     first_snapshot_timestamp: number | undefined;
+    /** Delay before the first snapshot, recorded for collection diagnostics only. */
+    first_snapshot_delay_ms?: number;
     last_snapshot_timestamp: number | undefined;
     max_snapshot_gap_ms: number;
+    /** Largest continuous missing or stale target-price interval. */
+    max_target_price_gap_ms?: number;
     target_price: HistoryPriceQualityV3;
     indicator_prices: Partial<Record<Coin, HistoryPriceQualityV3>>;
     disconnected_book_snapshots: number;
-    warnings: HistoryQualityWarning[];
+    /** Blocking causes of incomplete collection in newly written frames. */
+    blocking_warnings?: HistoryQualityWarning[];
+    /** Non-blocking indicator and CLOB diagnostics in newly written frames. */
+    diagnostic_warnings?: HistoryQualityWarning[];
+    /** Legacy flat warnings retained for reading existing V3 frames. */
+    warnings?: HistoryQualityWarning[];
 }
 
 /** Complete multi-coin research record. V2 files are deliberately unsupported. */
@@ -176,7 +194,46 @@ function getPriceQuality(
 }
 
 function isPriceQualityAcceptable(quality: Readonly<HistoryPriceQualityV3>, snapshotCount: number): boolean {
-    return quality.missing_snapshots + quality.stale_snapshots <= Math.ceil(Math.max(1, snapshotCount) * 0.02);
+    return quality.missing_snapshots + quality.stale_snapshots <= Math.ceil(Math.max(1, snapshotCount) * HISTORY_MAX_PRICE_GAP_RATIO);
+}
+
+function isHistoryQualityWarning(value: unknown): value is HistoryQualityWarning {
+    return typeof value === 'string' && HISTORY_QUALITY_WARNINGS.includes(value as HistoryQualityWarning);
+}
+
+function isHistoryQualityWarnings(value: unknown): value is HistoryQualityWarning[] {
+    return Array.isArray(value) && value.every(isHistoryQualityWarning);
+}
+
+function isPriceMissingOrStale(
+    snapshot: HistorySnapshotV3, source: PriceSource,
+    read: (snapshot: HistorySnapshotV3) => HistoryPriceV3 | undefined,
+): boolean {
+    const point = read(snapshot);
+    return point === undefined || snapshot.timestamp - point.timestamp > getPriceSourceConfig(source).maxAgeMs;
+}
+
+function getMaximumPriceGapMs(
+    snapshots: readonly HistorySnapshotV3[], snapshotIntervalMs: number, source: PriceSource,
+    read: (snapshot: HistorySnapshotV3) => HistoryPriceV3 | undefined,
+): number {
+    let gapStart: number | undefined;
+    let maximumGapMs = 0;
+    for (const snapshot of snapshots) {
+        if (isPriceMissingOrStale(snapshot, source, read)) {
+            gapStart ??= snapshot.timestamp;
+            continue;
+        }
+        if (gapStart !== undefined) {
+            maximumGapMs = Math.max(maximumGapMs, snapshot.timestamp - gapStart);
+            gapStart = undefined;
+        }
+    }
+    if (gapStart !== undefined) {
+        const end = (snapshots[snapshots.length - 1]?.timestamp ?? gapStart) + snapshotIntervalMs;
+        maximumGapMs = Math.max(maximumGapMs, end - gapStart);
+    }
+    return maximumGapMs;
 }
 
 export function buildHistoryGaps(
@@ -193,25 +250,43 @@ export function buildHistoryGaps(
             gaps.push({ source: 'snapshots', coin: undefined, start_timestamp: start, end_timestamp: current.timestamp, duration_ms: current.timestamp - start });
         }
     }
-    appendBooleanGaps(gaps, snapshots, snapshotIntervalMs, source, coin, snapshot => {
-        const quality = getPriceQuality([snapshot], source, value => makeHistoryPrice(value.coin_price, value.coin_timestamp));
-        return quality.missing_snapshots > 0 || quality.stale_snapshots > 0;
-    });
+    appendBooleanGaps(gaps, snapshots, snapshotIntervalMs, source, coin,
+        snapshot => isPriceMissingOrStale(snapshot, source, value => makeHistoryPrice(value.coin_price, value.coin_timestamp)));
     for (const indicatorCoin of indicatorCoins) {
-        appendBooleanGaps(gaps, snapshots, snapshotIntervalMs, source, indicatorCoin, snapshot => {
-            const quality = getPriceQuality([snapshot], source, value => value.indicator_prices[indicatorCoin]);
-            return quality.missing_snapshots > 0 || quality.stale_snapshots > 0;
-        });
+        appendBooleanGaps(gaps, snapshots, snapshotIntervalMs, source, indicatorCoin,
+            snapshot => isPriceMissingOrStale(snapshot, source, value => value.indicator_prices[indicatorCoin]));
     }
     appendBooleanGaps(gaps, snapshots, snapshotIntervalMs, 'clob', coin, snapshot => !snapshot.book_watching);
     return gaps.sort((left, right) => left.start_timestamp - right.start_timestamp || left.source.localeCompare(right.source));
 }
 
-export function buildHistoryQuality(
-    snapshots: readonly HistorySnapshotV3[], startPrice: number | undefined, endPrice: number | undefined,
-    indicatorStartPrices: Readonly<Partial<Record<Coin, HistoryPriceV3>>>, indicatorEndPrices: Readonly<Partial<Record<Coin, HistoryPriceV3>>>,
-    frameDurationMs: number, snapshotIntervalMs: number, stoppedEarly: boolean, source: PriceSource, indicatorCoins: readonly Coin[],
-): HistoryDataQualityV3 {
+export interface HistoryQualityBuildInput {
+    readonly snapshots: readonly HistorySnapshotV3[];
+    readonly startPrice: number | undefined;
+    readonly endPrice: number | undefined;
+    readonly indicatorStartPrices: Readonly<Partial<Record<Coin, HistoryPriceV3>>>;
+    readonly indicatorEndPrices: Readonly<Partial<Record<Coin, HistoryPriceV3>>>;
+    readonly frameStartMs: number;
+    readonly frameDurationMs: number;
+    readonly snapshotIntervalMs: number;
+    readonly stoppedEarly: boolean;
+    readonly source: PriceSource;
+    readonly indicatorCoins: readonly Coin[];
+}
+
+export function buildHistoryQuality({
+    snapshots,
+    startPrice,
+    endPrice,
+    indicatorStartPrices,
+    indicatorEndPrices,
+    frameStartMs,
+    frameDurationMs,
+    snapshotIntervalMs,
+    stoppedEarly,
+    source,
+    indicatorCoins,
+}: Readonly<HistoryQualityBuildInput>): HistoryDataQualityV3 {
     let maxSnapshotGapMs = 0;
     let disconnectedBookSnapshots = 0;
     snapshots.forEach((snapshot, index) => {
@@ -220,38 +295,54 @@ export function buildHistoryQuality(
         if (!snapshot.book_watching) disconnectedBookSnapshots++;
     });
     const expectedSnapshots = Math.floor(frameDurationMs / snapshotIntervalMs);
+    const firstSnapshotTimestamp = snapshots[0]?.timestamp;
+    const firstSnapshotDelayMs = firstSnapshotTimestamp === undefined
+        ? undefined
+        : Math.max(0, firstSnapshotTimestamp - frameStartMs);
     const targetPrice = getPriceQuality(snapshots, source, snapshot => makeHistoryPrice(snapshot.coin_price, snapshot.coin_timestamp));
+    const maxTargetPriceGapMs = getMaximumPriceGapMs(
+        snapshots, snapshotIntervalMs, source, snapshot => makeHistoryPrice(snapshot.coin_price, snapshot.coin_timestamp),
+    );
     const indicatorPrices: Partial<Record<Coin, HistoryPriceQualityV3>> = Object.fromEntries(indicatorCoins.map(indicatorCoin => [indicatorCoin,
         getPriceQuality(snapshots, source, snapshot => snapshot.indicator_prices[indicatorCoin]),
     ]));
     const enoughSnapshots = snapshots.length >= Math.floor(expectedSnapshots * 0.95);
     const acceptableBook = disconnectedBookSnapshots <= Math.ceil(Math.max(1, snapshots.length) * 0.02);
-    const acceptableGap = maxSnapshotGapMs <= snapshotIntervalMs * 3 + HISTORY_SNAPSHOT_SCHEDULING_TOLERANCE_MS;
+    const acceptableGap = maxSnapshotGapMs <= HISTORY_MAX_COMPLETE_SNAPSHOT_GAP_MS;
     const hasIndicatorFramePrices = indicatorCoins.every(indicatorCoin =>
         indicatorStartPrices[indicatorCoin] !== undefined && indicatorEndPrices[indicatorCoin] !== undefined,
     );
     const acceptableIndicators = indicatorCoins.every(indicatorCoin =>
         isPriceQualityAcceptable(indicatorPrices[indicatorCoin]!, snapshots.length),
     );
-    const indicatorsComplete = hasIndicatorFramePrices && acceptableIndicators;
-    const warnings: HistoryQualityWarning[] = [];
-    if (stoppedEarly) warnings.push('collection_stopped_early');
-    if (startPrice === undefined) warnings.push('missing_frame_start_price');
-    if (endPrice === undefined) warnings.push('missing_frame_end_price');
-    if (!hasIndicatorFramePrices) warnings.push('missing_indicator_frame_price');
-    if (snapshots.length === 0) warnings.push('no_snapshots');
-    if (!enoughSnapshots) warnings.push('insufficient_snapshot_coverage');
-    if (!isPriceQualityAcceptable(targetPrice, snapshots.length)) warnings.push('excessive_coin_data_gap');
-    if (!acceptableIndicators) warnings.push('excessive_indicator_data_gap');
-    if (!acceptableBook) warnings.push('excessive_clob_disconnect');
-    if (!acceptableGap) warnings.push('large_snapshot_gap');
+    const blockingWarnings: HistoryQualityWarning[] = [];
+    const diagnosticWarnings: HistoryQualityWarning[] = [];
+    if (stoppedEarly) blockingWarnings.push('collection_stopped_early');
+    if (startPrice === undefined) blockingWarnings.push('missing_frame_start_price');
+    if (endPrice === undefined) blockingWarnings.push('missing_frame_end_price');
+    if (snapshots.length === 0) blockingWarnings.push('no_snapshots');
+    if (!enoughSnapshots) blockingWarnings.push('insufficient_snapshot_coverage');
+    if (!isPriceQualityAcceptable(targetPrice, snapshots.length)) {
+        blockingWarnings.push('excessive_target_price_gap_ratio');
+    }
+    if (maxTargetPriceGapMs > HISTORY_MAX_COMPLETE_TARGET_PRICE_GAP_MS) {
+        blockingWarnings.push('target_price_gap_too_long');
+    }
+    if (!acceptableGap) blockingWarnings.push('large_snapshot_gap');
+    if (!hasIndicatorFramePrices) diagnosticWarnings.push('missing_indicator_frame_price');
+    if (!acceptableIndicators) diagnosticWarnings.push('excessive_indicator_data_gap');
+    if (!acceptableBook) diagnosticWarnings.push('excessive_clob_disconnect');
+    const firstSnapshotDelay = firstSnapshotDelayMs === undefined ? {} : { first_snapshot_delay_ms: firstSnapshotDelayMs };
     return {
-        complete: !stoppedEarly && startPrice !== undefined && endPrice !== undefined && indicatorsComplete && enoughSnapshots &&
-            isPriceQualityAcceptable(targetPrice, snapshots.length) && acceptableBook && acceptableGap,
+        complete: blockingWarnings.length === 0,
         expected_snapshots: expectedSnapshots, snapshot_count: snapshots.length,
-        first_snapshot_timestamp: snapshots[0]?.timestamp, last_snapshot_timestamp: snapshots[snapshots.length - 1]?.timestamp,
-        max_snapshot_gap_ms: maxSnapshotGapMs, target_price: targetPrice, indicator_prices: indicatorPrices,
-        disconnected_book_snapshots: disconnectedBookSnapshots, warnings,
+        first_snapshot_timestamp: firstSnapshotTimestamp,
+        ...firstSnapshotDelay,
+        last_snapshot_timestamp: snapshots[snapshots.length - 1]?.timestamp,
+        max_snapshot_gap_ms: maxSnapshotGapMs, max_target_price_gap_ms: maxTargetPriceGapMs,
+        target_price: targetPrice, indicator_prices: indicatorPrices,
+        disconnected_book_snapshots: disconnectedBookSnapshots,
+        blocking_warnings: blockingWarnings, diagnostic_warnings: diagnosticWarnings,
     };
 }
 
@@ -281,11 +372,31 @@ export function validateHistoryFrame(frame: HistoryFrameV3): string[] {
         errors.push('invalid_frame_price');
     }
     if (frame.data_quality.snapshot_count !== frame.snapshots.length) errors.push('snapshot_count_mismatch');
+    if (frame.data_quality.first_snapshot_delay_ms !== undefined &&
+        (!Number.isFinite(frame.data_quality.first_snapshot_delay_ms) || frame.data_quality.first_snapshot_delay_ms < 0)) {
+        errors.push('invalid_first_snapshot_delay');
+    }
     if (frame.indicator_coins.some(coin => frame.data_quality.indicator_prices[coin] === undefined)) errors.push('missing_indicator_quality');
     if (Object.keys(frame.data_quality.indicator_prices).some(coin => !frame.indicator_coins.includes(coin as Coin))) {
         errors.push('invalid_indicator_quality');
     }
-    if (frame.data_quality.complete && frame.data_quality.warnings.length > 0) errors.push('complete_with_quality_warning');
+    const quality = frame.data_quality;
+    const usesLegacyWarningFormat = quality.warnings !== undefined;
+    const usesSplitWarningFormat = quality.blocking_warnings !== undefined || quality.diagnostic_warnings !== undefined ||
+        quality.max_target_price_gap_ms !== undefined;
+    if (usesLegacyWarningFormat === usesSplitWarningFormat) {
+        errors.push('invalid_quality_warning_format');
+    } else if (usesLegacyWarningFormat) {
+        if (!isHistoryQualityWarnings(quality.warnings)) errors.push('invalid_quality_warning_format');
+        else if (quality.complete && quality.warnings.length > 0) errors.push('complete_with_quality_warning');
+    } else if (!isHistoryQualityWarnings(quality.blocking_warnings) || !isHistoryQualityWarnings(quality.diagnostic_warnings) ||
+        !Number.isFinite(quality.max_target_price_gap_ms) || quality.max_target_price_gap_ms! < 0) {
+        errors.push('invalid_quality_warning_format');
+    } else if (quality.complete && quality.blocking_warnings.length > 0) {
+        errors.push('complete_with_blocking_quality_warning');
+    } else if (!quality.complete && quality.blocking_warnings.length === 0) {
+        errors.push('incomplete_without_blocking_quality_warning');
+    }
     if ((frame.settlement.confirmed_outcome === undefined) !== (frame.settlement.confirmed_at === undefined)) errors.push('incomplete_confirmed_settlement');
     if (Object.entries(frame.indicator_frame_start_prices).some(([coin, point]) => !frame.indicator_coins.includes(coin as Coin) || !isValidPrice(point)) ||
         Object.entries(frame.indicator_frame_end_prices).some(([coin, point]) => !frame.indicator_coins.includes(coin as Coin) || !isValidPrice(point))) errors.push('invalid_indicator_frame_price');

@@ -110,10 +110,19 @@ function makeFrame() {
         connection_events: [],
         data_gaps: buildHistoryGaps(snapshots, 100, 'btc', PS_CHAINLINK_TWAP_60, getSupportedCoins()),
         snapshots,
-        data_quality: buildHistoryQuality(
-            snapshots, 60_000, 60_010, indicatorPrices(start * 1_000), indicatorPrices((start + 300) * 1_000),
-            200, 100, false, PS_CHAINLINK_TWAP_60, getSupportedCoins(),
-        ),
+        data_quality: buildHistoryQuality({
+            snapshots,
+            startPrice: 60_000,
+            endPrice: 60_010,
+            indicatorStartPrices: indicatorPrices(start * 1_000),
+            indicatorEndPrices: indicatorPrices((start + 300) * 1_000),
+            frameStartMs: start * 1_000,
+            frameDurationMs: 200,
+            snapshotIntervalMs: 100,
+            stoppedEarly: false,
+            source: PS_CHAINLINK_TWAP_60,
+            indicatorCoins: getSupportedCoins(),
+        }),
     };
 }
 

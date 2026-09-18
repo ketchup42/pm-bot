@@ -16,7 +16,7 @@ npm run check
 npm run collect -- --help
 
 # Record one frame for every registered coin.
-env HISTORY_SNAPSHOT_MS=50 \
+env HISTORY_SNAPSHOT_MS=100 \
   npm run collect -- --coin all --frame 5m --source chainlink-twap-60 --count 1
 ```
 
@@ -30,7 +30,7 @@ Run these three commands in separate terminals. The collector retains the newest
 re-trains, tunes configuration, and compares the working and candidate pairs.
 
 ```bash
-env LOG_LEVEL=info HISTORY_SNAPSHOT_MS=50 HISTORY_BOOK_DEPTH=10 HISTORY_GZIP=true \
+env LOG_LEVEL=info HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 HISTORY_GZIP=true \
   npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 700 --cycle
 ```
 
