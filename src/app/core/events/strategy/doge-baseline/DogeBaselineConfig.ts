@@ -70,6 +70,10 @@ export const DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_TRADE_RATIO = 0.1;
 export const DOGE_BASELINE_DEFAULT_REPLAY_FRAME_COUNT = 100;
 /** Theoretical CLOB request-and-match delay used by DOGE replay and refresh, in milliseconds. */
 export const DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS = 250;
+/** Minimum selected replay net PnL per frame required to allow new live entries. */
+export const DOGE_BASELINE_MINIMUM_TRADING_NET_PNL_PER_REPLAY_FRAME = 0.5;
+/** Minimum selected replay net-PnL change per frame considered a trading-regime trend. */
+export const DOGE_BASELINE_TRADING_NET_PNL_TREND_PER_REPLAY_FRAME = 0.1;
 /** Snapshot interval in milliseconds used to bound configuration-research memory use. */
 export const DOGE_BASELINE_CONFIG_RESEARCH_SNAPSHOT_INTERVAL_MS = 250;
 

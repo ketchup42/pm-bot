@@ -238,8 +238,12 @@ confidence calibration for every combination.
 If every one of the four evaluated working/candidate model-and-configuration pairs
 has non-positive net PnL on the replay window, refresh writes
 `"tradingEnabled": false` to the current `config.json`. This stops new live entries
-without stopping research or refresh. A later refresh turns it back on only when it
-publishes a pair that passed the normal promotion safeguards.
+without stopping research or refresh. Refresh also uses the selected pair's replay
+PnL as a regime trend. For 100 replay frames, entries require at least `$50` selected
+net PnL. A change of at least `$10` from the previous comparable evaluation enables
+trading when rising and pauses it when falling. Both thresholds scale linearly with
+the replay-frame count. Evaluations are comparable only when replay frames, initial
+balance and execution latency match. Smaller changes preserve the current state.
 
 ## Before changing live behaviour
 

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { isFileMissingError } from '../../../../../file_lock.js';
 import { ReplayExecutionConfig, ReplayMetrics, runReplay } from '../../../backtest/replay.js';
 import {
     DogeBaselineEntryDecisionMetricsByMode,
@@ -63,6 +64,20 @@ export interface DogeBaselineConfigurationEvaluation {
     selected: DogeBaselineEvaluationCombination;
     promoted: boolean;
     reasons: DogeBaselineSelectionRejectionReason[];
+}
+
+/** The subset of a persisted evaluation needed to compare consecutive replay PnL values. */
+export interface DogeBaselineEvaluationTradingPoint {
+    replayFrames: number;
+    initialBalance: number;
+    latencyMs: number;
+    netPnl: number;
+}
+
+export interface DogeBaselineEvaluationTradingPointSource {
+    replayFrames: number;
+    replayConfig: Pick<ReplayExecutionConfig, 'initial_balance' | 'latency_ms'>;
+    selected: { replayMetrics: Pick<ReplayMetrics, 'net_pnl'> };
 }
 
 export type DogeBaselineSelectionRejectionReason =
@@ -248,6 +263,49 @@ export function getDogeBaselineSelectionRejectionReasons(
 
 export function getDogeBaselineEvaluationPath(): string {
     return getDogeBaselineArtifactPath(DOGE_BASELINE_LATEST_EVALUATION_FILE);
+}
+
+export function getDogeBaselineEvaluationTradingPoint(
+    evaluation: Readonly<DogeBaselineEvaluationTradingPointSource>,
+): DogeBaselineEvaluationTradingPoint {
+    return {
+        replayFrames: evaluation.replayFrames,
+        initialBalance: evaluation.replayConfig.initial_balance,
+        latencyMs: evaluation.replayConfig.latency_ms,
+        netPnl: evaluation.selected.replayMetrics.net_pnl,
+    };
+}
+
+function parseDogeBaselineEvaluationTradingPoint(value: unknown): DogeBaselineEvaluationTradingPoint {
+    if (!value || typeof value !== 'object') throw new Error('invalid_doge_baseline_latest_evaluation');
+    const evaluation = value as Partial<DogeBaselineConfigurationEvaluation>;
+    const replayConfig = evaluation.replayConfig;
+    const selected = evaluation.selected;
+    const replayFrames = evaluation.replayFrames;
+    const netPnl = selected?.replayMetrics?.net_pnl;
+    if (typeof replayFrames !== 'number' || !Number.isInteger(replayFrames) || replayFrames <= 0 ||
+        !replayConfig || !Number.isFinite(replayConfig.initial_balance) ||
+        !Number.isInteger(replayConfig.latency_ms) || replayConfig.latency_ms < 0 ||
+        typeof netPnl !== 'number' || !Number.isFinite(netPnl)) {
+        throw new Error('invalid_doge_baseline_latest_evaluation');
+    }
+    return getDogeBaselineEvaluationTradingPoint({
+        replayFrames,
+        replayConfig,
+        selected: { replayMetrics: { net_pnl: netPnl } },
+    });
+}
+
+/** Reads the previous refresh PnL point, if a refresh evaluation has been published before. */
+export async function readDogeBaselineEvaluationTradingPoint(): Promise<DogeBaselineEvaluationTradingPoint | undefined> {
+    try {
+        return parseDogeBaselineEvaluationTradingPoint(
+            JSON.parse(await fs.readFile(getDogeBaselineEvaluationPath(), 'utf8')) as unknown,
+        );
+    } catch (error) {
+        if (isFileMissingError(error)) return undefined;
+        throw error;
+    }
 }
 
 export async function writeDogeBaselineEvaluation(evaluation: Readonly<DogeBaselineConfigurationEvaluation>): Promise<void> {

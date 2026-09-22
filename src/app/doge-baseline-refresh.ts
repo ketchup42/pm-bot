@@ -7,6 +7,8 @@ import {
     DOGE_BASELINE_CANDIDATE_MODEL_FILE,
     DOGE_BASELINE_DEFAULT_BALANCE,
     DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
+    DOGE_BASELINE_MINIMUM_TRADING_NET_PNL_PER_REPLAY_FRAME,
+    DOGE_BASELINE_TRADING_NET_PNL_TREND_PER_REPLAY_FRAME,
     getDogeBaselineEntrySummary,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import { buildDogeBaselineModel, readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
@@ -22,7 +24,10 @@ import {
 import { researchDogeBaselineConfigMatrix } from './core/events/strategy/doge-baseline/research_matrix.js';
 import {
     type DogeBaselineConfigurationEvaluation,
+    type DogeBaselineEvaluationTradingPoint,
     evaluateDogeBaselineModelConfigurations,
+    getDogeBaselineEvaluationTradingPoint,
+    readDogeBaselineEvaluationTradingPoint,
     writeDogeBaselineEvaluation,
 } from './core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
 import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/DogeBaselineRefreshLock.js';
@@ -49,14 +54,73 @@ export function formatDogeBaselineRefreshSelection(
     return `Published ${selected.id}: ${details}`;
 }
 
-export function getDogeBaselineTradingEnabled(
+export type DogeBaselineTradingRegimeReason =
+    | 'all_combinations_non_positive'
+    | 'selected_net_pnl_below_minimum'
+    | 'selected_net_pnl_rising'
+    | 'selected_net_pnl_falling'
+    | 'selected_net_pnl_stable'
+    | 'no_comparable_previous_evaluation';
+
+export interface DogeBaselineTradingRegimeDecision {
+    tradingEnabled: boolean;
+    reason: DogeBaselineTradingRegimeReason;
+    selectedNetPnl: number;
+    previousNetPnl: number | undefined;
+    netPnlDelta: number | undefined;
+    minimumNetPnl: number;
+    trendStep: number;
+}
+
+function areDogeBaselineTradingPointsComparable(
+    previous: Readonly<DogeBaselineEvaluationTradingPoint> | undefined,
+    current: Readonly<DogeBaselineEvaluationTradingPoint>,
+): previous is DogeBaselineEvaluationTradingPoint {
+    return previous !== undefined && previous.replayFrames === current.replayFrames &&
+        previous.initialBalance === current.initialBalance && previous.latencyMs === current.latencyMs;
+}
+
+export function getDogeBaselineTradingRegimeDecision(
     currentTradingEnabled: boolean,
-    evaluation: Pick<DogeBaselineConfigurationEvaluation, 'combinations' | 'promoted'>,
-): boolean {
+    evaluation: Pick<DogeBaselineConfigurationEvaluation, 'combinations' | 'replayFrames' | 'replayConfig' | 'selected'>,
+    previous: Readonly<DogeBaselineEvaluationTradingPoint> | undefined,
+): DogeBaselineTradingRegimeDecision {
+    const current = getDogeBaselineEvaluationTradingPoint(evaluation);
+    const minimumNetPnl = current.replayFrames * DOGE_BASELINE_MINIMUM_TRADING_NET_PNL_PER_REPLAY_FRAME;
+    const trendStep = current.replayFrames * DOGE_BASELINE_TRADING_NET_PNL_TREND_PER_REPLAY_FRAME;
+    const previousComparable = areDogeBaselineTradingPointsComparable(previous, current);
+    const previousNetPnl = previousComparable ? previous.netPnl : undefined;
+    const netPnlDelta = previousComparable ? current.netPnl - previous.netPnl : undefined;
+    const decisionBase = { selectedNetPnl: current.netPnl, previousNetPnl, netPnlDelta, minimumNetPnl, trendStep };
     if (evaluation.combinations.length > 0 && evaluation.combinations.every(value => value.replayMetrics.net_pnl <= 0)) {
-        return false;
+        return { tradingEnabled: false, reason: 'all_combinations_non_positive', ...decisionBase };
     }
-    return evaluation.promoted ? true : currentTradingEnabled;
+    if (current.netPnl < minimumNetPnl) {
+        return { tradingEnabled: false, reason: 'selected_net_pnl_below_minimum', ...decisionBase };
+    }
+    if (!previousComparable || netPnlDelta === undefined) {
+        return {
+            tradingEnabled: currentTradingEnabled, reason: 'no_comparable_previous_evaluation',
+            ...decisionBase,
+        };
+    }
+    if (netPnlDelta >= trendStep) {
+        return { tradingEnabled: true, reason: 'selected_net_pnl_rising', ...decisionBase };
+    }
+    if (netPnlDelta <= -trendStep) {
+        return { tradingEnabled: false, reason: 'selected_net_pnl_falling', ...decisionBase };
+    }
+    return { tradingEnabled: currentTradingEnabled, reason: 'selected_net_pnl_stable', ...decisionBase };
+}
+
+export function formatDogeBaselineTradingRegimeDecision(
+    decision: Readonly<DogeBaselineTradingRegimeDecision>,
+): string {
+    const previousNetPnl = decision.previousNetPnl?.toFixed(6) ?? 'none';
+    const netPnlDelta = decision.netPnlDelta?.toFixed(6) ?? 'none';
+    return `trading ${decision.tradingEnabled ? 'enabled' : 'paused'}: selectedNetPnL=${decision.selectedNetPnl.toFixed(6)} ` +
+        `previousNetPnL=${previousNetPnl} delta=${netPnlDelta} minimumNetPnL=${decision.minimumNetPnl.toFixed(6)} ` +
+        `trendStep=${decision.trendStep.toFixed(6)} reason=${decision.reason}`;
 }
 
 function withDogeBaselineTradingEnabled(
@@ -124,16 +188,20 @@ async function refreshModel(
         candidateMatrix.selected.config,
         executionConfig,
     );
+    const previousEvaluation = await readDogeBaselineEvaluationTradingPoint();
     await writeDogeBaselineEvaluation(evaluation);
     const selectionMessage = formatDogeBaselineRefreshSelection(evaluation);
-    const tradingEnabled = getDogeBaselineTradingEnabled(workingConfig.tradingEnabled, evaluation);
+    const regime = getDogeBaselineTradingRegimeDecision(workingConfig.tradingEnabled, evaluation, previousEvaluation);
+    const regimeMessage = formatDogeBaselineTradingRegimeDecision(regime);
+    const tradingEnabled = regime.tradingEnabled;
     if (!evaluation.promoted) {
-        if (tradingEnabled === workingConfig.tradingEnabled) return selectionMessage;
-        await writeDogeBaselineStrategyConfig(
-            withDogeBaselineTradingEnabled(workingModel, workingConfig, tradingEnabled),
-            workingModel,
-        );
-        return `${selectionMessage}, trading paused: all combinations have non-positive net PnL`;
+        if (tradingEnabled !== workingConfig.tradingEnabled) {
+            await writeDogeBaselineStrategyConfig(
+                withDogeBaselineTradingEnabled(workingModel, workingConfig, tradingEnabled),
+                workingModel,
+            );
+        }
+        return `${selectionMessage}, ${regimeMessage}`;
     }
 
     if (evaluation.selected.model === 'working') {
@@ -147,7 +215,7 @@ async function refreshModel(
             withDogeBaselineTradingEnabled(candidate, evaluation.selected.strategyConfig, tradingEnabled),
         );
     }
-    return selectionMessage;
+    return `${selectionMessage}, ${regimeMessage}`;
 }
 
 export async function runDogeBaselineRefresh(): Promise<void> {
