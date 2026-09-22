@@ -59,6 +59,7 @@ export type DogeBaselineTradingRegimeReason =
     | 'selected_net_pnl_below_minimum'
     | 'selected_net_pnl_rising'
     | 'selected_net_pnl_falling'
+    | 'selected_net_pnl_stably_above_minimum'
     | 'selected_net_pnl_stable'
     | 'no_comparable_previous_evaluation';
 
@@ -98,7 +99,7 @@ export function getDogeBaselineTradingRegimeDecision(
     if (current.netPnl < minimumNetPnl) {
         return { tradingEnabled: false, reason: 'selected_net_pnl_below_minimum', ...decisionBase };
     }
-    if (!previousComparable || netPnlDelta === undefined) {
+    if (netPnlDelta === undefined) {
         return {
             tradingEnabled: currentTradingEnabled, reason: 'no_comparable_previous_evaluation',
             ...decisionBase,
@@ -109,6 +110,9 @@ export function getDogeBaselineTradingRegimeDecision(
     }
     if (netPnlDelta <= -trendStep) {
         return { tradingEnabled: false, reason: 'selected_net_pnl_falling', ...decisionBase };
+    }
+    if (!currentTradingEnabled && previousNetPnl !== undefined && previousNetPnl >= minimumNetPnl) {
+        return { tradingEnabled: true, reason: 'selected_net_pnl_stably_above_minimum', ...decisionBase };
     }
     return { tradingEnabled: currentTradingEnabled, reason: 'selected_net_pnl_stable', ...decisionBase };
 }

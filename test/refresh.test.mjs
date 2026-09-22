@@ -87,10 +87,28 @@ test('refresh pauses trading below the selected-PnL minimum regardless of trend'
     assert.equal(decision.reason, 'selected_net_pnl_below_minimum');
 });
 
-test('refresh preserves the current state for selected-PnL changes inside the trend band', () => {
-    const evaluation = createEvaluation(67);
-    assert.equal(getDogeBaselineTradingRegimeDecision(true, evaluation, createPrevious(60)).tradingEnabled, true);
-    assert.equal(getDogeBaselineTradingRegimeDecision(false, evaluation, createPrevious(60)).tradingEnabled, false);
+test('refresh resumes paused trading after two stable selected-PnL evaluations above the minimum', () => {
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(60), createPrevious(55));
+    assert.equal(decision.tradingEnabled, true);
+    assert.equal(decision.reason, 'selected_net_pnl_stably_above_minimum');
+});
+
+test('refresh preserves the paused state when the previous stable PnL is below the minimum', () => {
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(55), createPrevious(49));
+    assert.equal(decision.tradingEnabled, false);
+    assert.equal(decision.reason, 'selected_net_pnl_stable');
+});
+
+test('refresh does not resume paused trading during a significant PnL fall', () => {
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(57), createPrevious(74));
+    assert.equal(decision.tradingEnabled, false);
+    assert.equal(decision.reason, 'selected_net_pnl_falling');
+});
+
+test('refresh preserves enabled trading for selected-PnL changes inside the trend band', () => {
+    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(67), createPrevious(60));
+    assert.equal(decision.tradingEnabled, true);
+    assert.equal(decision.reason, 'selected_net_pnl_stable');
 });
 
 test('refresh does not use an incompatible previous replay as a trend point', () => {

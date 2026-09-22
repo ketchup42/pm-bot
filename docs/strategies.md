@@ -243,7 +243,9 @@ PnL as a regime trend. For 100 replay frames, entries require at least `$50` sel
 net PnL. A change of at least `$10` from the previous comparable evaluation enables
 trading when rising and pauses it when falling. Both thresholds scale linearly with
 the replay-frame count. Evaluations are comparable only when replay frames, initial
-balance and execution latency match. Smaller changes preserve the current state.
+balance and execution latency match. Smaller changes preserve the current state,
+except that a paused strategy resumes when both adjacent comparable evaluations are
+at or above the minimum PnL.
 
 ## Before changing live behaviour
 
