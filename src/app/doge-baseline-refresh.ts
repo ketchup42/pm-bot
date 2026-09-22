@@ -111,7 +111,7 @@ export function getDogeBaselineTradingRegimeDecision(
     if (netPnlDelta <= -trendStep) {
         return { tradingEnabled: false, reason: 'selected_net_pnl_falling', ...decisionBase };
     }
-    if (!currentTradingEnabled && previousNetPnl !== undefined && previousNetPnl >= minimumNetPnl) {
+    if (!currentTradingEnabled && netPnlDelta >= 0 && previousNetPnl !== undefined && previousNetPnl >= minimumNetPnl) {
         return { tradingEnabled: true, reason: 'selected_net_pnl_stably_above_minimum', ...decisionBase };
     }
     return { tradingEnabled: currentTradingEnabled, reason: 'selected_net_pnl_stable', ...decisionBase };

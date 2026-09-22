@@ -93,8 +93,20 @@ test('refresh resumes paused trading after two stable selected-PnL evaluations a
     assert.equal(decision.reason, 'selected_net_pnl_stably_above_minimum');
 });
 
+test('refresh resumes paused trading when selected PnL is unchanged above the minimum', () => {
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(57), createPrevious(57));
+    assert.equal(decision.tradingEnabled, true);
+    assert.equal(decision.reason, 'selected_net_pnl_stably_above_minimum');
+});
+
 test('refresh preserves the paused state when the previous stable PnL is below the minimum', () => {
     const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(55), createPrevious(49));
+    assert.equal(decision.tradingEnabled, false);
+    assert.equal(decision.reason, 'selected_net_pnl_stable');
+});
+
+test('refresh preserves the paused state while selected PnL is still declining', () => {
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(55), createPrevious(57));
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'selected_net_pnl_stable');
 });

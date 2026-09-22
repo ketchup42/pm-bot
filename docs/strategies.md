@@ -245,7 +245,7 @@ trading when rising and pauses it when falling. Both thresholds scale linearly w
 the replay-frame count. Evaluations are comparable only when replay frames, initial
 balance and execution latency match. Smaller changes preserve the current state,
 except that a paused strategy resumes when both adjacent comparable evaluations are
-at or above the minimum PnL.
+at or above the minimum PnL and the selected PnL is not falling.
 
 ## Before changing live behaviour
 
