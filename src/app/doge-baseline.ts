@@ -29,6 +29,7 @@ function readDogeBaselineRunMode(): DogeBaselineRunMode {
 export async function runDogeBaselineStrategy(): Promise<void> {
     const mode = readDogeBaselineRunMode();
     const isDebug = mode === 'debug';
+    const dumpHistory = isDebug && !readFlag('no-dumps');
     const trade = readRequiredTradeArguments();
     logger.info(
         `[DogeBaseline] Starting coin=${DOGE_BASELINE_COIN} frame=${DOGE_BASELINE_FRAME} ` +
@@ -51,7 +52,7 @@ export async function runDogeBaselineStrategy(): Promise<void> {
                 const strategy = await CoinDogeBaselineStrategy.create(
                     watcher.getEventId(), isDebug, trade.balance, trade.tradeValue,
                 );
-                return new ExecManager(client, [watcher], [strategy], isDebug);
+                return new ExecManager(client, [watcher], [strategy], dumpHistory);
             },
         ]);
 

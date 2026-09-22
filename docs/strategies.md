@@ -150,6 +150,9 @@ Use exactly one mode when starting the live scheduler:
 # Virtual orders
 npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10
 
+# Virtual orders without legacy scheduler dumps
+npm run strategy:doge-baseline -- --debug --no-dumps --balance 100 --trade-value 10
+
 # Real orders
 npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10
 ```
@@ -161,6 +164,10 @@ an order ID is received, its order watcher retains the order until reconciliatio
 
 `--debug` and `--live` are flags. An omitted mode, duplicate mode, or a value passed
 to either flag is rejected before the scheduler starts.
+
+`--no-dumps` is accepted in both modes. In `--debug` it disables legacy scheduler
+dumps. In `--live` dumps are already disabled, so the flag is a safe no-op. It does
+not change order execution, model decisions, or the strategy scheduler.
 
 `research:doge-baseline-config -- --count N` evaluates 80 coarse natural entry
 configurations for each mode: five edge values, four probability thresholds and four

@@ -41,6 +41,7 @@ services:
     command:
       - strategy:doge-baseline
       - "--${DOGE_BASELINE_STRATEGY_MODE:-debug}"
+      - --no-dumps
       - --balance
       - "${DOGE_BASELINE_BALANCE:-100}"
       - --trade-value

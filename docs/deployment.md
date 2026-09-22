@@ -59,6 +59,9 @@ Application environment variables such as `LOG_LEVEL`, log rotation, and
 `HISTORY_SNAPSHOT_MS` belong in `runtime/.env`. Command parameters of the DOGE
 Baseline contour belong in `compose.env`.
 
+The Docker strategy command includes `--no-dumps`, so virtual runs do not create
+legacy scheduler dump files. This does not affect virtual order execution.
+
 ## WireGuard bridge
 
 The optional Docker override directs the complete network traffic of the contour

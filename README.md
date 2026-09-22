@@ -29,6 +29,9 @@ Run these three commands in separate terminals. The collector retains the newest
 700 frames. The strategy uses a virtual wallet. Refresh confirms outcomes,
 re-trains, tunes configuration, and compares the working and candidate pairs.
 
+`--no-dumps` is valid with both strategy modes. It disables legacy dumps in
+`--debug`. Dumps are already disabled in `--live`.
+
 ```bash
 env LOG_LEVEL=info HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 HISTORY_GZIP=true \
   npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 700 --cycle
@@ -36,7 +39,7 @@ env LOG_LEVEL=info HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 HISTORY_GZIP=tr
 
 ```bash
 env LOG_LEVEL=info \
-  npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10
+  npm run strategy:doge-baseline -- --debug --no-dumps --balance 100 --trade-value 10
 ```
 
 ```bash
@@ -61,7 +64,7 @@ collect → history frames → history:settle → model/config refresh → strat
 | `npm run research:doge-baseline-model -- --count 500`                                   | Train and publish a DOGE model.                                         |
 | `npm run research:doge-baseline-config -- --count 500`                                  | Tune and publish DOGE configuration.                                    |
 | `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs using the same delay.       |
-| `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10`              | Run with a virtual wallet.                                              |
+| `npm run strategy:doge-baseline -- --debug --no-dumps --balance 100 --trade-value 10`   | Run with a virtual wallet without legacy dumps.                         |
 | `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`               | Submit real orders.                                                     |
 
 ## Deployment archive
