@@ -5,7 +5,7 @@ x-pm-bot: &pm-bot
   cpus: 1.0
   init: true
   restart: unless-stopped
-  user: "${PUID:-1000}:${PGID:-1000}"
+  user: "${PUID:?PUID must be set in compose.env}:${PGID:?PGID must be set in compose.env}"
   volumes:
     - ./runtime/.env:/app/.env:ro
     - ./runtime/history:/app/history
@@ -25,13 +25,13 @@ services:
     command:
       - collect
       - --coin
-      - "${DOGE_BASELINE_COLLECT_COIN:-doge}"
+      - "${DOGE_BASELINE_COLLECT_COIN:?DOGE_BASELINE_COLLECT_COIN must be set in compose.env}"
       - --frame
-      - "${DOGE_BASELINE_COLLECT_FRAME:-5m}"
+      - "${DOGE_BASELINE_COLLECT_FRAME:?DOGE_BASELINE_COLLECT_FRAME must be set in compose.env}"
       - --source
-      - "${DOGE_BASELINE_COLLECT_SOURCE:-chainlink-twap-60}"
+      - "${DOGE_BASELINE_COLLECT_SOURCE:?DOGE_BASELINE_COLLECT_SOURCE must be set in compose.env}"
       - --count
-      - "${DOGE_BASELINE_COLLECT_COUNT:-700}"
+      - "${DOGE_BASELINE_COLLECT_COUNT:?DOGE_BASELINE_COLLECT_COUNT must be set in compose.env}"
       - --cycle
 
   strategy-doge-baseline:
@@ -40,12 +40,12 @@ services:
       LOG_FILE: /app/logs/strategy-doge-baseline.log
     command:
       - strategy:doge-baseline
-      - "--${DOGE_BASELINE_STRATEGY_MODE:-debug}"
+      - "--${DOGE_BASELINE_STRATEGY_MODE:?DOGE_BASELINE_STRATEGY_MODE must be set in compose.env}"
       - --no-dumps
       - --balance
-      - "${DOGE_BASELINE_BALANCE:-100}"
+      - "${DOGE_BASELINE_BALANCE:?DOGE_BASELINE_BALANCE must be set in compose.env}"
       - --trade-value
-      - "${DOGE_BASELINE_TRADE_VALUE:-10}"
+      - "${DOGE_BASELINE_TRADE_VALUE:?DOGE_BASELINE_TRADE_VALUE must be set in compose.env}"
 
   refresh-doge-baseline:
     <<: *pm-bot
@@ -54,12 +54,12 @@ services:
     command:
       - refresh:doge-baseline
       - --frame
-      - "${DOGE_BASELINE_REFRESH_FRAME:-5m}"
+      - "${DOGE_BASELINE_REFRESH_FRAME:?DOGE_BASELINE_REFRESH_FRAME must be set in compose.env}"
       - --count
-      - "${DOGE_BASELINE_REFRESH_COUNT:-50}"
+      - "${DOGE_BASELINE_REFRESH_COUNT:?DOGE_BASELINE_REFRESH_COUNT must be set in compose.env}"
       - --train-count
-      - "${DOGE_BASELINE_REFRESH_TRAIN_COUNT:-500}"
+      - "${DOGE_BASELINE_REFRESH_TRAIN_COUNT:?DOGE_BASELINE_REFRESH_TRAIN_COUNT must be set in compose.env}"
       - --replay
-      - "${DOGE_BASELINE_REFRESH_REPLAY_COUNT:-100}"
+      - "${DOGE_BASELINE_REFRESH_REPLAY_COUNT:?DOGE_BASELINE_REFRESH_REPLAY_COUNT must be set in compose.env}"
       - --latency-ms
-      - "${DOGE_BASELINE_REFRESH_LATENCY_MS:-250}"
+      - "${DOGE_BASELINE_REFRESH_LATENCY_MS:?DOGE_BASELINE_REFRESH_LATENCY_MS must be set in compose.env}"

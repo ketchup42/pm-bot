@@ -4,8 +4,8 @@ services:
     cap_add:
       - NET_ADMIN
     environment:
-      PUID: "${PUID:-1000}"
-      PGID: "${PGID:-1000}"
+      PUID: "${PUID:?PUID must be set in compose.env}"
+      PGID: "${PGID:?PGID must be set in compose.env}"
     dns:
       - 1.1.1.1
     volumes:

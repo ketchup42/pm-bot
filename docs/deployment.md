@@ -46,6 +46,7 @@ Create the local Compose parameters file:
 
 ```bash
 cp compose.env.example compose.env
+printf '\nPUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> compose.env
 ```
 
 `runtime/.env` is mounted read-only and contains application settings and
@@ -56,8 +57,10 @@ already contain the writable `runtime/history`, `runtime/models`, and
 `runtime/logs` directories, so Docker does not create them as root.
 
 Application environment variables such as `LOG_LEVEL`, log rotation, and
-`HISTORY_SNAPSHOT_MS` belong in `runtime/.env`. Command parameters of the DOGE
-Baseline contour belong in `compose.env`.
+`HISTORY_SNAPSHOT_MS` belong in `runtime/.env`. The complete Docker contour
+configuration, including `PUID`, `PGID`, and DOGE command parameters, belongs in
+`compose.env`. Compose stops before creating containers if any required value is
+absent.
 
 The Docker strategy command includes `--no-dumps`, so virtual runs do not create
 legacy scheduler dump files. This does not affect virtual order execution.
@@ -97,9 +100,6 @@ allow individual DNS settings on services that share its network namespace.
 Start a contour:
 
 ```bash
-export PUID=$(id -u)
-export PGID=$(id -g)
-
 docker compose --env-file compose.env up -d collector-doge-baseline
 
 docker compose --env-file compose.env up -d strategy-doge-baseline
