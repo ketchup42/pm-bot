@@ -1,4 +1,6 @@
 import { HistoryFrameV3 } from '../../../history/history_frame.js';
+import { getHistoryFrameIndex } from '../../../history/HistoryFrameReader.js';
+import { HistoryFrameRollingWindow } from '../../../history/history_frame_window.js';
 import { ReplayMetrics, type ReplayExecutionConfig } from '../../../backtest/replay.js';
 import { runDogeBaselineReplay } from '../../../backtest/strategy/DogeBaselineReplayStrategy.js';
 import { type DogeBaselineRegimeSettings, type DogeBaselineStrategyConfig, toDogeBaselineRuntimeConfig } from './artifacts.js';
@@ -77,6 +79,11 @@ interface DogeBaselineRegimeResearchArtifacts {
     config: DogeBaselineStrategyConfig;
 }
 
+interface DogeBaselineEligibleHistoryFrame {
+    historyPosition: number;
+    observation: DogeBaselineObservation;
+}
+
 export interface DogeBaselineRegimeResearchInputs {
     frames: readonly HistoryFrameV3[];
     trainingFrames: number;
@@ -94,6 +101,10 @@ export interface DogeBaselineRegimeResearchInputs {
         selected: DogeBaselineRegimeResearchArtifacts;
         evaluation: DogeBaselineConfigurationEvaluation | undefined;
     };
+}
+
+export interface DogeBaselineRegimeHistoryResearchInputs extends Omit<DogeBaselineRegimeResearchInputs, 'frames'> {
+    historyDirectory: string;
 }
 
 interface PolicyState {
@@ -293,6 +304,121 @@ export function runDogeBaselineRegimeResearch(inputs: Readonly<DogeBaselineRegim
                 maxDrawdown: metrics?.max_drawdown ?? 0,
                 missedProfitablePnl: metrics === undefined && forwardMetrics.net_pnl > 0 ? forwardMetrics.net_pnl : 0,
             });
+        }
+    }
+    const results = policies.map(policy => {
+        const values = windows.get(policy.id)!;
+        const midpoint = Math.floor(values.length / 2);
+        return { policy, windows: values, selection: getSummary(values.slice(0, midpoint)), validation: getSummary(values.slice(midpoint)) };
+    });
+    const baseline = results[0]!;
+    const selected = results.filter(result => isPolicyEligible(result, baseline)).sort(comparePolicyResults)[0];
+    return {
+        requiredFrames,
+        availableFrames: eligible.length,
+        refreshFrames: inputs.refreshFrames,
+        trainingFrames: inputs.trainingFrames,
+        replayFrames: inputs.replayFrames,
+        policies: results,
+        baseline: baseline.policy,
+        selected,
+    };
+}
+
+/**
+ * Runs the same walk-forward calculation as runDogeBaselineRegimeResearch without
+ * retaining the full parsed history. Only the bounded training/replay/future
+ * windows are resident while frames themselves remain compressed on disk.
+ */
+export async function runDogeBaselineRegimeHistoryResearch(
+    inputs: Readonly<DogeBaselineRegimeHistoryResearchInputs>,
+): Promise<DogeBaselineRegimeResearchResult> {
+    const index = await getHistoryFrameIndex(inputs.historyDirectory);
+    const eligible: DogeBaselineEligibleHistoryFrame[] = [];
+    for (let position = 0; position < index.length; position++) {
+        const frame = await index.read(position);
+        if (frame === undefined) continue;
+        const observation = makeDogeBaselineObservation(frame);
+        if (observation !== undefined) eligible.push({ historyPosition: position, observation });
+    }
+    const minimumWindows = 12;
+    const requiredFrames = inputs.trainingFrames + inputs.replayFrames + inputs.refreshFrames * minimumWindows;
+    if (eligible.length < requiredFrames) {
+        throw new Error(`Insufficient eligible DOGE frames: required=${requiredFrames} available=${eligible.length} ` +
+            `training=${inputs.trainingFrames} replay=${inputs.replayFrames} forward=${inputs.refreshFrames * minimumWindows}`);
+    }
+
+    const readEligible = async (position: number): Promise<HistoryFrameV3> => {
+        const descriptor = eligible[position];
+        const frame = descriptor === undefined ? undefined : await index.read(descriptor.historyPosition);
+        if (frame === undefined) throw new Error(`history_frame_disappeared_during_regime_research: ${position}`);
+        return frame;
+    };
+    const training = new HistoryFrameRollingWindow(inputs.trainingFrames, compactDogeBaselineConfigurationFrame);
+    const replay = new HistoryFrameRollingWindow(inputs.replayFrames, value => value);
+    const future = new HistoryFrameRollingWindow(inputs.refreshFrames, value => value);
+    const trainingObservations: DogeBaselineObservation[] = [];
+    for (let position = 0; position < inputs.trainingFrames; position++) {
+        training.push(await readEligible(position));
+        trainingObservations.push(eligible[position]!.observation);
+    }
+    for (let position = inputs.trainingFrames; position < inputs.trainingFrames + inputs.replayFrames; position++) {
+        replay.push(await readEligible(position));
+    }
+    let cursor = inputs.trainingFrames + inputs.replayFrames;
+    for (let position = cursor; position < cursor + inputs.refreshFrames; position++) future.push(await readEligible(position));
+
+    const baselinePolicy = getDogeBaselineRegimeResearchBaseline();
+    const policies = [baselinePolicy, ...getDogeBaselineRegimeResearchPolicies()
+        .filter(policy => policy.id !== baselinePolicy.id)];
+    const windows = new Map(policies.map(policy => [policy.id, [] as DogeBaselineRegimeResearchWindow[]]));
+    const states = new Map(policies.map(policy => [policy.id, { tradingEnabled: true, previous: undefined } as PolicyState]));
+    let working: DogeBaselineRegimeResearchArtifacts | undefined;
+
+    while (cursor + inputs.refreshFrames <= eligible.length) {
+        const selection = inputs.selectArtifacts(
+            trainingObservations,
+            training.values(),
+            replay.values(),
+            working,
+            inputs.executionConfig,
+        );
+        working = selection.selected;
+        const futureFrames = future.values();
+        const forwardMetrics = getReplayMetrics(futureFrames, working, inputs.executionConfig, inputs.tradeValue);
+        for (const policy of policies) {
+            const decision = decide(states.get(policy.id)!, policy, selection.evaluation);
+            states.set(policy.id, decision.state);
+            const metrics = decision.state.tradingEnabled ? forwardMetrics : undefined;
+            windows.get(policy.id)!.push({
+                firstFrameStart: futureFrames[0]!.start_time,
+                lastFrameStart: futureFrames.at(-1)!.start_time,
+                tradingEnabled: decision.state.tradingEnabled,
+                selectedNetPnl: decision.selectedNetPnl,
+                previousNetPnl: decision.previousNetPnl,
+                netPnlDelta: decision.netPnlDelta,
+                consecutiveRises: decision.consecutiveRises,
+                netPnl: metrics?.net_pnl ?? 0,
+                tradeCount: metrics?.trade_count ?? 0,
+                fees: metrics?.fees ?? 0,
+                spreadCost: metrics?.spread_cost ?? 0,
+                slippageCost: metrics?.slippage_cost ?? 0,
+                maxDrawdown: metrics?.max_drawdown ?? 0,
+                missedProfitablePnl: metrics === undefined && forwardMetrics.net_pnl > 0 ? forwardMetrics.net_pnl : 0,
+            });
+        }
+        if (cursor + inputs.refreshFrames * 2 > eligible.length) break;
+        const promoted = replay.shift(inputs.refreshFrames);
+        training.shift(inputs.refreshFrames);
+        trainingObservations.splice(0, inputs.refreshFrames);
+        for (let offset = 0; offset < promoted.length; offset++) {
+            training.push(promoted[offset]!);
+            trainingObservations.push(eligible[cursor - inputs.replayFrames + offset]!.observation);
+        }
+        for (const frame of future.shift(inputs.refreshFrames)) replay.push(frame);
+        cursor += inputs.refreshFrames;
+        for (let position = cursor; position < cursor + inputs.refreshFrames; position++) {
+            future.push(await readEligible(position));
         }
     }
     const results = policies.map(policy => {

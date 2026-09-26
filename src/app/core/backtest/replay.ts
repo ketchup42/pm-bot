@@ -157,6 +157,133 @@ export interface ReplayResult {
     equity_curve: Array<{ timestamp: number; equity: number }>;
 }
 
+/**
+ * Incremental replay facade. Frames are settled one at a time, so callers that
+ * read compressed history from disk never need to accumulate HistoryFrameV3[].
+ */
+export class ReplayRunner {
+    private cash: number;
+    private previous: HistoryFrameV3 | undefined;
+    private readonly fills: ReplayFill[] = [];
+    private readonly equityCurve: Array<{ timestamp: number; equity: number }> = [];
+    private readonly framePnls: number[] = [];
+    private readonly frameReturns: number[] = [];
+    private readonly pnlByUtcHour: Record<string, number> = {};
+    private fees = 0;
+    private spreadCost = 0;
+    private slippageCost = 0;
+    private skippedFrames = 0;
+    private confirmedSettlements = 0;
+    private derivedSettlements = 0;
+    private settlementMismatches = 0;
+    private positionFrames = 0;
+    private positiveFramePnl = 0;
+    private negativeFramePnl = 0;
+    private losingStreak = 0;
+    private maxLosingStreak = 0;
+    private peak: number;
+    private maxDrawdown = 0;
+    private frames = 0;
+
+    public constructor(
+        private readonly strategy: ReplayStrategy,
+        private readonly config: ReplayExecutionConfig,
+    ) {
+        if (!Number.isFinite(config.initial_balance) || config.initial_balance < 0) throw new Error('invalid_initial_balance');
+        if (!Number.isFinite(config.minimum_order_value) || config.minimum_order_value < 0) throw new Error('invalid_minimum_order_value');
+        if (!Number.isSafeInteger(config.latency_ms) || config.latency_ms < 0) throw new Error('invalid_latency_ms');
+        this.cash = config.initial_balance;
+        this.peak = config.initial_balance;
+    }
+
+    public consume(frame: HistoryFrameV3): void {
+        if (this.previous && frame.start_time < this.previous.end_time) {
+            throw new Error(`overlapping_frames_not_supported: ${this.previous.slug} and ${frame.slug}`);
+        }
+        this.previous = frame;
+        this.frames++;
+        const startCash = this.cash;
+        const result = runReplayEager([frame], this.strategy, { ...this.config, initial_balance: startCash });
+        this.cash = result.metrics.final_balance;
+        this.fees += result.metrics.fees;
+        this.spreadCost += result.metrics.spread_cost;
+        this.slippageCost += result.metrics.slippage_cost;
+        this.skippedFrames += result.metrics.skipped_frames;
+        this.confirmedSettlements += result.metrics.confirmed_settlements;
+        this.derivedSettlements += result.metrics.derived_settlements;
+        this.settlementMismatches += result.metrics.settlement_mismatches;
+        this.positionFrames += result.metrics.position_frames;
+        this.fills.push(...result.fills);
+        this.equityCurve.push(...result.equity_curve);
+        for (const [hour, pnl] of Object.entries(result.metrics.pnl_by_utc_hour)) {
+            this.pnlByUtcHour[hour] = (this.pnlByUtcHour[hour] ?? 0) + pnl;
+        }
+        if (result.metrics.skipped_frames === 0) {
+            const framePnl = result.metrics.net_pnl;
+            this.framePnls.push(framePnl);
+            if (startCash > 0) this.frameReturns.push(framePnl / startCash);
+            if (framePnl >= 0) this.positiveFramePnl += framePnl;
+            else this.negativeFramePnl += -framePnl;
+            if (framePnl < 0) {
+                this.losingStreak++;
+                this.maxLosingStreak = Math.max(this.maxLosingStreak, this.losingStreak);
+            } else this.losingStreak = 0;
+            this.peak = Math.max(this.peak, this.cash);
+            this.maxDrawdown = Math.max(this.maxDrawdown, this.peak - this.cash);
+        }
+    }
+
+    public finish(): ReplayResult {
+        const wins = this.framePnls.filter(value => value > 0);
+        const losses = this.framePnls.filter(value => value < 0);
+        const tradedFrames = wins.length + losses.length;
+        const averageWin = wins.length > 0 ? wins.reduce((sum, value) => sum + value, 0) / wins.length : undefined;
+        const averageLoss = losses.length > 0 ? losses.reduce((sum, value) => sum + value, 0) / losses.length : undefined;
+        const meanReturn = this.frameReturns.length > 0
+            ? this.frameReturns.reduce((sum, value) => sum + value, 0) / this.frameReturns.length : 0;
+        const variance = this.frameReturns.length > 1
+            ? this.frameReturns.reduce((sum, value) => sum + (value - meanReturn) ** 2, 0) / (this.frameReturns.length - 1) : 0;
+        const profitConcentration = (percent: number): number | undefined => {
+            if (this.positiveFramePnl <= 0 || wins.length === 0) return undefined;
+            const count = Math.max(1, Math.ceil(wins.length * percent));
+            return [...wins].sort((left, right) => right - left).slice(0, count)
+                .reduce((sum, value) => sum + value, 0) / this.positiveFramePnl;
+        };
+        const rejectedOrdersByReason: Record<string, number> = {};
+        for (const fill of this.fills) {
+            if (fill.status === 'rejected') rejectedOrdersByReason[fill.reason_code] = (rejectedOrdersByReason[fill.reason_code] ?? 0) + 1;
+        }
+        const netPnl = this.cash - this.config.initial_balance;
+        return {
+            config: { ...this.config, strategy: this.strategy.name },
+            metrics: {
+                strategy: this.strategy.name, initial_balance: this.config.initial_balance, final_balance: this.cash,
+                gross_pnl: netPnl + this.fees, pre_execution_cost_pnl: netPnl + this.fees + this.spreadCost + this.slippageCost,
+                net_pnl: netPnl, fees: this.fees, spread_cost: this.spreadCost, slippage_cost: this.slippageCost,
+                winning_frames: wins.length, losing_frames: losses.length,
+                win_rate: tradedFrames > 0 ? wins.length / tradedFrames : undefined,
+                average_win: averageWin, average_loss: averageLoss,
+                payoff_ratio: averageWin !== undefined && averageLoss !== undefined ? averageWin / Math.abs(averageLoss) : undefined,
+                max_losing_streak: this.maxLosingStreak,
+                sharpe: this.frameReturns.length >= 30 && variance > 0 ? meanReturn / Math.sqrt(variance) * Math.sqrt(this.frameReturns.length) : undefined,
+                top_1_percent_profit_share: profitConcentration(0.01), top_5_percent_profit_share: profitConcentration(0.05),
+                top_10_percent_profit_share: profitConcentration(0.10), pnl_by_utc_hour: this.pnlByUtcHour,
+                trade_count: this.fills.filter(fill => fill.status !== 'rejected').length, position_frames: this.positionFrames,
+                filled_orders: this.fills.filter(fill => fill.status === 'filled').length,
+                partial_orders: this.fills.filter(fill => fill.status === 'partial').length,
+                rejected_orders: this.fills.filter(fill => fill.status === 'rejected').length,
+                rejected_orders_by_reason: rejectedOrdersByReason, frames: this.frames, skipped_frames: this.skippedFrames,
+                confirmed_settlements: this.confirmedSettlements, derived_settlements: this.derivedSettlements,
+                settlement_mismatches: this.settlementMismatches,
+                profit_factor: this.negativeFramePnl > 0 ? this.positiveFramePnl / this.negativeFramePnl : undefined,
+                max_drawdown: this.maxDrawdown,
+            },
+            fills: this.fills,
+            equity_curve: this.equityCurve,
+        };
+    }
+}
+
 export class NoTradeReplayStrategy implements ReplayStrategy {
     public readonly name = REPLAY_STRATEGY_NO_TRADE;
 
@@ -263,7 +390,7 @@ function getReplayOrderReservation(
     return { cashReserve: order.quantity * order.limit_price + feeReserve, tokenReserve: 0 };
 }
 
-export function runReplay(
+function runReplayEager(
     frames: readonly HistoryFrameV3[],
     strategy: ReplayStrategy,
     config: ReplayExecutionConfig,
@@ -491,6 +618,17 @@ export function runReplay(
         fills,
         equity_curve: equityCurve,
     };
+}
+
+/** Compatibility wrapper for callers that already provide an in-memory frame list. */
+export function runReplay(
+    frames: readonly HistoryFrameV3[],
+    strategy: ReplayStrategy,
+    config: ReplayExecutionConfig,
+): ReplayResult {
+    const runner = new ReplayRunner(strategy, config);
+    for (const frame of frames) runner.consume(frame);
+    return runner.finish();
 }
 
 function makeEquitySvg(points: readonly { timestamp: number; equity: number }[]): string {

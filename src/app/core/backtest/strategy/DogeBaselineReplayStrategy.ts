@@ -31,9 +31,9 @@ import {
     ReplayExecutionConfig,
     ReplayFill,
     ReplayResult,
+    ReplayRunner,
     ReplayStrategy,
     ReplayStrategyContext,
-    runReplay,
 } from '../replay.js';
 import { HistoryFrameV3 } from '../../history/history_frame.js';
 import type { DogeBaselineRuntimeConfig } from '../../events/strategy/doge-baseline/artifacts.js';
@@ -60,6 +60,49 @@ export interface DogeBaselineReplayResults {
     entryDecisions: DogeBaselineEntryDecisionMetricsByMode;
 }
 
+/** Replays all DOGE modes against one frame at a time. */
+export class DogeBaselineReplayRunner {
+    private readonly strategies: Record<DogeBaselineModeName, DogeBaselineReplayStrategy>;
+    private readonly modes: Record<DogeBaselineModeName, ReplayRunner>;
+    private readonly combinedStrategy: DogeBaselineReplayStrategy;
+    private readonly combined: ReplayRunner;
+
+    public constructor(
+        model: Readonly<DogeBaselineModel>,
+        config: ReplayExecutionConfig,
+        strategyConfig: Readonly<DogeBaselineReplayStrategyConfig> = {},
+    ) {
+        const entry = strategyConfig.entry ?? createDogeBaselineEntrySettings();
+        this.strategies = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
+            mode.name,
+            new DogeBaselineReplayStrategy(model, {
+                ...strategyConfig,
+                entry: createDogeBaselineSingleModeEntrySettings(entry, mode.name),
+            }),
+        ])) as Record<DogeBaselineModeName, DogeBaselineReplayStrategy>;
+        this.modes = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
+            mode.name, new ReplayRunner(this.strategies[mode.name], config),
+        ])) as Record<DogeBaselineModeName, ReplayRunner>;
+        this.combinedStrategy = new DogeBaselineReplayStrategy(model, strategyConfig);
+        this.combined = new ReplayRunner(this.combinedStrategy, config);
+    }
+
+    public consume(frame: HistoryFrameV3): void {
+        for (const mode of DOGE_BASELINE_MODES) this.modes[mode.name].consume(frame);
+        this.combined.consume(frame);
+    }
+
+    public finish(): DogeBaselineReplayResults {
+        return {
+            combined: this.combined.finish(),
+            modes: Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [mode.name, this.modes[mode.name].finish()])) as Record<DogeBaselineModeName, ReplayResult>,
+            entryDecisions: Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
+                mode.name, this.strategies[mode.name].getEntryDecisionMetrics()[mode.name],
+            ])) as DogeBaselineEntryDecisionMetricsByMode,
+        };
+    }
+}
+
 export interface DogeBaselineEntryDecisionMetrics {
     evaluated: number;
     accepted: number;
@@ -74,27 +117,9 @@ export function runDogeBaselineReplay(
     config: ReplayExecutionConfig,
     strategyConfig: Readonly<DogeBaselineReplayStrategyConfig> = {},
 ): DogeBaselineReplayResults {
-    const entry = strategyConfig.entry ?? createDogeBaselineEntrySettings();
-    const strategies = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
-        mode.name,
-        new DogeBaselineReplayStrategy(model, {
-            ...strategyConfig,
-            entry: createDogeBaselineSingleModeEntrySettings(entry, mode.name),
-        }),
-    ])) as Record<DogeBaselineModeName, DogeBaselineReplayStrategy>;
-    const modes = Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
-        mode.name,
-        runReplay(frames, strategies[mode.name], config),
-    ])) as Record<DogeBaselineModeName, ReplayResult>;
-    const combinedStrategy = new DogeBaselineReplayStrategy(model, strategyConfig);
-    return {
-        combined: runReplay(frames, combinedStrategy, config),
-        modes,
-        entryDecisions: Object.fromEntries(DOGE_BASELINE_MODES.map(mode => [
-            mode.name,
-            strategies[mode.name].getEntryDecisionMetrics()[mode.name],
-        ])) as DogeBaselineEntryDecisionMetricsByMode,
-    };
+    const runner = new DogeBaselineReplayRunner(model, config, strategyConfig);
+    for (const frame of frames) runner.consume(frame);
+    return runner.finish();
 }
 
 export class DogeBaselineReplayStrategy implements ReplayStrategy {

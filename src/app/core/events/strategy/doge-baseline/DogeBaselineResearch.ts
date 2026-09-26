@@ -1,4 +1,5 @@
-import { readHistoryFramesNewestFirst } from '../../../history/HistoryFrameReader.js';
+import { getHistoryFrameIndex, readHistoryFramesNewestFirst } from '../../../history/HistoryFrameReader.js';
+import { HistoryFrameIndex } from '../../../history/history_frame_window.js';
 import { HistoryFrameV3 } from '../../../history/history_frame.js';
 import {
     DogeBaselineModel,
@@ -37,6 +38,11 @@ export interface DogeBaselineTrainReplaySplit {
 export interface DogeBaselineFrameSelectionCounts {
     trainingCount: number;
     replayCount: number;
+}
+
+export interface DogeBaselineReplayFrameIndex {
+    index: HistoryFrameIndex;
+    positions: readonly number[];
 }
 
 export type DogeBaselineTrainingStopCheck = () => boolean;
@@ -217,6 +223,25 @@ export async function readDogeBaselineObservations(
         );
     }
     return observations.reverse();
+}
+
+/** Finds the newest eligible frames without retaining their full snapshots. */
+export async function readDogeBaselineReplayFrameIndex(
+    historyDirectory: string,
+    requestedFrames: number,
+): Promise<DogeBaselineReplayFrameIndex> {
+    const index = await getHistoryFrameIndex(historyDirectory);
+    const positions: number[] = [];
+    for (let position = index.length - 1; position >= 0 && positions.length < requestedFrames; position--) {
+        const frame = await index.read(position);
+        if (frame !== undefined && makeDogeBaselineObservation(frame) !== undefined) positions.push(position);
+    }
+    if (positions.length < requestedFrames) {
+        throw new Error(`Insufficient eligible DOGE frames: required=${requestedFrames} available=${positions.length} ` +
+            `training=0 replay=${requestedFrames}`);
+    }
+    positions.reverse();
+    return { index, positions };
 }
 
 async function* readDogeBaselineEligibleFramesNewestFirst(

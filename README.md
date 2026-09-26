@@ -89,8 +89,8 @@ chmod +x pm-bot-linux-x64
 ./pm-bot-linux-x64 help
 ```
 
-The executable embeds a 6 GiB V8 old-space limit. Copy or create `.env` manually
-beside it for live access. Archives never include secrets.
+The executable and npm application commands use a 6 GiB V8 old-space limit. Copy
+or create `.env` manually beside it for live access. Archives never include secrets.
 
 ## Docker deployment
 

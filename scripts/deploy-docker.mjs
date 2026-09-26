@@ -90,6 +90,9 @@ async function build(mode, useSudo) {
         await fs.copyFile(path.join(root, 'compose.override.yaml.example'), path.join(packageDirectory, 'compose.override.yaml.example'));
         await fs.copyFile(path.join(root, 'compose.env.example'), path.join(packageDirectory, 'compose.env.example'));
         await fs.copyFile(path.join(root, 'README.md'), path.join(packageDirectory, 'README.md'));
+        await fs.copyFile(path.join(root, 'run-doge-regime-research.sh'), path.join(packageDirectory, 'run-doge-regime-research.sh'));
+        await fs.chmod(path.join(packageDirectory, 'run-doge-regime-research.sh'), 0o755);
+        await fs.cp(path.join(root, 'systemd'), path.join(packageDirectory, 'systemd'), { recursive: true });
         await fs.writeFile(path.join(runtimeDirectory, 'README.md'), [
             '# Runtime data',
             '',

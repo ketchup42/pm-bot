@@ -6,8 +6,8 @@ import {
 } from './cli_args.js';
 import { DEFAULT_DOGE_BASELINE_REPLAY_OUTPUT_DIRECTORY, DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
 import { writeReplayReport } from './core/backtest/replay.js';
-import { runDogeBaselineReplay } from './core/backtest/strategy/DogeBaselineReplayStrategy.js';
-import { readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
+import { DogeBaselineReplayRunner } from './core/backtest/strategy/DogeBaselineReplayStrategy.js';
+import { readDogeBaselineReplayFrameIndex } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
 import {
     readDogeBaselineArtifacts,
     toDogeBaselineRuntimeConfig,
@@ -29,10 +29,6 @@ export async function runDogeBaselineReplayCommand(): Promise<void> {
     const history = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const output = readArgument('output') ?? DEFAULT_DOGE_BASELINE_REPLAY_OUTPUT_DIRECTORY;
     const count = readFrameCount();
-    const { replay: frames } = await readDogeBaselineTrainReplaySplit(
-        history,
-        { trainingCount: 0, replayCount: count },
-    );
     const modelPath = readArgument('model');
     const configPath = readArgument('config');
     if ((modelPath === undefined) !== (configPath === undefined)) {
@@ -43,10 +39,17 @@ export async function runDogeBaselineReplayCommand(): Promise<void> {
         : await readDogeBaselineArtifacts(modelPath, configPath!);
     const trade = readRequiredTradeArguments();
     const config = readReplayExecutionConfig(trade.balance, DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS);
-    const replay = runDogeBaselineReplay(frames, artifacts.model, config, {
+    const frames = await readDogeBaselineReplayFrameIndex(history, count);
+    const runner = new DogeBaselineReplayRunner(artifacts.model, config, {
         ...toDogeBaselineRuntimeConfig(artifacts.config),
         tradeValue: trade.tradeValue,
     });
+    for (const position of frames.positions) {
+        const frame = await frames.index.read(position);
+        if (frame === undefined) throw new Error(`history_frame_disappeared_during_doge_replay: ${position}`);
+        runner.consume(frame);
+    }
+    const replay = runner.finish();
     const results = [
         { mode: 'combined', result: replay.combined },
         ...DOGE_BASELINE_MODES.map(mode => ({ mode: mode.name, result: replay.modes[mode.name] })),

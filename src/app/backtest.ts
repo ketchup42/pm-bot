@@ -1,6 +1,6 @@
 import { readHistoryFrames } from './core/history/HistoryFrameReader.js';
 import {
-    runReplay,
+    ReplayRunner,
     writeReplayReport,
 } from './core/backtest/replay.js';
 import { getReplayStrategyPreset, REPLAY_STRATEGY_PRESETS } from './core/backtest/replay_presets.js';
@@ -19,9 +19,9 @@ export async function runBacktest(): Promise<void> {
     const config = readReplayExecutionConfig();
     const preset = getReplayStrategyPreset(strategyName);
     if (!preset) throw new Error(`strategy must be one of: ${REPLAY_STRATEGY_PRESETS.map(value => value.id).join(', ')}`);
-    const frames = [];
-    for await (const frame of readHistoryFrames(input)) frames.push(frame);
-    const result = runReplay(frames, preset.create(), config);
+    const runner = new ReplayRunner(preset.create(), config);
+    for await (const frame of readHistoryFrames(input)) runner.consume(frame);
+    const result = runner.finish();
     await writeReplayReport(result, output);
     logger.info(`[Backtest] Result:\n${JSON.stringify(result.metrics, undefined, 2)}`);
 }

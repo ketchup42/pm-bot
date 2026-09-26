@@ -2,7 +2,6 @@ import { logger } from '../log.js';
 import { readFlag, readArgument, readPositiveIntegerArgument, readReplayExecutionConfig } from './cli_args.js';
 import { DEFAULT_HISTORY_DIRECTORY, DEFAULT_HISTORY_REPORTS_DIRECTORY } from './defaults.js';
 import { isEventFrame } from '../market/frame.js';
-import { readHistoryFrames } from './core/history/HistoryFrameReader.js';
 import {
     createDogeBaselineStrategyConfig,
     readDogeBaselineArtifacts,
@@ -14,7 +13,7 @@ import {
     DOGE_BASELINE_DEFAULT_TRADE_VALUE,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/DogeBaselineRefreshLock.js';
-import { runDogeBaselineRegimeResearch as runResearch } from './core/events/strategy/doge-baseline/regime_research.js';
+import { runDogeBaselineRegimeHistoryResearch as runResearch } from './core/events/strategy/doge-baseline/regime_research.js';
 import { selectDogeBaselineRefreshArtifacts } from './doge-baseline-refresh.js';
 import { fileWrite } from '../utils.js';
 
@@ -35,14 +34,12 @@ export async function runDogeBaselineRegimeResearch(): Promise<void> {
     const apply = readFlag('apply');
     const output = readArgument('output') ?? DOGE_BASELINE_REGIME_RESEARCH_OUTPUT_DIRECTORY;
     if (apply && readArgument('output') !== undefined) throw new Error('--output cannot be used with --apply');
-    const frames = [];
-    for await (const frame of readHistoryFrames(history)) frames.push(frame);
     const executionConfig = readReplayExecutionConfig(
         DOGE_BASELINE_DEFAULT_BALANCE,
         DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
     );
-    const result = runResearch({
-        frames,
+    const result = await runResearch({
+        historyDirectory: history,
         trainingFrames,
         replayFrames,
         refreshFrames,

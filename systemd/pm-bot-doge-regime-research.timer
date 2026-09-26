@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly PM Bot DOGE baseline walk-forward regime research
+
+[Timer]
+OnCalendar=Sun *-*-* 03:15:00
+AccuracySec=1min
+Persistent=false
+Unit=pm-bot-doge-regime-research.service
+
+[Install]
+WantedBy=timers.target

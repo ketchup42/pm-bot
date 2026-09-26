@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
     NoTradeReplayStrategy,
+    ReplayRunner,
     runReplay,
     simulateTakerFill,
     writeReplayReport,
@@ -131,6 +132,26 @@ function makeFrame() {
 }
 
 const config = { initial_balance: 100, latency_ms: 0, minimum_order_value: 1 };
+
+test('incremental replay runner matches the eager replay result', () => {
+    const first = makeFrame();
+    first.settlement.confirmed_outcome = 'up';
+    const second = structuredClone(first);
+    second.start_time += 300;
+    second.end_time += 300;
+    second.slug = 'btc-updown-5m-1300';
+    second.snapshots = second.snapshots.map(snapshot => ({
+        ...snapshot,
+        timestamp: snapshot.timestamp + 300_000,
+        coin_timestamp: snapshot.coin_timestamp + 300_000,
+    }));
+    second.settlement.confirmed_outcome = 'down';
+    const frames = [first, second];
+    const eager = runReplay(frames, new TrendLineReplayStrategy(), config);
+    const runner = new ReplayRunner(new TrendLineReplayStrategy(), config);
+    for (const frame of frames) runner.consume(frame);
+    assert.deepEqual(runner.finish(), eager);
+});
 
 test('DOGE replay mode reports use decisions from their own single-mode runs', () => {
     const frame = makeFrame();

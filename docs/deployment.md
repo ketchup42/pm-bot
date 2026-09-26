@@ -122,6 +122,40 @@ Stop all services gracefully:
 docker compose --env-file compose.env stop
 ```
 
+## Weekly DOGE regime research
+
+The deployment archive contains `run-doge-regime-research.sh` and user-level systemd
+templates under `systemd/`. The weekly run leaves the collector active, stops the
+strategy and refresh, applies the walk-forward regime profile, then starts those
+two services again even when the research command fails. It normally takes 4–6
+hours with the Compose CPU limit of one core and requires at least 1,200 eligible
+DOGE frames.
+
+Install the timer after extracting the archive in the standard location
+`~/pm-bot/pm-bot-docker-linux-amd64`:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/pm-bot-doge-regime-research.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pm-bot-doge-regime-research.timer
+loginctl enable-linger "$USER"
+```
+
+It runs every Sunday at 03:15 in the server time zone. It does not catch up after
+a server outage. Inspect the schedule and the last run with:
+
+```bash
+systemctl --user list-timers pm-bot-doge-regime-research.timer
+journalctl --user -u pm-bot-doge-regime-research.service
+```
+
+Run one scheduled cycle manually when needed:
+
+```bash
+systemctl --user start pm-bot-doge-regime-research.service
+```
+
 ## Native Linux x64 archive
 
 The existing native deployment remains available:
@@ -131,4 +165,4 @@ npm run deploy -- --tiny
 npm run deploy -- --full
 ```
 
-It embeds a 6 GiB V8 old-space limit.
+The native executable and npm application commands use a 6 GiB V8 old-space limit.

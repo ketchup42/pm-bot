@@ -4,6 +4,7 @@ import { gunzip as gunzipCallback } from 'node:zlib';
 import { promisify } from 'node:util';
 import { isFileMissingError } from '../../../file_lock.js';
 import { HISTORY_SCHEMA_VERSION, HistoryFrameV3, validateHistoryFrame } from './history_frame.js';
+import { HistoryFrameIndex } from './history_frame_window.js';
 
 const gunzip = promisify(gunzipCallback);
 
@@ -49,25 +50,20 @@ export async function getHistoryFramePaths(directory: string): Promise<string[]>
         .map(name => path.join(directory, name));
 }
 
+export async function getHistoryFrameIndex(directory: string): Promise<HistoryFrameIndex> {
+    return new HistoryFrameIndex((await getHistoryFramePaths(directory)).map(path => ({ path })), readHistoryFrameIfPresent);
+}
+
 export async function* readHistoryFrames(
     directory: string,
     shouldStop: HistoryReadStopCheck = () => false,
 ): AsyncGenerator<HistoryFrameV3> {
-    for (const filePath of await getHistoryFramePaths(directory)) {
-        if (shouldStop()) return;
-        const frame = await readHistoryFrameIfPresent(filePath);
-        if (frame !== undefined) yield frame;
-    }
+    yield* (await getHistoryFrameIndex(directory)).cursor(false, shouldStop);
 }
 
 export async function* readHistoryFramesNewestFirst(
     directory: string,
     shouldStop: HistoryReadStopCheck = () => false,
 ): AsyncGenerator<HistoryFrameV3> {
-    const filePaths = await getHistoryFramePaths(directory);
-    for (let index = filePaths.length - 1; index >= 0; index--) {
-        if (shouldStop()) return;
-        const frame = await readHistoryFrameIfPresent(filePaths[index]!);
-        if (frame !== undefined) yield frame;
-    }
+    yield* (await getHistoryFrameIndex(directory)).cursor(true, shouldStop);
 }

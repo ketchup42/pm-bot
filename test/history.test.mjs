@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 
 import { HistoryFrameWriter } from '../dist/app/core/history/HistoryFrameWriter.js';
 import { readHistoryFrame, readHistoryFrames } from '../dist/app/core/history/HistoryFrameReader.js';
+import { HistoryFrameRollingWindow } from '../dist/app/core/history/history_frame_window.js';
 import {
     getConfirmedOutcome,
     getConfirmedOutcomeForFrame,
@@ -120,6 +121,17 @@ function makeFrame(startTime, stoppedEarly = false) {
         }),
     };
 }
+
+test('history rolling window retains only its bounded projected values', () => {
+    const window = new HistoryFrameRollingWindow(2, frame => frame.slug);
+    window.push(makeFrame(1_000));
+    window.push(makeFrame(1_300));
+    assert.deepEqual(window.values(), ['btc-updown-5m-1000', 'btc-updown-5m-1300']);
+    assert.deepEqual(window.shift(), ['btc-updown-5m-1000']);
+    window.push(makeFrame(1_600));
+    assert.deepEqual(window.values(), ['btc-updown-5m-1300', 'btc-updown-5m-1600']);
+    assert.throws(() => window.push(makeFrame(1_900)), /history_frame_window_capacity_exceeded/);
+});
 
 function buildTestFrameQuality(frame, frameDurationMs = 1_000) {
     return buildHistoryQuality({
