@@ -95,6 +95,7 @@ function createModeEntryConfigs(
             DOGE_BASELINE_MINIMUM_ABSOLUTE_DEVIATION_BPS_VALUES.map(minimumAbsoluteDeviationBps =>
                 createDogeBaselineStrategyConfig(model, {
                     tradingEnabled: baseline.tradingEnabled,
+                    regime: baseline.regime,
                     entry: createDogeBaselineEntrySettings(
                         [mode],
                         { [mode]: { minimumEdge, minimumConfidence, minimumAbsoluteDeviationBps } },
@@ -116,6 +117,7 @@ function createCombinedEntryConfig(
     const lateSettings = late.config.entry.modes['late-120'];
     return createDogeBaselineStrategyConfig(model, {
         tradingEnabled: baseline.tradingEnabled,
+        regime: baseline.regime,
         entry: createDogeBaselineEntrySettings(
             DOGE_BASELINE_MODES.map(mode => mode.name),
             {
@@ -154,6 +156,7 @@ function createLocalEntryConfigs(
         getLocalValues(settings.minimumConfidence, DOGE_BASELINE_LOCAL_CONFIDENCE_DELTA, 0.5, 0.65)
             .map(minimumConfidence => createDogeBaselineStrategyConfig(model, {
                 tradingEnabled: baseline.tradingEnabled,
+                regime: baseline.regime,
                 entry: createDogeBaselineEntrySettings([mode], {
                     [mode]: {
                         minimumEdge,
@@ -221,6 +224,7 @@ function createExitConfigs(
     return DOGE_BASELINE_EMERGENCY_EXIT_WINDOWS_MS.flatMap(windowMs =>
         DOGE_BASELINE_EMERGENCY_EXIT_DEVIATION_FACTORS.map(deviationFactor => createDogeBaselineStrategyConfig(model, {
             tradingEnabled: finalist.config.tradingEnabled,
+            regime: finalist.config.regime,
             entry: finalist.config.entry,
             exit: {
                 enabled: true,
@@ -246,6 +250,7 @@ export function researchDogeBaselineConfigMatrix(
     if (frames.length === 0) throw new Error('doge_baseline_empty_config_research_set');
     const baseline = replayConfigRow(frames, model, executionConfig, createDogeBaselineStrategyConfig(model, {
         tradingEnabled: baselineConfig.tradingEnabled,
+        regime: baselineConfig.regime,
         entry: baselineConfig.entry,
         exit: baselineConfig.exit,
     }));

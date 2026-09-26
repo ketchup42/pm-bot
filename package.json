@@ -15,6 +15,7 @@
     "backtest:matrix": "npm run build && node dist/app/pm-bot.js backtest:matrix",
     "research:doge-baseline-model": "npm run build && node dist/app/pm-bot.js research:doge-baseline-model",
     "research:doge-baseline-config": "npm run build && node dist/app/pm-bot.js research:doge-baseline-config",
+    "research:doge-baseline-regime": "npm run build && node dist/app/pm-bot.js research:doge-baseline-regime",
     "replay:doge-baseline": "npm run build && node dist/app/pm-bot.js replay:doge-baseline",
     "strategy:doge-baseline": "npm run build && node dist/app/pm-bot.js strategy:doge-baseline",
     "refresh:doge-baseline": "npm run build && node dist/app/pm-bot.js refresh:doge-baseline",

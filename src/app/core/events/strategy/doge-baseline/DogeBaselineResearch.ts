@@ -264,7 +264,7 @@ export async function collectDogeBaselineTrainReplaySplit(
     };
 }
 
-function compactDogeBaselineConfigurationFrame(frame: HistoryFrameV3): HistoryFrameV3 {
+export function compactDogeBaselineConfigurationFrame(frame: HistoryFrameV3): HistoryFrameV3 {
     if (!Array.isArray(frame.snapshots)) return frame;
     const intervalMs = DOGE_BASELINE_CONFIG_RESEARCH_SNAPSHOT_INTERVAL_MS;
     const snapshots = [] as HistoryFrameV3['snapshots'];

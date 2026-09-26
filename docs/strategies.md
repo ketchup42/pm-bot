@@ -183,14 +183,19 @@ drawdown no worse than the baseline and ordered by net PnL, then lower total exe
 costs, then fewer trades. It atomically writes `models/doge-baseline/config.json`
 without generating a report.
 
-Published configuration V4 contains a global trading switch and independent entry
+Published configuration V5 contains a global trading switch, a PnL-regime profile and independent entry
 settings for each mode: an enable switch, minimum edge, probability threshold and
 DOGE-deviation threshold:
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "tradingEnabled": true,
+  "regime": {
+    "minimumNetPnlPerReplayFrame": 0.50,
+    "trendStepPerReplayFrame": 0.10,
+    "minimumConsecutiveRises": 2
+  },
   "entry": {
     "modes": {
       "early-60": {
@@ -215,10 +220,8 @@ skip entries and log `Trading paused by config` once per trading frame. Replay a
 configuration research deliberately ignore this live guard, so they can continue
 evaluating the model and find a configuration that may resume trading.
 
-Configuration versions older than V4 are rejected rather than silently converted.
-When updating an existing local artifact manually, change `version` to `4` and add
-`"tradingEnabled": true` (or `false` to hold live entries) before starting the
-strategy or refresh process.
+V4 artifacts are upgraded in memory with the default regime and are rewritten as V5
+by the next successful refresh or regime application. Older versions are rejected.
 
 `refresh:doge-baseline -- --frame 5m --count 100 --train-count 500 --replay 100`
 uses 500 frames to train a candidate and tune both the working and candidate model.
@@ -240,12 +243,19 @@ has non-positive net PnL on the replay window, refresh writes
 `"tradingEnabled": false` to the current `config.json`. This stops new live entries
 without stopping research or refresh. Refresh also uses the selected pair's replay
 PnL as a regime trend. For 100 replay frames, entries require at least `$50` selected
-net PnL. A change of at least `$10` from the previous comparable evaluation enables
-trading when rising and pauses it when falling. Both thresholds scale linearly with
-the replay-frame count. Evaluations are comparable only when replay frames, initial
-balance and execution latency match. Smaller changes preserve the current state,
-except that a paused strategy resumes when both adjacent comparable evaluations are
-at or above the minimum PnL and the selected PnL is not falling.
+net PnL. The stored `regime` thresholds scale linearly with the replay-frame count.
+A paused strategy resumes only after its configured number of consecutive significant
+PnL rises. The recovery sequence may begin below the minimum PnL, but a falling or
+incomparable evaluation resets it. Evaluations are comparable only when replay frames,
+initial balance and execution latency match.
+
+`research:doge-baseline-regime` evaluates 18 regime profiles with a chronological
+walk-forward simulation. It accepts the same `--frame`, `--count`, `--train-count`
+and `--replay` arguments as refresh. Without `--apply` it writes `summary.md` and
+`result.json` under `history/reports/doge-baseline-regime/latest`. With `--apply` it
+requires 24 future windows and atomically updates only the `regime` block of the
+published config. The report mode requires 12 future windows, so `500/100/25` needs
+at least 900 eligible frames.
 
 ## Before changing live behaviour
 

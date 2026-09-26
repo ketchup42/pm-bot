@@ -5,6 +5,7 @@ import { runBacktestMatrix } from './backtest-matrix.js';
 import { runCollect } from './collect.js';
 import { runDogeBaselineConfigResearch } from './doge-baseline-config-research.js';
 import { runDogeBaselineModelResearch } from './doge-baseline-model-research.js';
+import { runDogeBaselineRegimeResearch } from './doge-baseline-regime-research.js';
 import { runDogeBaselineReplayCommand } from './doge-baseline-replay.js';
 import { runDogeBaselineRefresh } from './doge-baseline-refresh.js';
 import { runDogeBaselineStrategy } from './doge-baseline.js';
@@ -25,6 +26,7 @@ const commands: readonly PmBotCommand[] = [
     { name: 'backtest:matrix', description: 'Run every reference strategy replay.', run: runBacktestMatrix },
     { name: 'research:doge-baseline-model', description: 'Train and publish the DOGE model.', run: runDogeBaselineModelResearch },
     { name: 'research:doge-baseline-config', description: 'Tune the DOGE strategy configuration.', run: runDogeBaselineConfigResearch },
+    { name: 'research:doge-baseline-regime', description: 'Evaluate DOGE PnL regime filters chronologically.', run: runDogeBaselineRegimeResearch },
     { name: 'replay:doge-baseline', description: 'Replay the published DOGE model.', run: runDogeBaselineReplayCommand },
     { name: 'strategy:doge-baseline', description: 'Run the DOGE strategy.', run: runDogeBaselineStrategy },
     { name: 'refresh:doge-baseline', description: 'Continuously settle, train and compare DOGE artifacts.', run: runDogeBaselineRefresh },

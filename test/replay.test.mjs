@@ -64,6 +64,10 @@ import {
     getDogeBaselineMinimumReplayTradeCount,
 } from '../dist/app/core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import {
+    getDogeBaselineRegimeResearchBaseline,
+    getDogeBaselineRegimeResearchPolicies,
+} from '../dist/app/core/events/strategy/doge-baseline/regime_research.js';
+import {
     REPLAY_STRATEGY_TREND_LINE_V2,
 } from '../dist/app/defaults.js';
 
@@ -346,9 +350,23 @@ test('DOGE configuration research excludes inactive entry settings from finalist
     assert.equal(matrix.rows.length, 160);
     assert.ok(matrix.entryRows.every(row => row.config.exit.enabled === false));
     assert.ok(matrix.rows.slice(matrix.entryRows.length).every(row => row.config.exit.enabled === true));
+    assert.ok(matrix.rows.every(row => row.config.regime.minimumConsecutiveRises === 2));
 });
 
-test('DOGE strategy config V4 requires a trade flag and an enabled entry mode', () => {
+test('DOGE regime research includes the published default and all eighteen profiles', () => {
+    const baseline = getDogeBaselineRegimeResearchBaseline();
+    const policies = getDogeBaselineRegimeResearchPolicies();
+    assert.equal(policies.length, 18);
+    assert.ok(policies.some(policy => policy.id === baseline.id));
+    assert.deepEqual(baseline, {
+        id: 'minimum0.50-trend0.10-rises2',
+        minimumNetPnlPerReplayFrame: 0.5,
+        trendStepPerReplayFrame: 0.1,
+        minimumConsecutiveRises: 2,
+    });
+});
+
+test('DOGE strategy config V5 requires a trade flag, regime and an enabled entry mode', () => {
     const weights = { means: [0, 0, 0], scales: [1, 1, 1], weights: [0, 0, 0, 0] };
     const model = {
         version: 1, strategy: 'doge-baseline', coin: 'doge', frame: '5m', source: PS_CHAINLINK_TWAP_60,
@@ -356,8 +374,13 @@ test('DOGE strategy config V4 requires a trade flag and an enabled entry mode', 
         modes: { 'early-60': weights, 'late-120': weights },
     };
     const strategyConfig = createDogeBaselineStrategyConfig(model);
-    assert.equal(strategyConfig.version, 4);
+    assert.equal(strategyConfig.version, 5);
     assert.equal(strategyConfig.tradingEnabled, true);
+    assert.deepEqual(strategyConfig.regime, {
+        minimumNetPnlPerReplayFrame: 0.5,
+        trendStepPerReplayFrame: 0.1,
+        minimumConsecutiveRises: 2,
+    });
     assert.equal(strategyConfig.entry.modes['early-60'].minimumEdge, 0.04);
     assert.equal(strategyConfig.entry.modes['late-120'].minimumEdge, 0.04);
     assert.equal(strategyConfig.entry.modes['early-60'].minimumConfidence, 0.5);
@@ -373,6 +396,12 @@ test('DOGE strategy config V4 requires a trade flag and an enabled entry mode', 
         /invalid_doge_baseline_strategy_config_trading_enabled/);
     assert.throws(() => validateDogeBaselineStrategyConfig({ ...createDogeBaselineStrategyConfig(model), version: 3 }, model),
         /incompatible_doge_baseline_strategy_config/);
+
+    const v4 = { ...createDogeBaselineStrategyConfig(model), version: 4 };
+    delete v4.regime;
+    const migrated = validateDogeBaselineStrategyConfig(v4, model);
+    assert.equal(migrated.version, 5);
+    assert.equal(migrated.regime.minimumConsecutiveRises, 2);
 });
 
 test('DOGE artifact reader restores a stale interrupted pair publication', async () => {

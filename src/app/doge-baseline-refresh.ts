@@ -7,17 +7,25 @@ import {
     DOGE_BASELINE_CANDIDATE_MODEL_FILE,
     DOGE_BASELINE_DEFAULT_BALANCE,
     DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
-    DOGE_BASELINE_MINIMUM_TRADING_NET_PNL_PER_REPLAY_FRAME,
-    DOGE_BASELINE_TRADING_NET_PNL_TREND_PER_REPLAY_FRAME,
     getDogeBaselineEntrySummary,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
-import { buildDogeBaselineModel, readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
-import { type DogeBaselineModel, getDogeBaselineArtifactPath, readDogeBaselineModel, writeDogeBaselineModel } from './core/events/strategy/doge-baseline/DogeBaselineModel.js';
+import {
+    buildDogeBaselineModel,
+    readDogeBaselineTrainReplaySplit,
+} from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
+import {
+    type DogeBaselineModel,
+    type DogeBaselineObservation,
+    getDogeBaselineArtifactPath,
+    readDogeBaselineModel,
+    writeDogeBaselineModel,
+} from './core/events/strategy/doge-baseline/DogeBaselineModel.js';
 import {
     createDogeBaselineStrategyConfig,
     readDogeBaselineStrategyConfigOrDefault,
     rebindDogeBaselineStrategyConfig,
     type DogeBaselineStrategyConfig,
+    type DogeBaselineRegimeSettings,
     writeDogeBaselineArtifacts,
     writeDogeBaselineStrategyConfig,
 } from './core/events/strategy/doge-baseline/artifacts.js';
@@ -25,14 +33,70 @@ import { researchDogeBaselineConfigMatrix } from './core/events/strategy/doge-ba
 import {
     type DogeBaselineConfigurationEvaluation,
     type DogeBaselineEvaluationTradingPoint,
+    type DogeBaselineEvaluationTradingState,
     evaluateDogeBaselineModelConfigurations,
     getDogeBaselineEvaluationTradingPoint,
-    readDogeBaselineEvaluationTradingPoint,
+    readDogeBaselineEvaluationTradingState,
     writeDogeBaselineEvaluation,
 } from './core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
 import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/DogeBaselineRefreshLock.js';
 import { settleHistoryDirectory } from './core/history/HistorySettlementService.js';
 import { isFileMissingError } from '../file_lock.js';
+import type { ReplayExecutionConfig } from './core/backtest/replay.js';
+import type { HistoryFrameV3 } from './core/history/history_frame.js';
+
+export interface DogeBaselineRefreshArtifacts {
+    model: DogeBaselineModel;
+    config: DogeBaselineStrategyConfig;
+}
+
+export interface DogeBaselineRefreshSelection {
+    candidate: DogeBaselineModel;
+    selected: DogeBaselineRefreshArtifacts;
+    evaluation: DogeBaselineConfigurationEvaluation | undefined;
+}
+
+/** Pure model/config selection shared by live refresh and historical regime research. */
+export function selectDogeBaselineRefreshArtifacts(
+    trainingObservations: readonly DogeBaselineObservation[],
+    trainingFrames: readonly HistoryFrameV3[],
+    replay: readonly HistoryFrameV3[],
+    working: Readonly<DogeBaselineRefreshArtifacts> | undefined,
+    executionConfig: Readonly<ReplayExecutionConfig>,
+): DogeBaselineRefreshSelection {
+    const candidate = buildDogeBaselineModel(trainingObservations);
+    if (working === undefined) {
+        const selected = researchDogeBaselineConfigMatrix(
+            trainingFrames, candidate, executionConfig, createDogeBaselineStrategyConfig(candidate),
+        ).selected.config;
+        return { candidate, selected: { model: candidate, config: selected }, evaluation: undefined };
+    }
+    const workingMatrix = researchDogeBaselineConfigMatrix(
+        trainingFrames, working.model, executionConfig, working.config,
+    );
+    const candidateCurrent = rebindDogeBaselineStrategyConfig(candidate, working.config);
+    const candidateMatrix = researchDogeBaselineConfigMatrix(
+        trainingFrames, candidate, executionConfig, candidateCurrent,
+    );
+    const evaluation = evaluateDogeBaselineModelConfigurations(
+        trainingObservations.length,
+        replay,
+        working.model,
+        working.config,
+        workingMatrix.selected.config,
+        candidate,
+        candidateCurrent,
+        candidateMatrix.selected.config,
+        executionConfig,
+    );
+    return {
+        candidate,
+        selected: evaluation.selected.model === 'working'
+            ? { model: working.model, config: evaluation.selected.strategyConfig }
+            : { model: candidate, config: evaluation.selected.strategyConfig },
+        evaluation,
+    };
+}
 
 async function readWorkingConfig(model: Readonly<DogeBaselineModel>) {
     const config = await readDogeBaselineStrategyConfigOrDefault(model);
@@ -57,9 +121,9 @@ export function formatDogeBaselineRefreshSelection(
 export type DogeBaselineTradingRegimeReason =
     | 'all_combinations_non_positive'
     | 'selected_net_pnl_below_minimum'
-    | 'selected_net_pnl_rising'
+    | 'selected_net_pnl_recovery_confirmed'
+    | 'selected_net_pnl_recovery_pending'
     | 'selected_net_pnl_falling'
-    | 'selected_net_pnl_stably_above_minimum'
     | 'selected_net_pnl_stable'
     | 'no_comparable_previous_evaluation';
 
@@ -71,6 +135,8 @@ export interface DogeBaselineTradingRegimeDecision {
     netPnlDelta: number | undefined;
     minimumNetPnl: number;
     trendStep: number;
+    consecutiveRises: number;
+    requiredConsecutiveRises: number;
 }
 
 function areDogeBaselineTradingPointsComparable(
@@ -81,20 +147,40 @@ function areDogeBaselineTradingPointsComparable(
         previous.initialBalance === current.initialBalance && previous.latencyMs === current.latencyMs;
 }
 
+function isDogeBaselineTradingRegimeComparable(
+    previous: Readonly<DogeBaselineRegimeSettings> | undefined,
+    current: Readonly<DogeBaselineRegimeSettings>,
+): boolean {
+    return previous !== undefined &&
+        previous.minimumNetPnlPerReplayFrame === current.minimumNetPnlPerReplayFrame &&
+        previous.trendStepPerReplayFrame === current.trendStepPerReplayFrame &&
+        previous.minimumConsecutiveRises === current.minimumConsecutiveRises;
+}
+
 export function getDogeBaselineTradingRegimeDecision(
     currentTradingEnabled: boolean,
     evaluation: Pick<DogeBaselineConfigurationEvaluation, 'combinations' | 'replayFrames' | 'replayConfig' | 'selected'>,
-    previous: Readonly<DogeBaselineEvaluationTradingPoint> | undefined,
+    previous: Readonly<{ point: DogeBaselineEvaluationTradingPoint; state: DogeBaselineEvaluationTradingState }> | undefined,
+    settings: Readonly<DogeBaselineRegimeSettings>,
 ): DogeBaselineTradingRegimeDecision {
     const current = getDogeBaselineEvaluationTradingPoint(evaluation);
-    const minimumNetPnl = current.replayFrames * DOGE_BASELINE_MINIMUM_TRADING_NET_PNL_PER_REPLAY_FRAME;
-    const trendStep = current.replayFrames * DOGE_BASELINE_TRADING_NET_PNL_TREND_PER_REPLAY_FRAME;
-    const previousComparable = areDogeBaselineTradingPointsComparable(previous, current);
-    const previousNetPnl = previousComparable ? previous.netPnl : undefined;
-    const netPnlDelta = previousComparable ? current.netPnl - previous.netPnl : undefined;
-    const decisionBase = { selectedNetPnl: current.netPnl, previousNetPnl, netPnlDelta, minimumNetPnl, trendStep };
+    const minimumNetPnl = current.replayFrames * settings.minimumNetPnlPerReplayFrame;
+    const trendStep = current.replayFrames * settings.trendStepPerReplayFrame;
+    const previousComparable = areDogeBaselineTradingPointsComparable(previous?.point, current);
+    const previousNetPnl = previousComparable ? previous.point.netPnl : undefined;
+    const netPnlDelta = previousComparable ? current.netPnl - previous.point.netPnl : undefined;
+    const previousRises = previousComparable && isDogeBaselineTradingRegimeComparable(previous?.state.regime, settings)
+        ? previous!.state.consecutiveRises
+        : 0;
+    const rises = netPnlDelta !== undefined && netPnlDelta >= trendStep
+        ? previousRises + 1
+        : 0;
+    const decisionBase = {
+        selectedNetPnl: current.netPnl, previousNetPnl, netPnlDelta, minimumNetPnl, trendStep,
+        consecutiveRises: rises, requiredConsecutiveRises: settings.minimumConsecutiveRises,
+    };
     if (evaluation.combinations.length > 0 && evaluation.combinations.every(value => value.replayMetrics.net_pnl <= 0)) {
-        return { tradingEnabled: false, reason: 'all_combinations_non_positive', ...decisionBase };
+        return { tradingEnabled: false, reason: 'all_combinations_non_positive', ...decisionBase, consecutiveRises: 0 };
     }
     if (current.netPnl < minimumNetPnl) {
         return { tradingEnabled: false, reason: 'selected_net_pnl_below_minimum', ...decisionBase };
@@ -105,15 +191,13 @@ export function getDogeBaselineTradingRegimeDecision(
             ...decisionBase,
         };
     }
-    if (netPnlDelta >= trendStep) {
-        return { tradingEnabled: true, reason: 'selected_net_pnl_rising', ...decisionBase };
-    }
     if (netPnlDelta <= -trendStep) {
-        return { tradingEnabled: false, reason: 'selected_net_pnl_falling', ...decisionBase };
+        return { tradingEnabled: false, reason: 'selected_net_pnl_falling', ...decisionBase, consecutiveRises: 0 };
     }
-    if (!currentTradingEnabled && netPnlDelta >= 0 && previousNetPnl !== undefined && previousNetPnl >= minimumNetPnl) {
-        return { tradingEnabled: true, reason: 'selected_net_pnl_stably_above_minimum', ...decisionBase };
+    if (!currentTradingEnabled && rises >= settings.minimumConsecutiveRises) {
+        return { tradingEnabled: true, reason: 'selected_net_pnl_recovery_confirmed', ...decisionBase };
     }
+    if (!currentTradingEnabled && rises > 0) return { tradingEnabled: false, reason: 'selected_net_pnl_recovery_pending', ...decisionBase };
     return { tradingEnabled: currentTradingEnabled, reason: 'selected_net_pnl_stable', ...decisionBase };
 }
 
@@ -124,7 +208,8 @@ export function formatDogeBaselineTradingRegimeDecision(
     const netPnlDelta = decision.netPnlDelta?.toFixed(6) ?? 'none';
     return `trading ${decision.tradingEnabled ? 'enabled' : 'paused'}: selectedNetPnL=${decision.selectedNetPnl.toFixed(6)} ` +
         `previousNetPnL=${previousNetPnl} delta=${netPnlDelta} minimumNetPnL=${decision.minimumNetPnl.toFixed(6)} ` +
-        `trendStep=${decision.trendStep.toFixed(6)} reason=${decision.reason}`;
+        `trendStep=${decision.trendStep.toFixed(6)} rises=${decision.consecutiveRises}/${decision.requiredConsecutiveRises} ` +
+        `reason=${decision.reason}`;
 }
 
 function withDogeBaselineTradingEnabled(
@@ -134,6 +219,7 @@ function withDogeBaselineTradingEnabled(
 ): DogeBaselineStrategyConfig {
     return createDogeBaselineStrategyConfig(model, {
         tradingEnabled,
+        regime: config.regime,
         entry: config.entry,
         exit: config.exit,
     });
@@ -152,57 +238,41 @@ async function refreshModel(
     const { trainingObservations, trainingFrames, replay } = await readDogeBaselineTrainReplaySplit(
         history, { trainingCount: trainFrames, replayCount: replayFrames }, shouldStop,
     );
-    const candidate = buildDogeBaselineModel(trainingObservations);
-    await writeDogeBaselineModel(candidate, getDogeBaselineArtifactPath(DOGE_BASELINE_CANDIDATE_MODEL_FILE));
-
     let workingModel;
     try {
         workingModel = await readDogeBaselineModel();
     } catch (error) {
         if (!isFileMissingError(error)) throw error;
     }
-    if (workingModel === undefined) {
-        const initialConfig = createDogeBaselineStrategyConfig(candidate);
-        const selected = researchDogeBaselineConfigMatrix(
-            trainingFrames,
-            candidate,
-            executionConfig,
-            initialConfig,
-        );
-        await writeDogeBaselineArtifacts(candidate, selected.selected.config);
-        return `Initial model and config published from ${candidate.actualFrames} frames`;
-    }
-
-    const workingConfig = await readWorkingConfig(workingModel);
-    const workingMatrix = researchDogeBaselineConfigMatrix(
-        trainingFrames, workingModel, executionConfig, workingConfig,
-    );
-    const candidateCurrent = rebindDogeBaselineStrategyConfig(candidate, workingConfig);
-    const candidateMatrix = researchDogeBaselineConfigMatrix(
-        trainingFrames, candidate, executionConfig, candidateCurrent,
-    );
-    const evaluation = evaluateDogeBaselineModelConfigurations(
-        trainFrames,
+    const workingConfig = workingModel === undefined ? undefined : await readWorkingConfig(workingModel);
+    const selection = selectDogeBaselineRefreshArtifacts(
+        trainingObservations,
+        trainingFrames,
         replay,
-        workingModel,
-        workingConfig,
-        workingMatrix.selected.config,
-        candidate,
-        candidateCurrent,
-        candidateMatrix.selected.config,
+        workingModel === undefined || workingConfig === undefined ? undefined : { model: workingModel, config: workingConfig },
         executionConfig,
     );
-    const previousEvaluation = await readDogeBaselineEvaluationTradingPoint();
-    await writeDogeBaselineEvaluation(evaluation);
+    const { candidate, evaluation } = selection;
+    await writeDogeBaselineModel(candidate, getDogeBaselineArtifactPath(DOGE_BASELINE_CANDIDATE_MODEL_FILE));
+    if (evaluation === undefined) {
+        await writeDogeBaselineArtifacts(candidate, selection.selected.config);
+        return `Initial model and config published from ${candidate.actualFrames} frames`;
+    }
+    const working = { model: workingModel!, config: workingConfig! };
+    const previousEvaluation = await readDogeBaselineEvaluationTradingState();
     const selectionMessage = formatDogeBaselineRefreshSelection(evaluation);
-    const regime = getDogeBaselineTradingRegimeDecision(workingConfig.tradingEnabled, evaluation, previousEvaluation);
+    const regime = getDogeBaselineTradingRegimeDecision(working.config.tradingEnabled, evaluation, previousEvaluation, working.config.regime);
+    await writeDogeBaselineEvaluation(evaluation, {
+        consecutiveRises: regime.consecutiveRises,
+        regime: working.config.regime,
+    });
     const regimeMessage = formatDogeBaselineTradingRegimeDecision(regime);
     const tradingEnabled = regime.tradingEnabled;
     if (!evaluation.promoted) {
-        if (tradingEnabled !== workingConfig.tradingEnabled) {
+        if (tradingEnabled !== working.config.tradingEnabled) {
             await writeDogeBaselineStrategyConfig(
-                withDogeBaselineTradingEnabled(workingModel, workingConfig, tradingEnabled),
-                workingModel,
+                withDogeBaselineTradingEnabled(working.model, working.config, tradingEnabled),
+                working.model,
             );
         }
         return `${selectionMessage}, ${regimeMessage}`;
@@ -210,8 +280,8 @@ async function refreshModel(
 
     if (evaluation.selected.model === 'working') {
         await writeDogeBaselineStrategyConfig(
-            withDogeBaselineTradingEnabled(workingModel, evaluation.selected.strategyConfig, tradingEnabled),
-            workingModel,
+            withDogeBaselineTradingEnabled(working.model, evaluation.selected.strategyConfig, tradingEnabled),
+            working.model,
         );
     } else {
         await writeDogeBaselineArtifacts(

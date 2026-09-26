@@ -4,6 +4,9 @@ import { isFileMissingError } from '../../../../../file_lock.js';
 import { delay } from '../../../../../utils.js';
 import {
     DOGE_BASELINE_CONFIG_FILE,
+    DOGE_BASELINE_DEFAULT_MINIMUM_CONSECUTIVE_RISES,
+    DOGE_BASELINE_DEFAULT_MINIMUM_TRADING_NET_PNL_PER_REPLAY_FRAME,
+    DOGE_BASELINE_DEFAULT_TRADING_NET_PNL_TREND_PER_REPLAY_FRAME,
     DOGE_BASELINE_EMERGENCY_EXIT_CONFIRMATION_MS,
     DOGE_BASELINE_EMERGENCY_EXIT_DEVIATION_FACTOR,
     DOGE_BASELINE_EMERGENCY_EXIT_RETRY_MS,
@@ -25,7 +28,8 @@ import {
 } from './DogeBaselineModel.js';
 import type { DogeBaselineEmergencyExitConfig } from './DogeBaselineDecision.js';
 
-const DOGE_BASELINE_STRATEGY_CONFIG_VERSION = 4 as const;
+const DOGE_BASELINE_STRATEGY_CONFIG_VERSION = 5 as const;
+const DOGE_BASELINE_PREVIOUS_STRATEGY_CONFIG_VERSION = 4 as const;
 const DOGE_BASELINE_PUBLISH_BACKUP_DIRECTORY = '.publish-backup';
 const DOGE_BASELINE_ARTIFACT_READ_RETRIES = 3;
 const DOGE_BASELINE_ARTIFACT_READ_RETRY_MS = 10;
@@ -43,8 +47,16 @@ export interface DogeBaselineStrategyConfig {
     strategy: typeof DOGE_BASELINE_STRATEGY;
     model: DogeBaselineModelReference;
     tradingEnabled: boolean;
+    regime: DogeBaselineRegimeSettings;
     entry: DogeBaselineEntrySettings;
     exit: DogeBaselineEmergencyExitSettings;
+}
+
+/** Controls when refresh permits new live entries from its rolling replay PnL. */
+export interface DogeBaselineRegimeSettings {
+    minimumNetPnlPerReplayFrame: number;
+    trendStepPerReplayFrame: number;
+    minimumConsecutiveRises: number;
 }
 
 export interface DogeBaselineEmergencyExitSettings extends DogeBaselineEmergencyExitConfig {
@@ -118,6 +130,22 @@ function validateEntry(config: Readonly<DogeBaselineEntrySettings>): void {
     if (enabledCount === 0) throw new Error('invalid_doge_baseline_strategy_config_entry');
 }
 
+function createDogeBaselineRegimeSettings(): DogeBaselineRegimeSettings {
+    return {
+        minimumNetPnlPerReplayFrame: DOGE_BASELINE_DEFAULT_MINIMUM_TRADING_NET_PNL_PER_REPLAY_FRAME,
+        trendStepPerReplayFrame: DOGE_BASELINE_DEFAULT_TRADING_NET_PNL_TREND_PER_REPLAY_FRAME,
+        minimumConsecutiveRises: DOGE_BASELINE_DEFAULT_MINIMUM_CONSECUTIVE_RISES,
+    };
+}
+
+function validateRegime(config: Readonly<DogeBaselineRegimeSettings>): void {
+    if (!Number.isFinite(config.minimumNetPnlPerReplayFrame) || config.minimumNetPnlPerReplayFrame <= 0 ||
+        !Number.isFinite(config.trendStepPerReplayFrame) || config.trendStepPerReplayFrame <= 0 ||
+        !Number.isInteger(config.minimumConsecutiveRises) || config.minimumConsecutiveRises <= 0) {
+        throw new Error('invalid_doge_baseline_strategy_config_regime');
+    }
+}
+
 export function createDogeBaselineStrategyConfig(
     model: Readonly<DogeBaselineModel>,
     values: Partial<Omit<DogeBaselineStrategyConfig, 'version' | 'strategy' | 'model'>> = {},
@@ -135,6 +163,7 @@ export function createDogeBaselineStrategyConfig(
         strategy: DOGE_BASELINE_STRATEGY,
         model: getModelReference(model),
         tradingEnabled: values.tradingEnabled ?? true,
+        regime: { ...(values.regime ?? createDogeBaselineRegimeSettings()) },
         entry: values.entry ?? createDogeBaselineEntrySettings(),
         exit: { ...exit },
     };
@@ -147,6 +176,7 @@ export function rebindDogeBaselineStrategyConfig(
 ): DogeBaselineStrategyConfig {
     return createDogeBaselineStrategyConfig(model, {
         tradingEnabled: config.tradingEnabled,
+        regime: config.regime,
         entry: config.entry,
         exit: config.exit,
     });
@@ -158,12 +188,20 @@ export function validateDogeBaselineStrategyConfig(
 ): DogeBaselineStrategyConfig {
     validateDogeBaselineModel(model);
     if (!value || typeof value !== 'object') throw new Error('invalid_doge_baseline_strategy_config');
-    const config = value as DogeBaselineStrategyConfig;
+    const rawConfig = value as Omit<Partial<DogeBaselineStrategyConfig>, 'version'> & { version?: number };
+    const config = rawConfig.version === DOGE_BASELINE_PREVIOUS_STRATEGY_CONFIG_VERSION
+        ? {
+            ...rawConfig,
+            version: DOGE_BASELINE_STRATEGY_CONFIG_VERSION,
+            regime: rawConfig.regime ?? createDogeBaselineRegimeSettings(),
+        } as DogeBaselineStrategyConfig
+        : rawConfig as DogeBaselineStrategyConfig;
     if (config.version !== DOGE_BASELINE_STRATEGY_CONFIG_VERSION || config.strategy !== DOGE_BASELINE_STRATEGY ||
         !config.model || !hasSameModelReference(config.model, getModelReference(model))) {
         throw new Error('incompatible_doge_baseline_strategy_config');
     }
     if (typeof config.tradingEnabled !== 'boolean') throw new Error('invalid_doge_baseline_strategy_config_trading_enabled');
+    validateRegime(config.regime);
     validateEntry(config.entry);
     validateEmergencyExit(config.exit);
     return config;

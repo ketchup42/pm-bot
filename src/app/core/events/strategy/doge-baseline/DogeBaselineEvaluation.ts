@@ -26,7 +26,11 @@ import {
 } from './DogeBaselineConfig.js';
 import { DogeBaselineModel, DogeBaselineObservation, getDogeBaselineArtifactPath, makeDogeBaselineObservation } from './DogeBaselineModel.js';
 import { DogeBaselineTrainingMetrics, calculateDogeBaselineTrainingMetrics } from './DogeBaselineResearch.js';
-import { DogeBaselineStrategyConfig, toDogeBaselineRuntimeConfig } from './artifacts.js';
+import {
+    type DogeBaselineRegimeSettings,
+    type DogeBaselineStrategyConfig,
+    toDogeBaselineRuntimeConfig,
+} from './artifacts.js';
 
 export interface DogeBaselineEvaluationModel {
     trainedAt: number;
@@ -64,6 +68,7 @@ export interface DogeBaselineConfigurationEvaluation {
     selected: DogeBaselineEvaluationCombination;
     promoted: boolean;
     reasons: DogeBaselineSelectionRejectionReason[];
+    tradingRegime?: DogeBaselineEvaluationTradingState;
 }
 
 /** The subset of a persisted evaluation needed to compare consecutive replay PnL values. */
@@ -74,10 +79,20 @@ export interface DogeBaselineEvaluationTradingPoint {
     netPnl: number;
 }
 
+/** Persisted refresh-only state used to confirm a recovery across evaluations. */
+export interface DogeBaselineEvaluationTradingState {
+    consecutiveRises: number;
+    regime?: DogeBaselineRegimeSettings;
+}
+
 export interface DogeBaselineEvaluationTradingPointSource {
     replayFrames: number;
     replayConfig: Pick<ReplayExecutionConfig, 'initial_balance' | 'latency_ms'>;
     selected: { replayMetrics: Pick<ReplayMetrics, 'net_pnl'> };
+}
+
+export interface DogeBaselineEvaluationTradingStateSource {
+    tradingRegime?: DogeBaselineEvaluationTradingState;
 }
 
 export type DogeBaselineSelectionRejectionReason =
@@ -161,6 +176,7 @@ export function evaluateDogeBaselineModelConfigurations(
                     { ...strategyConfig.entry.modes[mode.name] },
                 ])) as DogeBaselineStrategyConfig['entry']['modes'],
             },
+            regime: { ...strategyConfig.regime },
             exit: { ...strategyConfig.exit },
         },
         ...createEvaluationModel(frames, observations, model, config, strategyConfig),
@@ -276,6 +292,23 @@ export function getDogeBaselineEvaluationTradingPoint(
     };
 }
 
+export function getDogeBaselineEvaluationTradingState(
+    evaluation: Readonly<DogeBaselineEvaluationTradingStateSource>,
+): DogeBaselineEvaluationTradingState {
+    const consecutiveRises = evaluation.tradingRegime?.consecutiveRises ?? 0;
+    if (!Number.isInteger(consecutiveRises) || consecutiveRises < 0) {
+        throw new Error('invalid_doge_baseline_latest_evaluation_trading_regime');
+    }
+    const regime = evaluation.tradingRegime?.regime;
+    if (regime !== undefined && (!Number.isFinite(regime.minimumNetPnlPerReplayFrame) ||
+        regime.minimumNetPnlPerReplayFrame <= 0 || !Number.isFinite(regime.trendStepPerReplayFrame) ||
+        regime.trendStepPerReplayFrame <= 0 || !Number.isInteger(regime.minimumConsecutiveRises) ||
+        regime.minimumConsecutiveRises <= 0)) {
+        throw new Error('invalid_doge_baseline_latest_evaluation_trading_regime');
+    }
+    return regime === undefined ? { consecutiveRises } : { consecutiveRises, regime: { ...regime } };
+}
+
 function parseDogeBaselineEvaluationTradingPoint(value: unknown): DogeBaselineEvaluationTradingPoint {
     if (!value || typeof value !== 'object') throw new Error('invalid_doge_baseline_latest_evaluation');
     const evaluation = value as Partial<DogeBaselineConfigurationEvaluation>;
@@ -289,11 +322,22 @@ function parseDogeBaselineEvaluationTradingPoint(value: unknown): DogeBaselineEv
         typeof netPnl !== 'number' || !Number.isFinite(netPnl)) {
         throw new Error('invalid_doge_baseline_latest_evaluation');
     }
-    return getDogeBaselineEvaluationTradingPoint({
+    const source: DogeBaselineEvaluationTradingPointSource = {
         replayFrames,
         replayConfig,
         selected: { replayMetrics: { net_pnl: netPnl } },
-    });
+    };
+    const stateSource = evaluation.tradingRegime === undefined ? {} : { tradingRegime: evaluation.tradingRegime };
+    getDogeBaselineEvaluationTradingState(stateSource);
+    return getDogeBaselineEvaluationTradingPoint(source);
+}
+
+function parseDogeBaselineEvaluationTradingState(value: unknown): DogeBaselineEvaluationTradingState {
+    if (!value || typeof value !== 'object') throw new Error('invalid_doge_baseline_latest_evaluation');
+    const evaluation = value as Partial<DogeBaselineConfigurationEvaluation>;
+    const source: DogeBaselineEvaluationTradingStateSource = {};
+    if (evaluation.tradingRegime !== undefined) source.tradingRegime = evaluation.tradingRegime;
+    return getDogeBaselineEvaluationTradingState(source);
 }
 
 /** Reads the previous refresh PnL point, if a refresh evaluation has been published before. */
@@ -308,12 +352,30 @@ export async function readDogeBaselineEvaluationTradingPoint(): Promise<DogeBase
     }
 }
 
-export async function writeDogeBaselineEvaluation(evaluation: Readonly<DogeBaselineConfigurationEvaluation>): Promise<void> {
+/** Reads the previous refresh point and its recovery-confirmation state. */
+export async function readDogeBaselineEvaluationTradingState(): Promise<
+    { point: DogeBaselineEvaluationTradingPoint; state: DogeBaselineEvaluationTradingState } | undefined
+> {
+    try {
+        const value: unknown = JSON.parse(await fs.readFile(getDogeBaselineEvaluationPath(), 'utf8')) as unknown;
+        const point = parseDogeBaselineEvaluationTradingPoint(value);
+        return { point, state: parseDogeBaselineEvaluationTradingState(value) };
+    } catch (error) {
+        if (isFileMissingError(error)) return undefined;
+        throw error;
+    }
+}
+
+export async function writeDogeBaselineEvaluation(
+    evaluation: Readonly<DogeBaselineConfigurationEvaluation>,
+    tradingRegime: Readonly<DogeBaselineEvaluationTradingState> | undefined = undefined,
+): Promise<void> {
     const filePath = getDogeBaselineEvaluationPath();
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const temporary = `${filePath}.${process.pid}-${Date.now()}.tmp`;
     try {
-        await fs.writeFile(temporary, `${JSON.stringify(evaluation, undefined, 2)}\n`, { flag: 'wx' });
+        const value = tradingRegime === undefined ? evaluation : { ...evaluation, tradingRegime };
+        await fs.writeFile(temporary, `${JSON.stringify(value, undefined, 2)}\n`, { flag: 'wx' });
         await fs.rename(temporary, filePath);
     } catch (error) {
         await fs.unlink(temporary).catch(() => {});

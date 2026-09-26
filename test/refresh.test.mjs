@@ -63,75 +63,77 @@ function createEvaluation(selectedNetPnl, netPnls = [selectedNetPnl, 1, 2, 3], r
     };
 }
 
+const regime = { minimumNetPnlPerReplayFrame: 0.5, trendStepPerReplayFrame: 0.1, minimumConsecutiveRises: 2 };
+
 function createPrevious(netPnl, replayFrames = 100, initialBalance = 100, latencyMs = 250) {
-    return { replayFrames, initialBalance, latencyMs, netPnl };
+    return { point: { replayFrames, initialBalance, latencyMs, netPnl }, state: { consecutiveRises: 0, regime } };
 }
 
-test('refresh enables trading after a significant selected-PnL rise above the minimum', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(74), createPrevious(48));
+test('refresh enables trading only after two significant selected-PnL rises', () => {
+    const first = getDogeBaselineTradingRegimeDecision(false, createEvaluation(60), createPrevious(45), regime);
+    assert.equal(first.tradingEnabled, false);
+    assert.equal(first.reason, 'selected_net_pnl_recovery_pending');
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(74), {
+        point: { replayFrames: 100, initialBalance: 100, latencyMs: 250, netPnl: 60 },
+        state: { consecutiveRises: first.consecutiveRises, regime },
+    }, regime);
     assert.equal(decision.tradingEnabled, true);
-    assert.equal(decision.reason, 'selected_net_pnl_rising');
+    assert.equal(decision.reason, 'selected_net_pnl_recovery_confirmed');
     assert.equal(decision.minimumNetPnl, 50);
     assert.equal(decision.trendStep, 10);
 });
 
 test('refresh pauses trading after a significant selected-PnL fall', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(57), createPrevious(74));
+    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(57), createPrevious(74), regime);
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'selected_net_pnl_falling');
 });
 
 test('refresh pauses trading below the selected-PnL minimum regardless of trend', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(49), createPrevious(30));
+    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(49), createPrevious(30), regime);
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'selected_net_pnl_below_minimum');
 });
 
-test('refresh resumes paused trading after two stable selected-PnL evaluations above the minimum', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(60), createPrevious(55));
-    assert.equal(decision.tradingEnabled, true);
-    assert.equal(decision.reason, 'selected_net_pnl_stably_above_minimum');
-});
-
-test('refresh resumes paused trading when selected PnL is unchanged above the minimum', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(57), createPrevious(57));
-    assert.equal(decision.tradingEnabled, true);
-    assert.equal(decision.reason, 'selected_net_pnl_stably_above_minimum');
+test('refresh does not resume paused trading from a stable selected PnL', () => {
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(57), createPrevious(57), regime);
+    assert.equal(decision.tradingEnabled, false);
+    assert.equal(decision.reason, 'selected_net_pnl_stable');
 });
 
 test('refresh preserves the paused state when the previous stable PnL is below the minimum', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(55), createPrevious(49));
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(55), createPrevious(49), regime);
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'selected_net_pnl_stable');
 });
 
 test('refresh preserves the paused state while selected PnL is still declining', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(55), createPrevious(57));
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(55), createPrevious(57), regime);
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'selected_net_pnl_stable');
 });
 
 test('refresh does not resume paused trading during a significant PnL fall', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(57), createPrevious(74));
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(57), createPrevious(74), regime);
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'selected_net_pnl_falling');
 });
 
 test('refresh preserves enabled trading for selected-PnL changes inside the trend band', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(67), createPrevious(60));
+    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(67), createPrevious(60), regime);
     assert.equal(decision.tradingEnabled, true);
     assert.equal(decision.reason, 'selected_net_pnl_stable');
 });
 
 test('refresh does not use an incompatible previous replay as a trend point', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(74), createPrevious(48, 100, 100, 200));
+    const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(74), createPrevious(48, 100, 100, 200), regime);
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'no_comparable_previous_evaluation');
     assert.equal(decision.previousNetPnl, undefined);
 });
 
 test('refresh pauses trading immediately when all evaluated pairs have non-positive PnL', () => {
-    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(-1, [0, -1, -2, -3]), createPrevious(100));
+    const decision = getDogeBaselineTradingRegimeDecision(true, createEvaluation(-1, [0, -1, -2, -3]), createPrevious(100), regime);
     assert.equal(decision.tradingEnabled, false);
     assert.equal(decision.reason, 'all_combinations_non_positive');
 });

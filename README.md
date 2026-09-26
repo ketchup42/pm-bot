@@ -63,6 +63,7 @@ collect → history frames → history:settle → model/config refresh → strat
 | `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10`            | Replay the published DOGE pair with the default 250 ms execution delay. |
 | `npm run research:doge-baseline-model -- --count 500`                                   | Train and publish a DOGE model.                                         |
 | `npm run research:doge-baseline-config -- --count 500`                                  | Tune and publish DOGE configuration.                                    |
+| `npm run research:doge-baseline-regime -- --frame 5m --count 25 --train-count 500 --replay 100` | Evaluate DOGE PnL-regime filters without publishing artifacts. |
 | `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs using the same delay.       |
 | `npm run strategy:doge-baseline -- --debug --no-dumps --balance 100 --trade-value 10`   | Run with a virtual wallet without legacy dumps.                         |
 | `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`               | Submit real orders.                                                     |
