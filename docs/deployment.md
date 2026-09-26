@@ -124,23 +124,38 @@ docker compose --env-file compose.env stop
 
 ## Weekly DOGE regime research
 
-The deployment archive contains `run-doge-regime-research.sh` and user-level systemd
-templates under `systemd/`. The weekly run leaves the collector active, stops the
-strategy and refresh, applies the walk-forward regime profile, then starts those
-two services again even when the research command fails. It normally takes 4–6
-hours with the Compose CPU limit of one core and requires at least 1,200 eligible
-DOGE frames.
+The deployment archive contains the weekly research files in `systemd/doge-regime/`.
+The weekly run leaves the collector active, stops strategy and refresh, applies the
+walk-forward regime profile, then starts refresh. The strategy starts only after
+refresh successfully evaluates fresh history, including the valid outcome where it
+retains the current pair. The script waits for this result for up to two hours. On
+timeout, refresh remains active and strategy remains stopped. It normally takes
+4–6 hours with the Compose CPU limit of one core and requires at least 1,200
+eligible DOGE frames.
 
 Install the timer after extracting the archive in the standard location
 `~/pm-bot/pm-bot-docker-linux-amd64`:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/pm-bot-doge-regime-research.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now pm-bot-doge-regime-research.timer
-loginctl enable-linger "$USER"
+bash systemd/doge-regime/install.sh
 ```
+
+The installer creates `systemd/doge-regime/research.env` from its template when
+needed, links the unit files directly from the project, enables the timer, and
+enables user lingering. The local parameter file is preserved by later archive
+updates and is not part of Git. It contains the research frame, refresh step,
+training and replay sizes, replay latency, refresh wait timeout, and log polling
+interval. Re-run the same command after an archive update to reload changed
+weekly research files. The weekly Sunday schedule remains in the systemd timer.
+
+Uninstall the timer without deleting the local parameters or other PM Bot
+services:
+
+```bash
+bash systemd/doge-regime/uninstall.sh
+```
+
+Uninstall intentionally refuses while a weekly research run is active.
 
 It runs every Sunday at 03:15 in the server time zone. It does not catch up after
 a server outage. Inspect the schedule and the last run with:
