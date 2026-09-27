@@ -4,16 +4,40 @@ set -Eeuo pipefail
 project_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$project_directory"
 
-compose=(docker compose --env-file compose.env)
-menu_compose=(docker compose --env-file compose.env --profile menu)
-console_image='pm-bot:linux-amd64'
-wireguard_directory='runtime/wireguard/wg_confs'
-wireguard_config="$wireguard_directory/wg0.conf"
-wireguard_template="$wireguard_directory/wg0.conf.new"
-wireguard_previous_config="$wireguard_directory/wg0.conf.previous"
-wireguard_source_template='network/wireguard/wg0.conf.template'
-wireguard_override='compose.override.yaml'
-wireguard_disabled_override='compose.override.yaml.disabled'
+readonly COMPOSE_ENV_FILE='compose.env'
+readonly COMPOSE_ENV_TEMPLATE='compose.env.example'
+readonly RELEASE_MANIFEST_FILE='release-manifest.json'
+readonly INSTALL_SCRIPT='install.sh'
+readonly RUNTIME_DIRECTORY='runtime'
+readonly APPLICATION_ENV_FILE="$RUNTIME_DIRECTORY/.env"
+readonly APPLICATION_ENV_TEMPLATE='runtime.env.example'
+readonly LOG_DIRECTORY="$RUNTIME_DIRECTORY/logs"
+readonly DOGE_MODEL_DIRECTORY="$RUNTIME_DIRECTORY/models/doge-baseline"
+readonly DOGE_MODEL_FILE="$DOGE_MODEL_DIRECTORY/model.json"
+readonly DOGE_CONFIG_FILE="$DOGE_MODEL_DIRECTORY/config.json"
+readonly CONSOLE_IMAGE='pm-bot:linux-amd64'
+readonly CONSOLE_SERVICE='console'
+readonly COLLECTOR_SERVICE='collector-doge-baseline'
+readonly STRATEGY_SERVICE='strategy-doge-baseline'
+readonly REFRESH_SERVICE='refresh-doge-baseline'
+readonly WIREGUARD_SERVICE='wireguard-bridge'
+readonly WIREGUARD_DIRECTORY="$RUNTIME_DIRECTORY/wireguard/wg_confs"
+readonly WIREGUARD_CONFIG="$WIREGUARD_DIRECTORY/wg0.conf"
+readonly WIREGUARD_TEMPLATE="$WIREGUARD_DIRECTORY/wg0.conf.new"
+readonly WIREGUARD_PREVIOUS_CONFIG="$WIREGUARD_DIRECTORY/wg0.conf.previous"
+readonly WIREGUARD_SOURCE_TEMPLATE='network/wireguard/wg0.conf.template'
+readonly WIREGUARD_OVERRIDE='compose.override.yaml'
+readonly WIREGUARD_DISABLED_OVERRIDE='compose.override.yaml.disabled'
+readonly WIREGUARD_OVERRIDE_TEMPLATE='compose.wireguard.override.yaml.example'
+readonly WEEKLY_RESEARCH_DIRECTORY='systemd/doge-regime'
+readonly WEEKLY_RESEARCH_SETTINGS="$WEEKLY_RESEARCH_DIRECTORY/research.env"
+readonly WEEKLY_RESEARCH_TEMPLATE="$WEEKLY_RESEARCH_DIRECTORY/research.env.example"
+readonly WEEKLY_RESEARCH_INSTALL_SCRIPT="$WEEKLY_RESEARCH_DIRECTORY/install.sh"
+readonly WEEKLY_RESEARCH_UNINSTALL_SCRIPT="$WEEKLY_RESEARCH_DIRECTORY/uninstall.sh"
+readonly -a DOGE_SERVICES=("$COLLECTOR_SERVICE" "$STRATEGY_SERVICE" "$REFRESH_SERVICE")
+
+compose=(docker compose --env-file "$COMPOSE_ENV_FILE")
+menu_compose=(docker compose --env-file "$COMPOSE_ENV_FILE" --profile menu)
 menu_choice=0
 menu_page_size=10
 menu_width=54
@@ -293,38 +317,38 @@ open_editor() {
 }
 
 ensure_compose_settings() {
-    if [[ -e compose.env ]]; then
+    if [[ -e "$COMPOSE_ENV_FILE" ]]; then
         return
     fi
-    cp compose.env.example compose.env
-    printf '\nPUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> compose.env
-    echo 'Created compose.env from compose.env.example.'
+    cp "$COMPOSE_ENV_TEMPLATE" "$COMPOSE_ENV_FILE"
+    printf '\nPUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> "$COMPOSE_ENV_FILE"
+    echo "Created $COMPOSE_ENV_FILE from $COMPOSE_ENV_TEMPLATE."
 }
 
 ensure_application_settings() {
-    if [[ -f runtime/.env ]]; then
+    if [[ -f "$APPLICATION_ENV_FILE" ]]; then
         return 0
     fi
-    if [[ ! -f runtime.env.example ]]; then
-        show_message 'Application settings template is missing: runtime.env.example.'
+    if [[ ! -f "$APPLICATION_ENV_TEMPLATE" ]]; then
+        show_message "Application settings template is missing: $APPLICATION_ENV_TEMPLATE."
         return 1
     fi
-    if ! mkdir -p runtime; then
+    if ! mkdir -p "$RUNTIME_DIRECTORY"; then
         show_message 'Unable to create the runtime directory for application settings.'
         return 1
     fi
-    if ! cp runtime.env.example runtime/.env; then
-        show_message 'Unable to create runtime/.env from the application settings template.'
+    if ! cp "$APPLICATION_ENV_TEMPLATE" "$APPLICATION_ENV_FILE"; then
+        show_message "Unable to create $APPLICATION_ENV_FILE from the application settings template."
         return 1
     fi
     return 0
 }
 
 compose_settings_block_is_present() {
-    [[ -f compose.env ]] || return 1
+    [[ -f "$COMPOSE_ENV_FILE" ]] || return 1
     local begin_count end_count
-    begin_count="$(grep -Fxc "$doge_service_settings_begin" compose.env || true)"
-    end_count="$(grep -Fxc "$doge_service_settings_end" compose.env || true)"
+    begin_count="$(grep -Fxc "$doge_service_settings_begin" "$COMPOSE_ENV_FILE" || true)"
+    end_count="$(grep -Fxc "$doge_service_settings_end" "$COMPOSE_ENV_FILE" || true)"
     [[ "$begin_count" == 1 && "$end_count" == 1 ]]
 }
 
@@ -335,14 +359,14 @@ create_doge_service_settings_block() {
     fi
 
     local begin_count end_count temporary
-    begin_count="$(grep -Fxc "$doge_service_settings_begin" compose.env || true)"
-    end_count="$(grep -Fxc "$doge_service_settings_end" compose.env || true)"
+    begin_count="$(grep -Fxc "$doge_service_settings_begin" "$COMPOSE_ENV_FILE" || true)"
+    end_count="$(grep -Fxc "$doge_service_settings_end" "$COMPOSE_ENV_FILE" || true)"
     if [[ "$begin_count" != 0 || "$end_count" != 0 ]]; then
-        show_message 'compose.env has an incomplete DOGE service-settings block. Repair it manually first.'
+        show_message "$COMPOSE_ENV_FILE has an incomplete DOGE service-settings block. Repair it manually first."
         return 1
     fi
 
-    temporary="$(mktemp "$project_directory/.compose.env.XXXXXX")"
+    temporary="$(mktemp "$project_directory/.${COMPOSE_ENV_FILE}.XXXXXX")"
     if ! awk -v begin="$doge_service_settings_begin" -v end="$doge_service_settings_end" '
         /^DOGE_BASELINE_[A-Za-z0-9_]*=/ { values[++count] = $0; next }
         { lines[++lineCount] = $0 }
@@ -352,13 +376,13 @@ create_doge_service_settings_block() {
             for (valueIndex = 1; valueIndex <= count; valueIndex += 1) print values[valueIndex]
             print end
         }
-    ' compose.env > "$temporary"; then
+    ' "$COMPOSE_ENV_FILE" > "$temporary"; then
         rm -f "$temporary"
         show_message 'Unable to create the DOGE service-settings block.'
         return 1
     fi
-    chmod --reference=compose.env "$temporary"
-    mv "$temporary" compose.env
+    chmod --reference="$COMPOSE_ENV_FILE" "$temporary"
+    mv "$temporary" "$COMPOSE_ENV_FILE"
 }
 
 validate_doge_service_settings_block() {
@@ -376,12 +400,12 @@ edit_doge_service_settings() {
     create_doge_service_settings_block || return
     local draft updated
     draft="$(mktemp "$project_directory/.doge-service-settings.XXXXXX")"
-    updated="$(mktemp "$project_directory/.compose.env.XXXXXX")"
+    updated="$(mktemp "$project_directory/.${COMPOSE_ENV_FILE}.XXXXXX")"
     awk -v begin="$doge_service_settings_begin" -v end="$doge_service_settings_end" '
         $0 == begin { copy = 1; next }
         $0 == end { exit }
         copy { print }
-    ' compose.env > "$draft"
+    ' "$COMPOSE_ENV_FILE" > "$draft"
     if ! open_editor "$draft"; then
         rm -f "$draft" "$updated"
         return 1
@@ -401,13 +425,13 @@ edit_doge_service_settings() {
         $0 == begin { printf "%s", replacement; replace = 1; next }
         $0 == end { replace = 0; next }
         !replace { print }
-    ' compose.env > "$updated"; then
+    ' "$COMPOSE_ENV_FILE" > "$updated"; then
         rm -f "$draft" "$updated"
         show_message 'Unable to save DOGE service settings.'
         return 1
     fi
-    chmod --reference=compose.env "$updated"
-    mv "$updated" compose.env
+    chmod --reference="$COMPOSE_ENV_FILE" "$updated"
+    mv "$updated" "$COMPOSE_ENV_FILE"
     rm -f "$draft"
 }
 
@@ -418,16 +442,16 @@ environment_value() {
 
 manifest_value() {
     local name="$1"
-    [[ -f release-manifest.json ]] || return
-    awk -F'"' -v name="$name" '$2 == name { print $4; exit }' release-manifest.json
+    [[ -f "$RELEASE_MANIFEST_FILE" ]] || return
+    awk -F'"' -v name="$name" '$2 == name { print $4; exit }' "$RELEASE_MANIFEST_FILE"
 }
 
 ensure_console() {
-    [[ -f compose.env && -f runtime/.env ]] || return 1
+    [[ -f "$COMPOSE_ENV_FILE" && -f "$APPLICATION_ENV_FILE" ]] || return 1
     local container_id='' image_id='' container_image='' running=''
-    image_id="$(docker image inspect --format '{{.Id}}' "$console_image" 2>/dev/null || true)"
+    image_id="$(docker image inspect --format '{{.Id}}' "$CONSOLE_IMAGE" 2>/dev/null || true)"
     [[ -n "$image_id" ]] || return 1
-    container_id="$("${menu_compose[@]}" ps -q console 2>/dev/null || true)"
+    container_id="$("${menu_compose[@]}" ps -q "$CONSOLE_SERVICE" 2>/dev/null || true)"
     if [[ -n "$container_id" ]]; then
         container_image="$(docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true)"
         running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
@@ -436,15 +460,15 @@ ensure_console() {
         fi
     fi
     if [[ -n "$container_id" && "$container_image" != "$image_id" ]]; then
-        "${menu_compose[@]}" up -d --force-recreate console >/dev/null 2>&1
+        "${menu_compose[@]}" up -d --force-recreate "$CONSOLE_SERVICE" >/dev/null 2>&1
     else
-        "${menu_compose[@]}" up -d console >/dev/null 2>&1
+        "${menu_compose[@]}" up -d "$CONSOLE_SERVICE" >/dev/null 2>&1
     fi
 }
 
 run_console_command() {
     ensure_console || return 1
-    "${menu_compose[@]}" exec -T console \
+    "${menu_compose[@]}" exec -T "$CONSOLE_SERVICE" \
         node --max-old-space-size=6144 dist/app/pm-bot.js "$@" </dev/null 2>/dev/null
 }
 
@@ -501,9 +525,9 @@ format_duration_ms() {
 }
 
 wireguard_handshake_status() {
-    [[ -f compose.override.yaml ]] || { printf 'not enabled'; return; }
+    [[ -f "$WIREGUARD_OVERRIDE" ]] || { printf 'not enabled'; return; }
     local handshake now
-    handshake="$("${compose[@]}" exec -T wireguard-bridge sh -c 'wg show wg0 latest-handshakes | awk "NR == 1 { print \$2 }"' 2>/dev/null || true)"
+    handshake="$("${compose[@]}" exec -T "$WIREGUARD_SERVICE" sh -c 'wg show wg0 latest-handshakes | awk "NR == 1 { print \$2 }"' 2>/dev/null || true)"
     [[ "$handshake" =~ ^[0-9]+$ ]] && ((handshake > 0)) || { printf 'not available'; return; }
     now="$(date +%s)"
     printf '%ss ago' "$((now - handshake))"
@@ -511,11 +535,11 @@ wireguard_handshake_status() {
 
 preflight_clean_start() {
     local -a missing=()
-    [[ -f runtime/.env ]] || missing+=('runtime/.env')
-    [[ -f compose.env ]] || missing+=('compose.env')
-    [[ -f runtime/models/doge-baseline/model.json ]] || missing+=('DOGE model.json')
-    [[ -f runtime/models/doge-baseline/config.json ]] || missing+=('DOGE config.json')
-    if [[ -f compose.override.yaml && ! -f "$wireguard_config" ]]; then
+    [[ -f "$APPLICATION_ENV_FILE" ]] || missing+=("$APPLICATION_ENV_FILE")
+    [[ -f "$COMPOSE_ENV_FILE" ]] || missing+=("$COMPOSE_ENV_FILE")
+    [[ -f "$DOGE_MODEL_FILE" ]] || missing+=('DOGE model.json')
+    [[ -f "$DOGE_CONFIG_FILE" ]] || missing+=('DOGE config.json')
+    if [[ -f "$WIREGUARD_OVERRIDE" && ! -f "$WIREGUARD_CONFIG" ]]; then
         missing+=('WireGuard wg0.conf')
     fi
     if ((${#missing[@]} > 0)); then
@@ -529,27 +553,27 @@ preflight_clean_start() {
 }
 
 start_doge_contour() {
-    local -a services=(collector-doge-baseline strategy-doge-baseline refresh-doge-baseline)
-    [[ -f compose.override.yaml ]] && services+=(wireguard-bridge)
+    local -a services=("${DOGE_SERVICES[@]}")
+    [[ -f "$WIREGUARD_OVERRIDE" ]] && services+=("$WIREGUARD_SERVICE")
     "${compose[@]}" up -d "${services[@]}"
 }
 
 stop_doge_contour() {
-    local -a services=(collector-doge-baseline strategy-doge-baseline refresh-doge-baseline)
-    [[ -f compose.override.yaml ]] && services+=(wireguard-bridge)
+    local -a services=("${DOGE_SERVICES[@]}")
+    [[ -f "$WIREGUARD_OVERRIDE" ]] && services+=("$WIREGUARD_SERVICE")
     "${compose[@]}" stop "${services[@]}"
 }
 
 restart_doge_contour() {
-    local -a services=(collector-doge-baseline strategy-doge-baseline refresh-doge-baseline)
-    if [[ ! -f compose.override.yaml ]]; then
+    local -a services=("${DOGE_SERVICES[@]}")
+    if [[ ! -f "$WIREGUARD_OVERRIDE" ]]; then
         "${compose[@]}" up -d --no-deps --force-recreate "${services[@]}"
         return
     fi
-    if service_is_running console; then
-        services+=(console)
+    if service_is_running "$CONSOLE_SERVICE"; then
+        services+=("$CONSOLE_SERVICE")
     fi
-    "${menu_compose[@]}" up -d --force-recreate wireguard-bridge "${services[@]}"
+    "${menu_compose[@]}" up -d --force-recreate "$WIREGUARD_SERVICE" "${services[@]}"
 }
 
 service_is_running() {
@@ -558,9 +582,9 @@ service_is_running() {
 }
 
 restart_wireguard_bridge() {
-    local -a services=(wireguard-bridge)
+    local -a services=("$WIREGUARD_SERVICE")
     local service
-    for service in console collector-doge-baseline strategy-doge-baseline refresh-doge-baseline; do
+    for service in "$CONSOLE_SERVICE" "${DOGE_SERVICES[@]}"; do
         if service_is_running "$service"; then
             services+=("$service")
         fi
@@ -570,7 +594,7 @@ restart_wireguard_bridge() {
 
 restart_service() {
     local service="$1"
-    if [[ "$service" == wireguard-bridge ]]; then
+    if [[ "$service" == "$WIREGUARD_SERVICE" ]]; then
         restart_wireguard_bridge
         return
     fi
@@ -583,7 +607,7 @@ show_account() {
     render_section 'ACCOUNT'
     render_line "$color_gray" 'Loading read-only account information...'
     render_bottom
-    if [[ -f compose.env && -f runtime/.env ]]; then
+    if [[ -f "$COMPOSE_ENV_FILE" && -f "$APPLICATION_ENV_FILE" ]]; then
         account_text="$(run_account_status || true)"
     fi
     render_top
@@ -606,8 +630,8 @@ show_status() {
     local strategy_mode='not available'
     local original_menu_inner_width="$menu_inner_width"
     setup_status_width
-    if [[ -f compose.env ]]; then
-        strategy_mode="$(environment_value compose.env DOGE_BASELINE_STRATEGY_MODE || true)"
+    if [[ -f "$COMPOSE_ENV_FILE" ]]; then
+        strategy_mode="$(environment_value "$COMPOSE_ENV_FILE" DOGE_BASELINE_STRATEGY_MODE || true)"
     fi
     local status_json='' trading_enabled eligible_frames entry_profile exit_profile pause_reason model_version config_version model_config
     render_top
@@ -617,7 +641,7 @@ show_status() {
     render_status_line "$color_gray" 'Loading validated status...'
     render_status_line "$color_gray" 'First history analysis can take longer.'
     render_bottom
-    if [[ -f compose.env ]]; then
+    if [[ -f "$COMPOSE_ENV_FILE" ]]; then
         status_json="$(run_doge_status || true)"
     fi
     render_top
@@ -650,15 +674,15 @@ show_status() {
     render_status_value 'EXIT PROFILE' "$(or_not_available "$exit_profile")" "$color_gray"
     render_status_value 'PAUSE REASON' "$(or_not_available "$pause_reason")" "$color_yellow"
     render_status_value 'MODEL / CONFIG' "$model_config" "$color_gray"
-    render_status_value 'DISK FREE' "$(or_not_available "$(df -h runtime 2>/dev/null | awk 'NR == 2 { print $4 }')")" "$color_gray"
+    render_status_value 'DISK FREE' "$(or_not_available "$(df -h "$RUNTIME_DIRECTORY" 2>/dev/null | awk 'NR == 2 { print $4 }')")" "$color_gray"
     render_status_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
     render_status_value 'RELEASE' "$(or_not_available "$(manifest_value gitRevision || true)")" "$color_gray"
     render_status_value 'IMAGE' "$(or_not_available "$(manifest_value imageId || true)")" "$color_gray"
     render_rule
     render_status_line "$color_cyan" 'SERVICES'
-    if [[ -f compose.env ]]; then
+    if [[ -f "$COMPOSE_ENV_FILE" ]]; then
         local -a service_rows
-        mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}  {{.Status}}' 2>/dev/null | awk '$1 != "console"' || true)
+        mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}  {{.Status}}' 2>/dev/null | awk -v console="$CONSOLE_SERVICE" '$1 != console' || true)
         if ((${#service_rows[@]} == 0)); then
             render_status_line "$color_yellow" 'not available'
         else
@@ -668,7 +692,7 @@ show_status() {
             done
         fi
     else
-        render_status_line "$color_yellow" 'not available: compose.env is missing'
+        render_status_line "$color_yellow" "not available: $COMPOSE_ENV_FILE is missing"
     fi
     render_rule
     render_status_line "$color_gray" 'Press Enter to continue'
@@ -683,10 +707,10 @@ global_settings_menu() {
         case "$menu_choice" in
             0)
                 if ensure_application_settings; then
-                    open_editor runtime/.env || true
+                    open_editor "$APPLICATION_ENV_FILE" || true
                 fi
                 ;;
-            1) run_menu_action 'Image update' bash install.sh --update-image --no-menu ;;
+            1) run_menu_action 'Image update' bash "$INSTALL_SCRIPT" --update-image --no-menu ;;
             2) return ;;
         esac
     done
@@ -704,17 +728,15 @@ doge_settings_menu() {
 }
 
 weekly_research_menu() {
-    local weekly_settings='systemd/doge-regime/research.env'
-    local weekly_template='systemd/doge-regime/research.env.example'
     while true; do
         choose_menu 'Weekly research' 'Weekly research settings' 'Install or update service' 'Uninstall service' 'Back'
         case "$menu_choice" in
             0)
-                [[ -e "$weekly_settings" ]] || cp "$weekly_template" "$weekly_settings"
-                open_editor "$weekly_settings" || true
+                [[ -e "$WEEKLY_RESEARCH_SETTINGS" ]] || cp "$WEEKLY_RESEARCH_TEMPLATE" "$WEEKLY_RESEARCH_SETTINGS"
+                open_editor "$WEEKLY_RESEARCH_SETTINGS" || true
                 ;;
-            1) run_menu_action 'Weekly research service installation' bash systemd/doge-regime/install.sh ;;
-            2) run_menu_action 'Weekly research service removal' bash systemd/doge-regime/uninstall.sh ;;
+            1) run_menu_action 'Weekly research service installation' bash "$WEEKLY_RESEARCH_INSTALL_SCRIPT" ;;
+            2) run_menu_action 'Weekly research service removal' bash "$WEEKLY_RESEARCH_UNINSTALL_SCRIPT" ;;
             3) return ;;
         esac
     done
@@ -723,16 +745,16 @@ weekly_research_menu() {
 wireguard_status() {
     render_top
     render_section 'WIREGUARD CONNECTION'
-    if [[ -f "$wireguard_override" ]]; then
+    if [[ -f "$WIREGUARD_OVERRIDE" ]]; then
         render_value 'OVERRIDE' 'enabled' "$color_green"
-    elif [[ -f "$wireguard_disabled_override" ]]; then
+    elif [[ -f "$WIREGUARD_DISABLED_OVERRIDE" ]]; then
         render_value 'OVERRIDE' 'disabled' "$color_yellow"
     else
         render_value 'OVERRIDE' 'not configured' "$color_yellow"
     fi
-    [[ -f "$wireguard_config" ]] && render_value 'ACTIVE CONFIG' 'available' "$color_green" || render_value 'ACTIVE CONFIG' 'not available' "$color_yellow"
-    [[ -f "$wireguard_template" ]] && render_value 'DRAFT' 'available' "$color_green" || render_value 'DRAFT' 'not available' "$color_yellow"
-    [[ -f "$wireguard_previous_config" ]] && render_value 'PREVIOUS CONFIG' 'available' "$color_gray" || true
+    [[ -f "$WIREGUARD_CONFIG" ]] && render_value 'ACTIVE CONFIG' 'available' "$color_green" || render_value 'ACTIVE CONFIG' 'not available' "$color_yellow"
+    [[ -f "$WIREGUARD_TEMPLATE" ]] && render_value 'DRAFT' 'available' "$color_green" || render_value 'DRAFT' 'not available' "$color_yellow"
+    [[ -f "$WIREGUARD_PREVIOUS_CONFIG" ]] && render_value 'PREVIOUS CONFIG' 'available' "$color_gray" || true
     render_rule
     render_line "$color_gray" 'No WireGuard credentials are displayed'
     render_line "$color_gray" 'Press Enter to continue'
@@ -741,30 +763,30 @@ wireguard_status() {
 }
 
 wireguard_override_menu_label() {
-    [[ -f "$wireguard_override" ]] && printf 'Disable WireGuard' || printf 'Enable WireGuard'
+    [[ -f "$WIREGUARD_OVERRIDE" ]] && printf 'Disable WireGuard' || printf 'Enable WireGuard'
 }
 
 toggle_wireguard_override() {
-    if [[ -f "$wireguard_override" ]]; then
-        mv "$wireguard_override" "$wireguard_disabled_override"
+    if [[ -f "$WIREGUARD_OVERRIDE" ]]; then
+        mv "$WIREGUARD_OVERRIDE" "$WIREGUARD_DISABLED_OVERRIDE"
         show_message 'WireGuard override disabled. Restart services to apply the network change.'
         return
     fi
-    if [[ -f "$wireguard_disabled_override" ]]; then
-        mv "$wireguard_disabled_override" "$wireguard_override"
+    if [[ -f "$WIREGUARD_DISABLED_OVERRIDE" ]]; then
+        mv "$WIREGUARD_DISABLED_OVERRIDE" "$WIREGUARD_OVERRIDE"
     else
-        cp compose.wireguard.override.yaml.example "$wireguard_override"
+        cp "$WIREGUARD_OVERRIDE_TEMPLATE" "$WIREGUARD_OVERRIDE"
     fi
     show_message 'WireGuard override enabled. Restart services to apply the network change.'
 }
 
 create_or_edit_wireguard_draft() {
-    mkdir -p "$wireguard_directory"
-    if [[ ! -f "$wireguard_template" ]]; then
-        cp "$wireguard_source_template" "$wireguard_template"
-        chmod 600 "$wireguard_template"
+    mkdir -p "$WIREGUARD_DIRECTORY"
+    if [[ ! -f "$WIREGUARD_TEMPLATE" ]]; then
+        cp "$WIREGUARD_SOURCE_TEMPLATE" "$WIREGUARD_TEMPLATE"
+        chmod 600 "$WIREGUARD_TEMPLATE"
     fi
-    open_editor "$wireguard_template" || true
+    open_editor "$WIREGUARD_TEMPLATE" || true
 }
 
 wireguard_draft_field_is_set() {
@@ -777,11 +799,11 @@ wireguard_draft_field_is_set() {
             valid = value != "" && value !~ /^REPLACE_/
         }
         END { exit(valid ? 0 : 1) }
-    ' "$wireguard_template"
+    ' "$WIREGUARD_TEMPLATE"
 }
 
 validate_wireguard_draft() {
-    [[ -f "$wireguard_template" ]] || {
+    [[ -f "$WIREGUARD_TEMPLATE" ]] || {
         show_message 'WireGuard draft is not available. Create and edit it first.'
         return 1
     }
@@ -793,7 +815,7 @@ validate_wireguard_draft() {
         }
     done
     if ! docker run --rm --entrypoint wg-quick \
-        -v "$project_directory/$wireguard_directory:/config:ro" \
+        -v "$project_directory/$WIREGUARD_DIRECTORY:/config:ro" \
         lscr.io/linuxserver/wireguard:latest strip /config/wg_confs/wg0.conf.new >/dev/null 2>&1; then
         show_message 'WireGuard draft failed syntax validation.'
         return 1
@@ -803,16 +825,16 @@ validate_wireguard_draft() {
 apply_wireguard_draft() {
     validate_wireguard_draft || return
     local active_was_present=false
-    if [[ -f "$wireguard_config" ]]; then
-        mv -f "$wireguard_config" "$wireguard_previous_config"
+    if [[ -f "$WIREGUARD_CONFIG" ]]; then
+        mv -f "$WIREGUARD_CONFIG" "$WIREGUARD_PREVIOUS_CONFIG"
         active_was_present=true
     fi
-    if ! mv "$wireguard_template" "$wireguard_config"; then
-        if [[ "$active_was_present" == true ]]; then mv "$wireguard_previous_config" "$wireguard_config"; fi
+    if ! mv "$WIREGUARD_TEMPLATE" "$WIREGUARD_CONFIG"; then
+        if [[ "$active_was_present" == true ]]; then mv "$WIREGUARD_PREVIOUS_CONFIG" "$WIREGUARD_CONFIG"; fi
         show_message 'WireGuard draft could not be applied. The active configuration was restored.'
         return 1
     fi
-    chmod 600 "$wireguard_config"
+    chmod 600 "$WIREGUARD_CONFIG"
     show_message 'WireGuard draft applied. Restart the WireGuard bridge and dependent services to use it.'
 }
 
@@ -841,8 +863,8 @@ vpn_menu() {
 
 list_service_log_files() {
     local service="$1"
-    [[ -d runtime/logs ]] || return
-    find runtime/logs -maxdepth 1 -type f -name "${service}.log*" -printf '%T@:%p\n' 2>/dev/null |
+    [[ -d "$LOG_DIRECTORY" ]] || return
+    find "$LOG_DIRECTORY" -maxdepth 1 -type f -name "${service}.log*" -printf '%T@:%p\n' 2>/dev/null |
         sort -t: -k1,1nr |
         cut -d: -f2-
 }
@@ -956,7 +978,7 @@ doge_baseline_menu() {
     done
 }
 
-if [[ -f compose.env && -f runtime/.env ]]; then
+if [[ -f "$COMPOSE_ENV_FILE" && -f "$APPLICATION_ENV_FILE" ]]; then
     ensure_console || true
 fi
 
