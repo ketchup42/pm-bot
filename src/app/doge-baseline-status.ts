@@ -29,7 +29,9 @@ export interface DogeBaselineStatus {
     history: {
         directory: string;
         eligibleFrames: number;
+        firstFrameStart?: number;
         latestFrameStart?: number;
+        historySpanMs?: number;
         latestFrameAgeMs?: number;
         error?: string;
     };
@@ -48,12 +50,16 @@ async function getHistoryStatus(directory: string): Promise<DogeBaselineStatus['
     try {
         const cached = await readCurrentDogeBaselineHistoryStatus(directory);
         history.eligibleFrames = cached.eligibleFrames;
+        if (cached.firstEligibleFrameStart !== undefined) history.firstFrameStart = cached.firstEligibleFrameStart;
         if (cached.latestEligibleFrameStart !== undefined) history.latestFrameStart = cached.latestEligibleFrameStart;
     } catch (error) {
         history.error = getStatusError(error);
     }
     if (history.latestFrameStart !== undefined) {
         history.latestFrameAgeMs = Math.max(0, Date.now() - history.latestFrameStart * 1_000);
+    }
+    if (history.firstFrameStart !== undefined && history.latestFrameStart !== undefined) {
+        history.historySpanMs = Math.max(0, (history.latestFrameStart - history.firstFrameStart) * 1_000);
     }
     return history;
 }

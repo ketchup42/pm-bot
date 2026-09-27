@@ -198,6 +198,7 @@ test('DOGE status excludes complete frames that cannot produce a DOGE observatio
         await new HistoryFrameWriter({ directory: historyDirectory, gzip: true, maxFrames: 0 }).write(makeFrame());
         const status = await getDogeBaselineStatus();
         assert.equal(status.history.eligibleFrames, 0);
+        assert.equal(status.history.firstFrameStart, undefined);
         assert.equal(status.history.latestFrameStart, undefined);
         const cachePath = path.join(root, 'history', 'status', 'doge-5m-chainlink-twap-60.json');
         assert.ok((await fs.stat(cachePath)).isFile());

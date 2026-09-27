@@ -38,8 +38,12 @@ run Docker are required.
 
 ## Menu guide
 
-The main menu contains available trading contours. `DOGE Baseline` currently
-provides the following actions:
+The main menu begins with `Account`, then lists available trading contours.
+`Account` shows the masked account address, Polygon pUSD balance, public
+mark-to-market position data, and read-only CLOB open orders. It never submits,
+cancels, or synchronizes orders.
+
+`DOGE Baseline` currently provides the following actions:
 
 | Menu item | Purpose |
 | --- | --- |
@@ -58,13 +62,16 @@ lists, including archived log files, show ten entries at a time and scroll with
 the same arrow keys.
 
 `Services` lists the ten newest logs per page with size and modification
-time. The selected log can open at its end, follow with `tail -F`, show only
+time. The selected log can open at its end, follow in `less`, show only
 warnings and errors, or show its final N lines. WireGuard has no application file
-log, therefore its entry follows its Docker log stream instead. Leave a log viewer
-with `q`, or use Ctrl+C for the Docker stream.
+log, therefore its entry follows its Docker log stream instead. Leave every log
+viewer with `q`.
 
-The `status:doge-baseline --json` application command is the source of artifact,
-refresh, and history status. The menu never parses model or configuration JSON.
+The `status:account --json` and `status:doge-baseline --json` application
+commands are the sources of account and DOGE status. The menu runs them through
+an internal `console` container. It starts only from `menu.sh`, is recreated when
+the loaded application image changes, and is not part of Start, Stop, or Restart
+for a trading contour.
 
 ## History retention
 

@@ -39,6 +39,12 @@ interface TradingEnvConfig {
     funderAddress: string;
 }
 
+/** Safe account identity for read-only status views. It never includes credentials. */
+export interface TradingAccountIdentity {
+    funderAddress: string;
+    signatureType: number;
+}
+
 /**
  * Normalizes a private key: ensures it has a 0x prefix and is a valid 64‑character hex string.
  * @param key - Raw private key (with or without 0x)
@@ -126,6 +132,23 @@ function getTradingEnvConfig(): TradingEnvConfig {
 }
 
 /**
+ * Reads the public account identity needed by balance and portfolio status.
+ * Unlike authenticated client creation, it does not require private API credentials.
+ */
+export function getTradingAccountIdentity(): TradingAccountIdentity {
+    const funderAddress = process.env.FUNDER_ADDRESS;
+    if (!funderAddress) throw new Error('FUNDER_ADDRESS is not set');
+    if (!isValidEthereumAddress(funderAddress)) {
+        throw new Error('FUNDER_ADDRESS must be a valid ERC-20 address (0x followed by 40 hex chars)');
+    }
+    const signatureType = safeToNum(process.env.SIGNATURE_TYPE, 2);
+    if (!Number.isInteger(signatureType) || signatureType < 0 || signatureType > 3) {
+        throw new Error(`SIGNATURE_TYPE must be an integer from 0 to 3. Got: ${signatureType}`);
+    }
+    return { funderAddress, signatureType };
+}
+
+/**
  * Returns API credentials (key, secret, passphrase) from environment variables.
  * @returns ClobApiKeyCreds object.
  */
@@ -160,11 +183,7 @@ export function getPublicClient(): ClobClient {
  * @returns Authenticated ClobClient instance ready for trading.
  * @throws Error if IP is geo‑blocked or environment validation fails.
  */
-export async function getTradingClient(): Promise<ClobClient> {
-    const block = await isMeBlocked();
-    if (block) throw new Error("TRADING CLIENT INIT FAILED: IP GEO BLOCKED!");
-
-    const config = getTradingEnvConfig();
+function createAuthenticatedTradingClient(config: Readonly<TradingEnvConfig>): ClobClient {
 
     const account = privateKeyToAccount(config.privateKey as `0x${string}`);
     const walletClient = createWalletClient({
@@ -179,7 +198,7 @@ export async function getTradingClient(): Promise<ClobClient> {
     };
 
     const chain = safeToNum(REST_CHAIN_ID) === 137 ? Chain.POLYGON : Chain.AMOY;
-    const client = new ClobClient({
+    return new ClobClient({
         host: REST_DEFAULT_HOST_CLOB,
         chain: chain,
         signer: walletClient,
@@ -188,6 +207,23 @@ export async function getTradingClient(): Promise<ClobClient> {
         funderAddress: config.funderAddress,
         throwOnError: false,
     });
+}
+
+/**
+ * Creates an authenticated CLOB client for read-only account requests.
+ * It deliberately avoids geo-block preflight and allowance synchronization, both
+ * of which are trading-path behaviours rather than status reads.
+ */
+export function getReadOnlyTradingClient(): ClobClient {
+    return createAuthenticatedTradingClient(getTradingEnvConfig());
+}
+
+export async function getTradingClient(): Promise<ClobClient> {
+    const block = await isMeBlocked();
+    if (block) throw new Error("TRADING CLIENT INIT FAILED: IP GEO BLOCKED!");
+
+    const config = getTradingEnvConfig();
+    const client = createAuthenticatedTradingClient(config);
     if (config.signatureType === 3) {
         try {
             await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });

@@ -733,12 +733,30 @@ test('profile status cache removes retained history frames without coupling to a
     await writer.write(makeFrame(1_000));
     const first = await rebuildHistoryProfileStatus(directory, profile, () => true);
     assert.equal(first.eligibleFrames, 1);
+    assert.equal(first.firstEligibleFrameStart, 1_000);
+    assert.equal(first.latestEligibleFrameStart, 1_000);
     assert.match(getHistoryProfileStatusPath(directory, profile), /status\/btc-5m-chainlink-twap-60\.json$/);
 
     await writer.write(makeFrame(1_300));
     const cached = await readHistoryProfileStatus(directory, profile);
     assert.equal(cached.eligibleFrames, 0);
+    assert.equal(cached.firstEligibleFrameStart, undefined);
     assert.deepEqual(Object.keys(cached.frames).map(name => cached.frames[name].startTime), [1_300]);
+});
+
+test('profile status cache records the full eligible history span', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-history-profile-span-'));
+    const directory = path.join(root, 'frames');
+    temporaryDirectories.push(root);
+    const profile = { coin: 'btc', frame: '5m', source: PS_CHAINLINK_TWAP_60 };
+    const writer = new HistoryFrameWriter({ directory, gzip: true, maxFrames: 0 });
+    await writer.write(makeFrame(1_000));
+    await writer.write(makeFrame(1_900));
+
+    const status = await rebuildHistoryProfileStatus(directory, profile, () => true);
+    assert.equal(status.eligibleFrames, 2);
+    assert.equal(status.firstEligibleFrameStart, 1_000);
+    assert.equal(status.latestEligibleFrameStart, 1_900);
 });
 
 test('profile status cache rejects inconsistent aggregate fields', async () => {

@@ -88,7 +88,7 @@ if [[ "$force_image_update" == true || ! -f "$installed_manifest" ]] ||
 else
     echo '[PM Bot install] Docker images already match release-manifest.json.'
 fi
-docker compose --env-file compose.env config -q
+docker compose --env-file compose.env --profile menu config -q
 
 echo '[PM Bot install] Ready.'
 if [[ "$open_menu" == true ]]; then

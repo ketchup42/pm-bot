@@ -5,6 +5,8 @@ project_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$project_directory"
 
 compose=(docker compose --env-file compose.env)
+menu_compose=(docker compose --env-file compose.env --profile menu)
+console_image='pm-bot:linux-amd64'
 wireguard_directory='runtime/wireguard/wg_confs'
 wireguard_config="$wireguard_directory/wg0.conf"
 wireguard_template="$wireguard_directory/wg0.conf.new"
@@ -345,9 +347,38 @@ manifest_value() {
     awk -F'"' -v name="$name" '$2 == name { print $4; exit }' release-manifest.json
 }
 
+ensure_console() {
+    [[ -f compose.env && -f runtime/.env ]] || return 1
+    local container_id='' image_id='' container_image='' running=''
+    image_id="$(docker image inspect --format '{{.Id}}' "$console_image" 2>/dev/null || true)"
+    [[ -n "$image_id" ]] || return 1
+    container_id="$("${menu_compose[@]}" ps -q console 2>/dev/null || true)"
+    if [[ -n "$container_id" ]]; then
+        container_image="$(docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true)"
+        running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
+        if [[ "$container_image" == "$image_id" && "$running" == true ]]; then
+            return 0
+        fi
+    fi
+    if [[ -n "$container_id" && "$container_image" != "$image_id" ]]; then
+        "${menu_compose[@]}" up -d --force-recreate console >/dev/null 2>&1
+    else
+        "${menu_compose[@]}" up -d console >/dev/null 2>&1
+    fi
+}
+
+run_console_command() {
+    ensure_console || return 1
+    "${menu_compose[@]}" exec -T console \
+        node --max-old-space-size=6144 dist/app/pm-bot.js "$@" </dev/null 2>/dev/null
+}
+
 run_doge_status() {
-    "${compose[@]}" run --rm --no-deps --entrypoint node collector-doge-baseline \
-        --max-old-space-size=6144 dist/app/pm-bot.js status:doge-baseline --json 2>/dev/null
+    run_console_command status:doge-baseline --json
+}
+
+run_account_status() {
+    run_console_command status:account --text
 }
 
 status_value() {
@@ -372,10 +403,26 @@ format_epoch_ms() {
     date -u -d "@$((${value%.*} / 1000))" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || printf '%sms' "${value%.*}"
 }
 
-format_age_ms() {
+format_epoch_seconds() {
     local value="$1"
     [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf 'not available'; return; }
-    printf '%sm' "$(( ${value%.*} / 60000 ))"
+    date -u -d "@${value%.*}" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || printf '%ss' "${value%.*}"
+}
+
+format_duration_ms() {
+    local value="$1" total days hours minutes
+    [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf 'not available'; return; }
+    total=$(( ${value%.*} / 1000 ))
+    days=$((total / 86400))
+    hours=$(((total % 86400) / 3600))
+    minutes=$(((total % 3600) / 60))
+    if ((days > 0)); then
+        printf '%sd %sh' "$days" "$hours"
+    elif ((hours > 0)); then
+        printf '%sh %sm' "$hours" "$minutes"
+    else
+        printf '%sm' "$minutes"
+    fi
 }
 
 wireguard_handshake_status() {
@@ -406,18 +453,68 @@ preflight_clean_start() {
     fi
 }
 
-show_status() {
+start_doge_contour() {
+    local -a services=(collector-doge-baseline strategy-doge-baseline refresh-doge-baseline)
+    [[ -f compose.override.yaml ]] && services+=(wireguard-bridge)
+    "${compose[@]}" up -d "${services[@]}"
+}
+
+stop_doge_contour() {
+    local -a services=(collector-doge-baseline strategy-doge-baseline refresh-doge-baseline)
+    [[ -f compose.override.yaml ]] && services+=(wireguard-bridge)
+    "${compose[@]}" stop "${services[@]}"
+}
+
+restart_doge_contour() {
+    local -a services=(collector-doge-baseline strategy-doge-baseline refresh-doge-baseline)
+    [[ -f compose.override.yaml ]] && services+=(wireguard-bridge)
+    "${compose[@]}" restart "${services[@]}"
+}
+
+show_account() {
+    local account_text='' line
     render_top
-    render_section 'STATUS'
-    if [[ -f compose.env ]]; then
-        render_value 'STRATEGY MODE' "$(environment_value compose.env DOGE_BASELINE_STRATEGY_MODE || true)" "$color_green"
+    render_section 'ACCOUNT'
+    render_line "$color_gray" 'Loading read-only account information...'
+    render_bottom
+    if [[ -f compose.env && -f runtime/.env ]]; then
+        account_text="$(run_account_status || true)"
+    fi
+    render_top
+    render_section 'ACCOUNT'
+    if [[ -n "$account_text" ]]; then
+        while IFS= read -r line; do
+            render_line "$color_gray" "$line"
+        done <<< "$account_text"
     else
-        render_value 'STRATEGY MODE' 'not available' "$color_yellow"
+        render_line "$color_yellow" 'Account status is not available.'
+        render_line "$color_gray" 'Check Docker access and Application settings.'
+    fi
+    render_rule
+    render_line "$color_gray" 'Press Enter to continue'
+    render_bottom
+    pause
+}
+
+show_status() {
+    local strategy_mode='not available'
+    if [[ -f compose.env ]]; then
+        strategy_mode="$(environment_value compose.env DOGE_BASELINE_STRATEGY_MODE || true)"
     fi
     local status_json='' trading_enabled eligible_frames entry_profile exit_profile pause_reason model_version config_version model_config
+    render_top
+    render_section 'STATUS'
+    render_value 'STRATEGY MODE' "$(or_not_available "$strategy_mode")" "$color_green"
+    render_rule
+    render_line "$color_gray" 'Loading validated status...'
+    render_line "$color_gray" 'First history analysis can take longer.'
+    render_bottom
     if [[ -f compose.env ]]; then
         status_json="$(run_doge_status || true)"
     fi
+    render_top
+    render_section 'STATUS'
+    render_value 'STRATEGY MODE' "$(or_not_available "$strategy_mode")" "$color_green"
     trading_enabled="$(status_value tradingEnabled "$status_json")"
     if [[ "$trading_enabled" == true ]]; then
             render_value 'TRADING' 'enabled' "$color_green"
@@ -438,14 +535,15 @@ show_status() {
         model_config='not available'
     fi
     render_value 'ELIGIBLE FRAMES' "$(or_not_available "$eligible_frames")" "$color_gray"
-    render_value 'LAST FRAME' "$(format_epoch_ms "$(status_value latestFrameStart "$status_json")")" "$color_gray"
-    render_value 'HISTORY AGE' "$(format_age_ms "$(status_value latestFrameAgeMs "$status_json")")" "$color_gray"
+    render_value 'LAST FRAME' "$(format_epoch_seconds "$(status_value latestFrameStart "$status_json")")" "$color_gray"
+    render_value 'HISTORY SPAN' "$(format_duration_ms "$(status_value historySpanMs "$status_json")")" "$color_gray"
+    render_value 'LATEST AGE' "$(format_duration_ms "$(status_value latestFrameAgeMs "$status_json")")" "$color_gray"
     render_value 'LAST REFRESH' "$(format_epoch_ms "$(status_value lastSuccessfulRefreshAt "$status_json")")" "$color_gray"
     render_value 'ENTRY PROFILE' "$(or_not_available "$entry_profile")" "$color_gray"
     render_value 'EXIT PROFILE' "$(or_not_available "$exit_profile")" "$color_gray"
     render_value 'PAUSE REASON' "$(or_not_available "$pause_reason")" "$color_yellow"
     render_value 'MODEL / CONFIG' "$model_config" "$color_gray"
-    render_value 'RUNTIME FREE' "$(or_not_available "$(df -h runtime 2>/dev/null | awk 'NR == 2 { print $4 }')")" "$color_gray"
+    render_value 'DISK FREE' "$(or_not_available "$(df -h runtime 2>/dev/null | awk 'NR == 2 { print $4 }')")" "$color_gray"
     render_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
     render_value 'RELEASE' "$(or_not_available "$(manifest_value gitRevision || true)")" "$color_gray"
     render_value 'IMAGE' "$(or_not_available "$(manifest_value imageId || true)")" "$color_gray"
@@ -453,7 +551,7 @@ show_status() {
     render_line "$color_cyan" 'SERVICES'
     if [[ -f compose.env ]]; then
         local -a service_rows
-        mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}  {{.Status}}' 2>/dev/null || true)
+        mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}  {{.Status}}' 2>/dev/null | awk '$1 != "console"' || true)
         if ((${#service_rows[@]} == 0)); then
             render_line "$color_yellow" 'not available'
         else
@@ -652,7 +750,8 @@ open_log_file() {
 
 follow_log_file() {
     local file="$1"
-    tail -F -- "$file" || true
+    command -v less >/dev/null 2>&1 || { show_message 'less is required to view logs. Install it and try again.'; return; }
+    less +F -- "$file" || true
 }
 
 open_filtered_log_file() {
@@ -690,9 +789,8 @@ view_service_logs() {
     local -a files labels
     mapfile -t files < <(list_service_log_files "$service")
     if ((${#files[@]} == 0)); then
-        render_static_screen "DOCKER LOGS / $service" 'No file logs are available' 'Press Ctrl+C to return to the menu'
-        pause
-        "${compose[@]}" logs --tail 200 --follow "$service" || true
+        command -v less >/dev/null 2>&1 || { show_message 'less is required to view logs. Install it and try again.'; return; }
+        { "${compose[@]}" logs --tail 200 --follow "$service" || true; } | less +F || true
         return
     fi
     local file
@@ -739,9 +837,9 @@ doge_baseline_menu() {
         choose_menu 'DOGE Baseline' 'Status' 'Start' 'Stop' 'Restart' 'VPN' 'Settings' 'Services' 'Back'
         case "$menu_choice" in
             0) show_status ;;
-            1) if preflight_clean_start; then run_menu_action 'Start' "${compose[@]}" up -d; fi ;;
-            2) run_menu_action 'Stop' "${compose[@]}" stop ;;
-            3) run_menu_action 'Restart' "${compose[@]}" restart ;;
+            1) if preflight_clean_start; then run_menu_action 'Start' start_doge_contour; fi ;;
+            2) run_menu_action 'Stop' stop_doge_contour ;;
+            3) run_menu_action 'Restart' restart_doge_contour ;;
             4) vpn_menu ;;
             5) doge_settings_menu ;;
             6) service_menu ;;
@@ -750,11 +848,16 @@ doge_baseline_menu() {
     done
 }
 
+if [[ -f compose.env && -f runtime/.env ]]; then
+    ensure_console || true
+fi
+
 while true; do
-    choose_menu 'PM Bot' 'DOGE Baseline' 'Settings' 'Exit'
+    choose_menu 'PM Bot' 'Account' 'DOGE Baseline' 'Settings' 'Exit'
     case "$menu_choice" in
-        0) doge_baseline_menu ;;
-        1) global_settings_menu ;;
-        2) exit 0 ;;
+        0) show_account ;;
+        1) doge_baseline_menu ;;
+        2) global_settings_menu ;;
+        3) exit 0 ;;
     esac
 done

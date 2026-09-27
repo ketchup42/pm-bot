@@ -10,6 +10,7 @@ import { runDogeBaselineReplayCommand } from './doge-baseline-replay.js';
 import { runDogeBaselineRefresh } from './doge-baseline-refresh.js';
 import { runDogeBaselineStrategy } from './doge-baseline.js';
 import { runDogeBaselineStatus } from './doge-baseline-status.js';
+import { runAccountStatus } from './account-status.js';
 import { runHistorySettlement } from './settle-history.js';
 
 type CommandRunner = () => Promise<void>;
@@ -30,6 +31,7 @@ const commands: readonly PmBotCommand[] = [
     { name: 'research:doge-baseline-regime', description: 'Evaluate DOGE PnL regime filters chronologically.', run: runDogeBaselineRegimeResearch },
     { name: 'replay:doge-baseline', description: 'Replay the published DOGE model.', run: runDogeBaselineReplayCommand },
     { name: 'strategy:doge-baseline', description: 'Run the DOGE strategy.', run: runDogeBaselineStrategy },
+    { name: 'status:account', description: 'Return read-only account balance, positions and orders.', run: runAccountStatus },
     { name: 'status:doge-baseline', description: 'Return validated DOGE operating status as JSON.', run: runDogeBaselineStatus },
     { name: 'refresh:doge-baseline', description: 'Continuously settle, train and compare DOGE artifacts.', run: runDogeBaselineRefresh },
 ];

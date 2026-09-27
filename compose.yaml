@@ -17,7 +17,27 @@ x-pm-bot: &pm-bot
       max-size: "10m"
       max-file: "3"
 
+x-pm-bot-console: &pm-bot-console
+  image: pm-bot:linux-amd64
+  init: true
+  restart: unless-stopped
+  user: "${PUID:?PUID must be set in compose.env}:${PGID:?PGID must be set in compose.env}"
+  entrypoint: ["sleep"]
+  command: ["infinity"]
+  environment:
+    LOG_LEVEL: error
+    LOG_FILE: ""
+    LOG_FILE_LEVEL: ""
+  volumes:
+    - ./runtime/.env:/app/.env:ro
+    - ./runtime/history:/app/history
+    - ./runtime/models:/app/models:ro
+
 services:
+  console:
+    <<: *pm-bot-console
+    profiles: ["menu"]
+
   collector-doge-baseline:
     <<: *pm-bot
     environment:

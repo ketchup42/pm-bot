@@ -26,6 +26,12 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  console:
+    network_mode: service:wireguard-bridge
+    depends_on:
+      wireguard-bridge:
+        condition: service_healthy
+
   collector-doge-baseline:
     network_mode: service:wireguard-bridge
     depends_on:

@@ -6,7 +6,7 @@ import type { PriceSource } from '../../../market/price/price_source.js';
 import type { HistoryFrameV3 } from './history_frame.js';
 import { getHistoryFramePaths, readHistoryFrameIfPresent } from './HistoryFrameReader.js';
 
-export const HISTORY_PROFILE_STATUS_VERSION = 1 as const;
+export const HISTORY_PROFILE_STATUS_VERSION = 2 as const;
 
 export interface HistoryProfile {
     coin: Coin;
@@ -30,6 +30,7 @@ export interface HistoryProfileStatus {
     knownFiles: string[];
     frames: Record<string, HistoryProfileStatusFrame>;
     eligibleFrames: number;
+    firstEligibleFrameStart: number | undefined;
     latestEligibleFrameStart: number | undefined;
     stale: boolean;
 }
@@ -65,6 +66,9 @@ function isHistoryProfileStatus(value: unknown): value is HistoryProfileStatus {
         Object.values(candidate.frames).every(isFrameStatus) &&
         Array.isArray(candidate.knownFiles) && candidate.knownFiles.every(value => typeof value === 'string') &&
         typeof candidate.eligibleFrames === 'number' && Number.isInteger(candidate.eligibleFrames) && candidate.eligibleFrames >= 0 &&
+        (candidate.firstEligibleFrameStart === undefined ||
+            (typeof candidate.firstEligibleFrameStart === 'number' && Number.isInteger(candidate.firstEligibleFrameStart) &&
+                candidate.firstEligibleFrameStart >= 0)) &&
         (candidate.latestEligibleFrameStart === undefined ||
             (typeof candidate.latestEligibleFrameStart === 'number' && Number.isInteger(candidate.latestEligibleFrameStart) &&
                 candidate.latestEligibleFrameStart >= 0)) &&
@@ -79,10 +83,16 @@ export function getHistoryProfileStatusPath(historyDirectory: string, profile: R
     return path.join(getHistoryProfileStatusDirectory(historyDirectory), `${profile.coin}-${profile.frame}-${profile.source}.json`);
 }
 
-function getSummary(frames: Readonly<Record<string, HistoryProfileStatusFrame>>): Pick<HistoryProfileStatus, 'eligibleFrames' | 'latestEligibleFrameStart'> {
+function getSummary(
+    frames: Readonly<Record<string, HistoryProfileStatusFrame>>,
+): Pick<HistoryProfileStatus, 'eligibleFrames' | 'firstEligibleFrameStart' | 'latestEligibleFrameStart'> {
     const eligible = Object.values(frames).filter(frame => frame.eligible);
     return {
         eligibleFrames: eligible.length,
+        firstEligibleFrameStart: eligible.reduce<number | undefined>(
+            (first, frame) => first === undefined || frame.startTime < first ? frame.startTime : first,
+            undefined,
+        ),
         latestEligibleFrameStart: eligible.reduce<number | undefined>(
         (latest, frame) => latest === undefined || frame.startTime > latest ? frame.startTime : latest,
         undefined,
@@ -97,6 +107,7 @@ function summarize(status: HistoryProfileStatus): void {
 function hasConsistentSummary(status: Readonly<HistoryProfileStatus>): boolean {
     const summary = getSummary(status.frames);
     return summary.eligibleFrames === status.eligibleFrames &&
+        summary.firstEligibleFrameStart === status.firstEligibleFrameStart &&
         summary.latestEligibleFrameStart === status.latestEligibleFrameStart;
 }
 
@@ -148,6 +159,7 @@ export async function rebuildHistoryProfileStatus(
         knownFiles: paths.map(filePath => path.basename(filePath)),
         frames,
         eligibleFrames: 0,
+        firstEligibleFrameStart: undefined,
         latestEligibleFrameStart: undefined,
         stale: false,
     };

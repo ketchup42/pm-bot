@@ -1,6 +1,6 @@
 {
   "name": "pm-bot",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Polymarket trading little bot:)",
   "scripts": {
     "build": "tsc",
@@ -19,6 +19,7 @@
     "research:doge-baseline-regime": "npm run build && npm run app -- research:doge-baseline-regime",
     "replay:doge-baseline": "npm run build && npm run app -- replay:doge-baseline",
     "strategy:doge-baseline": "npm run build && npm run app -- strategy:doge-baseline",
+    "status:account": "npm run build && npm run app -- status:account --json",
     "status:doge-baseline": "npm run build && npm run app -- status:doge-baseline --json",
     "refresh:doge-baseline": "npm run build && npm run app -- refresh:doge-baseline",
     "deploy": "node scripts/deploy.mjs",
