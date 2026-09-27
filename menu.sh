@@ -686,14 +686,24 @@ show_status() {
     render_rule
     render_status_line "$color_cyan" 'SERVICES'
     if [[ -f "$COMPOSE_ENV_FILE" ]]; then
-        local -a service_rows
-        mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}  {{.Status}}' 2>/dev/null | awk -v console="$CONSOLE_SERVICE" '$1 != console' || true)
-        if ((${#service_rows[@]} == 0)); then
+        local -a service_rows service_names=() service_statuses=()
+        local service_row service_name service_status service_width=0
+        mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}|{{.Status}}' 2>/dev/null || true)
+        for service_row in "${service_rows[@]}"; do
+            IFS='|' read -r service_name service_status <<< "$service_row"
+            [[ "$service_name" == "$CONSOLE_SERVICE" || -z "$service_name" ]] && continue
+            service_names+=("$service_name")
+            service_statuses+=("$service_status")
+            if ((${#service_name} > service_width)); then
+                service_width=${#service_name}
+            fi
+        done
+        if ((${#service_names[@]} == 0)); then
             render_status_line "$color_yellow" 'not available'
         else
-            local service_row
-            for service_row in "${service_rows[@]}"; do
-                render_status_line "$color_gray" "$service_row"
+            local index
+            for ((index = 0; index < ${#service_names[@]}; index += 1)); do
+                render_status_line "$color_gray" "$(printf '%-*s  %s' "$service_width" "${service_names[index]}" "${service_statuses[index]}")"
             done
         fi
     else
@@ -961,12 +971,12 @@ view_service_logs() {
     while true; do
         choose_menu "LOG FILES / $service" "${labels[@]}"
         if ((menu_choice == ${#labels[@]} - 1)); then
+            menu_width=$original_menu_width
+            menu_inner_width=$original_menu_inner_width
             return
         fi
         log_file_menu "${files[menu_choice]}"
     done
-    menu_width=$original_menu_width
-    menu_inner_width=$original_menu_inner_width
 }
 
 service_menu() {
