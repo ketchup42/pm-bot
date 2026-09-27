@@ -1,0 +1,15 @@
+# WireGuard client profile. Fill key placeholders only in your local editor.
+[Interface]
+PrivateKey = REPLACE_WITH_CLIENT_PRIVATE_KEY
+Address = REPLACE_WITH_CLIENT_ADDRESS_CIDR
+DNS = 1.1.1.1
+MTU = 1380
+
+# Kill switch. External traffic is allowed only through the WireGuard tunnel.
+PostUp = iptables -I OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT
+
+[Peer]
+PublicKey = REPLACE_WITH_SERVER_PUBLIC_KEY
+Endpoint = REPLACE_WITH_SERVER_ENDPOINT
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25

@@ -55,13 +55,14 @@ select the frame, common price source and number of frames.
 | `HISTORY_SNAPSHOT_MS` | `100`            | Snapshot interval in milliseconds. Integer, at least `25`.                |
 | `HISTORY_BOOK_DEPTH`  | `10`             | Best bid/ask levels saved for each side. Integer from `1` to `100`.       |
 | `HISTORY_GZIP`        | `true`           | `true`/`false` or `1`/`0`. Gzip each frame file.                          |
-| `HISTORY_MAX_FRAMES`  | `0`              | Number of retained files. `0` disables collector-side rotation.           |
+| `HISTORY_COMPLETE_FRAMES` | `2400`       | Complete frames retained per coin by a continuous `--cycle` collector.    |
+| `HISTORY_DIAGNOSTIC_FRAMES` | `1000`    | Incomplete diagnostic frames retained per coin by that collector.         |
 
 Recommended multi-coin 5-minute collection configuration:
 
 ```bash
 env HISTORY_DIR='history/frames' HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 \
-  HISTORY_GZIP=true HISTORY_MAX_FRAMES=0 \
+  HISTORY_GZIP=true HISTORY_COMPLETE_FRAMES=2400 HISTORY_DIAGNOSTIC_FRAMES=1000 \
   npm run collect -- --coin all --frame 5m --source chainlink-twap-60
 ```
 
@@ -77,10 +78,11 @@ Repeated failed connections wait 1, 2, 4, 8 seconds and so on, capped at 30 seco
 The timeout and stream-quality thresholds are code-level source settings in
 `src/market/price/price_source.ts`, deliberately not environment variables.
 
-`--count N --cycle` keeps collecting forever while retaining only the newest `N`
-frames for each selected target coin. It requires `N > 0` and cannot be combined
-with a non-zero `HISTORY_MAX_FRAMES`. Rotation does not delete frames belonging to
-coins outside the current collector command.
+`--count N --cycle` keeps collecting forever. `HISTORY_COMPLETE_FRAMES` retains
+the newest complete frames for each selected target coin, while
+`HISTORY_DIAGNOSTIC_FRAMES` retains incomplete diagnostic frames separately. Both
+settings use `0` to disable their respective automatic deletion. Rotation does not
+delete frames belonging to coins outside the current collector command.
 
 ## Strategy models
 
@@ -101,34 +103,68 @@ scheduler. They use a legacy external-analysis format and are not inputs to
 
 ## Placeholder `.env` for live mode
 
+`runtime.env.example` is the tracked source for this template. The Docker
+installer copies it to `runtime/.env` only when that local file is absent.
+
 ```env
-# Wallet private key. Keep the real value outside version control.
-PRIVATE_KEY=0xyour_private_key_here
+# Your wallet private key (starts with 0x).
+PRIVATE_KEY=REPLACE_WITH_PRIVATE_KEY
 
-# CLOB credentials derived for that wallet.
-API_KEY=your_api_key_here
-API_SECRET=your_api_secret_here
-API_PASSPHRASE=your_api_passphrase_here
+# API credentials derived from the wallet for the Polymarket CLOB client.
+API_KEY=REPLACE_WITH_CLOB_API_KEY
+API_SECRET=REPLACE_WITH_CLOB_API_SECRET
+API_PASSPHRASE=REPLACE_WITH_CLOB_API_PASSPHRASE
 
-# 0=EOA, 1=POLY_PROXY, 2=GNOSIS_SAFE, 3=deposit wallet.
+# Signature type for the Polymarket account:
+# 0 = EOA (externally owned account) — the wallet pays its own gas.
+# 1 = POLY_PROXY (Magic Link or email login) — a Polymarket proxy wallet.
+# 2 = GNOSIS_SAFE — commonly used with browser wallets such as MetaMask.
+# 3 = Deposit wallet — a deposit-only wallet type.
 SIGNATURE_TYPE=2
 
-# Collateral and gas payer address.
-FUNDER_ADDRESS=0xyour_funder_address_here
+# Address that pays gas and holds the trading collateral (pUSD).
+# For type 0, use the EOA address. For types 1, 2, and 3, use the proxy or
+# deposit-wallet address shown in the Polymarket profile.
+FUNDER_ADDRESS=REPLACE_WITH_FUNDER_ADDRESS
 
-# Optional live infrastructure and logs.
+# Polygon RPC endpoint for blockchain reads and transaction submission.
+# A private RPC provider can be more reliable than the public endpoint.
 POLYGON_RPC_URL=https://polygon-rpc.com
-LOG_LEVEL=info
-LOG_FILE=logs/polymarket.log
-LOG_FILE_LEVEL=info
 
-# Optional read-only history collection.
-HISTORY_DIR=history/frames
-HISTORY_SNAPSHOT_MS=100
-HISTORY_BOOK_DEPTH=10
-HISTORY_GZIP=true
-HISTORY_MAX_FRAMES=0
-
-# Optional root directory for trained strategy models.
+# Root directory for trained strategy models.
 STRATEGY_MODELS_DIR=models
+
+# Console log level (debug|info|warn|error). Console logging is disabled when unset.
+LOG_LEVEL=info
+
+# Enable file logging by specifying a file path.
+LOG_FILE=logs/polymarket.log
+
+# File log level (debug|info|warn|error).
+LOG_FILE_LEVEL=info
+LOG_FILE_MAX_SIZE=10485760
+LOG_FILE_MAX_FILES=5
+NO_COLOR=0
+
+# Legacy scheduler dumps. Docker DOGE strategy runs use --no-dumps.
+DUMPS_DIR=history/dumps
+DUMP_MAX_FILES=20
+
+# Directory for collected historical frame files.
+HISTORY_DIR=history/frames
+
+# Snapshot interval in milliseconds.
+HISTORY_SNAPSHOT_MS=100
+
+# Number of best bid and ask levels stored for each market side.
+HISTORY_BOOK_DEPTH=10
+
+# Enable gzip compression for historical frame files.
+HISTORY_GZIP=true
+
+# Complete frames are available for training and replay. Set 0 to disable deletion.
+HISTORY_COMPLETE_FRAMES=2400
+
+# Incomplete frames are kept separately for diagnostics. Set 0 to disable deletion.
+HISTORY_DIAGNOSTIC_FRAMES=1000
 ```

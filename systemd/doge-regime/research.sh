@@ -65,12 +65,18 @@ refresh_completed() {
 start_refresh_then_strategy() {
     local refresh_started_at deadline
     refresh_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    "${compose[@]}" up -d refresh-doge-baseline
+    if ! "${compose[@]}" up -d refresh-doge-baseline; then
+        echo '[DogeBaselineRegimeResearch] Failed to start refresh. Strategy remains stopped.' >&2
+        return 1
+    fi
     deadline=$((SECONDS + DOGE_BASELINE_REGIME_REFRESH_WAIT_TIMEOUT_SECONDS))
     echo '[DogeBaselineRegimeResearch] Waiting for the first successful refresh before starting strategy.'
     while (( SECONDS < deadline )); do
         if refresh_completed "$refresh_started_at"; then
-            "${compose[@]}" up -d strategy-doge-baseline
+            if ! "${compose[@]}" up -d strategy-doge-baseline; then
+                echo '[DogeBaselineRegimeResearch] Refresh completed, but strategy could not be started.' >&2
+                return 1
+            fi
             echo '[DogeBaselineRegimeResearch] Refresh completed. Strategy started.'
             return 0
         fi
@@ -80,8 +86,21 @@ start_refresh_then_strategy() {
     return 1
 }
 
-trap 'echo "[DogeBaselineRegimeResearch] Interrupted. Strategy remains stopped." >&2; exit 130' INT
-trap 'echo "[DogeBaselineRegimeResearch] Terminated. Strategy remains stopped." >&2; exit 143' TERM
+recover_after_signal() {
+    local signal="$1"
+    local status="$2"
+    trap - INT TERM
+    echo "[DogeBaselineRegimeResearch] ${signal} received. Recovering through refresh before exit." >&2
+    if start_refresh_then_strategy; then
+        echo '[DogeBaselineRegimeResearch] Recovery completed after interruption.' >&2
+    else
+        echo '[DogeBaselineRegimeResearch] Recovery refresh failed. Strategy remains stopped.' >&2
+    fi
+    exit "$status"
+}
+
+trap 'recover_after_signal INT 130' INT
+trap 'recover_after_signal TERM 143' TERM
 
 "${compose[@]}" stop "${services[@]}"
 research_status=0

@@ -1,7 +1,0 @@
-[Unit]
-Description=PM Bot DOGE baseline walk-forward regime research
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h/pm-bot/pm-bot-docker-linux-amd64
-ExecStart=/usr/bin/bash %h/pm-bot/pm-bot-docker-linux-amd64/systemd/doge-regime/research.sh

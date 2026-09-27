@@ -1,0 +1,9 @@
+[Unit]
+Description=PM Bot DOGE baseline walk-forward regime research
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_DIRECTORY__
+ExecStart=/usr/bin/bash systemd/doge-regime/research.sh
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity

@@ -1,183 +1,103 @@
 # Deployment
 
-## Docker for Linux x86-64
+## Docker archive
 
-Docker deployment is independent of the Linux distribution on the server. The
-only server requirements are Docker Engine, Docker Compose v2, and an x86-64 CPU.
-
-Build an archive locally:
+Build a Linux x86-64 archive locally:
 
 ```bash
-# Image, Compose configuration, and instructions.
 npm run deploy:docker -- --tiny
-
-# The same package with the current DOGE model and saved history frames.
-npm run deploy:docker -- --full
 ```
 
-If the local user is not in the `docker` group, do not run npm itself through
-`sudo`. Use the optional flag instead. Only Docker receives elevated privileges
-and the resulting archive remains owned by the local user:
+Use `--full` when the archive must include the current DOGE model and collected
+history. Upload, unpack, and enter the resulting directory on the server.
+
+The installer creates `runtime/.env` from `runtime.env.example` when it is
+absent. Replace the live API placeholders in Application settings before live
+trading. The completed file is mounted read-only and is never included in Git or
+deployment archives.
+
+Start the guided setup:
 
 ```bash
-npm run deploy:docker -- --tiny --sudo
-npm run deploy:docker -- --full --sudo
+bash install.sh
 ```
 
-Before loading and starting the contour, add the server user to the `docker`
-group, log out of SSH completely, and log in again:
+The installer validates the package, creates missing runtime directories, creates
+`compose.env` when needed, and opens the interactive menu. It skips `docker load`
+when the loaded image already matches `release-manifest.json`. Existing settings,
+history, models, logs, and WireGuard configuration remain unchanged.
+
+Open the same menu later with:
 
 ```bash
-sudo groupadd --force docker
-sudo usermod -aG docker "$USER"
-id -nG
-docker info
+bash menu.sh
 ```
 
-Upload and unpack the selected archive on the server, then load its image:
+Docker Engine, Docker Compose v2, an x86-64 CPU, and a server user allowed to
+run Docker are required.
 
-```bash
-7z x pm-bot-docker-linux-amd64-tiny.7z
-cd pm-bot-docker-linux-amd64
-docker load -i image.tar
-```
+## Menu guide
 
-Create the local Compose parameters file:
+The main menu contains available trading contours. `DOGE Baseline` currently
+provides the following actions:
 
-```bash
-cp compose.env.example compose.env
-printf '\nPUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> compose.env
-```
+| Menu item | Purpose |
+| --- | --- |
+| Status | Show validated artifacts, trading permission, recent refresh, history, disk, VPN, and package version. |
+| Start / Stop / Restart | Manage the complete DOGE contour. Start checks required artifacts first. |
+| VPN | Configure a supported VPN profile. |
+| Settings | Edit DOGE service settings and manage weekly research. |
+| Services | Start, stop, restart, follow, filter, or inspect one service log. |
 
-`runtime/.env` is mounted read-only and contains application settings and
-secrets. It is never included in an archive. The full archive additionally
-contains `runtime/models` and `runtime/history`. The tiny archive requires those
-to be copied separately before strategy or refresh can use them. All archives
-already contain the writable `runtime/history`, `runtime/models`, and
-`runtime/logs` directories, so Docker does not create them as root.
+The global `Settings` menu edits application settings and force-loads a new Docker
+image. DOGE `Settings`, `Service settings` opens only the marked
+`DOGE_BASELINE_*` block in `compose.env`. Other Compose settings remain untouched.
 
-Application environment variables such as `LOG_LEVEL`, log rotation, and
-`HISTORY_SNAPSHOT_MS` belong in `runtime/.env`. The complete Docker contour
-configuration, including `PUID`, `PGID`, and DOGE command parameters, belongs in
-`compose.env`. Compose stops before creating containers if any required value is
-absent.
+Use Up and Down to select an item, Enter to run it, and Esc to return. Long
+lists, including archived log files, show ten entries at a time and scroll with
+the same arrow keys.
 
-The Docker strategy command includes `--no-dumps`, so virtual runs do not create
-legacy scheduler dump files. This does not affect virtual order execution.
+`Services` lists the ten newest logs per page with size and modification
+time. The selected log can open at its end, follow with `tail -F`, show only
+warnings and errors, or show its final N lines. WireGuard has no application file
+log, therefore its entry follows its Docker log stream instead. Leave a log viewer
+with `q`, or use Ctrl+C for the Docker stream.
 
-## WireGuard bridge
+The `status:doge-baseline --json` application command is the source of artifact,
+refresh, and history status. The menu never parses model or configuration JSON.
 
-The optional Docker override directs the complete network traffic of the contour
-through a WireGuard client container. Copy the existing client configuration to
-`runtime/wireguard/wg_confs/wg0.conf`. This file contains private credentials and
-is never included in Git, the Docker build context, or deployment archives.
+## History retention
 
-Enable the override only after stopping the host WireGuard client that uses the
-same key:
+The continuous collector retains the newest 2,400 complete frames for each coin in
+`runtime/history/frames`. It moves incomplete frames to `runtime/history/diagnostics`
+and retains the newest 1,000 there. Rotation runs only after a new complete frame
+has been safely written. Configure both limits in `runtime/.env`.
 
-```bash
-cp compose.override.yaml.example compose.override.yaml
-```
+## WireGuard
 
-The client configuration must route IPv4 traffic through the tunnel with
-`AllowedIPs = 0.0.0.0/0`. Do not set `Table = off`. Use an IP address in
-`Endpoint` so the initial tunnel connection does not depend on DNS. Add
-`DNS = 1.1.1.1` to `[Interface]`. IPv6 is disabled inside the WireGuard network
-namespace. The remote WireGuard server must forward and NAT client traffic to
-the internet.
+Choose `DOGE Baseline`, `VPN`, then `WireGuard`. The menu enables
+the Compose override and creates an editable connection template with the
+tunnel address, endpoint, routing, DNS, and MTU. It opens the template in your
+editor, where you enter the client private key and server public key directly.
+The scripts never print or inspect credentials.
 
-Add the following line to `[Interface]` as a kill switch. It blocks ordinary
-external traffic unless it goes through `wg0`, while allowing WireGuard's marked
-encrypted packets to reach the VPN server:
+`Enable WireGuard` and `Disable WireGuard` preserve the override configuration
+and remind you to restart services before the network change takes effect.
 
-```ini
-PostUp = iptables -I OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT
-```
+`Create or edit draft` creates `runtime/wireguard/wg_confs/wg0.conf.new` from
+the template and opens it in your editor. `Apply draft` validates it, saves the
+current active profile as `wg0.conf.previous`, then atomically replaces
+`wg0.conf`. Restart the WireGuard bridge and dependent services after applying
+a new profile. The template already routes IPv4 through the tunnel and contains
+the WireGuard kill switch.
 
-The override assigns `1.1.1.1` as DNS for `wireguard-bridge`. Docker does not
-allow individual DNS settings on services that share its network namespace.
+## Weekly research
 
-Start a contour:
-
-```bash
-docker compose --env-file compose.env up -d collector-doge-baseline
-
-docker compose --env-file compose.env up -d strategy-doge-baseline
-
-docker compose --env-file compose.env up -d refresh-doge-baseline
-```
-
-The three services share `runtime/history` and `runtime/models`. Their separate
-file logs are written to `runtime/logs`. Docker logs remain available too:
-
-```bash
-docker compose --env-file compose.env logs -f collector-doge-baseline
-docker compose --env-file compose.env logs -f strategy-doge-baseline
-docker compose --env-file compose.env logs -f refresh-doge-baseline
-```
-
-Stop all services gracefully:
-
-```bash
-docker compose --env-file compose.env stop
-```
-
-## Weekly DOGE regime research
-
-The deployment archive contains the weekly research files in `systemd/doge-regime/`.
-The weekly run leaves the collector active, stops strategy and refresh, applies the
-walk-forward regime profile, then starts refresh. The strategy starts only after
-refresh successfully evaluates fresh history, including the valid outcome where it
-retains the current pair. The script waits for this result for up to two hours. On
-timeout, refresh remains active and strategy remains stopped. It normally takes
-4–6 hours with the Compose CPU limit of one core and requires at least 1,200
-eligible DOGE frames.
-
-Install the timer after extracting the archive in the standard location
-`~/pm-bot/pm-bot-docker-linux-amd64`:
-
-```bash
-bash systemd/doge-regime/install.sh
-```
-
-The installer creates `systemd/doge-regime/research.env` from its template when
-needed, links the unit files directly from the project, enables the timer, and
-enables user lingering. The local parameter file is preserved by later archive
-updates and is not part of Git. It contains the research frame, refresh step,
-training and replay sizes, replay latency, refresh wait timeout, and log polling
-interval. Re-run the same command after an archive update to reload changed
-weekly research files. The weekly Sunday schedule remains in the systemd timer.
-
-Uninstall the timer without deleting the local parameters or other PM Bot
-services:
-
-```bash
-bash systemd/doge-regime/uninstall.sh
-```
-
-Uninstall intentionally refuses while a weekly research run is active.
-
-It runs every Sunday at 03:15 in the server time zone. It does not catch up after
-a server outage. Inspect the schedule and the last run with:
-
-```bash
-systemctl --user list-timers pm-bot-doge-regime-research.timer
-journalctl --user -u pm-bot-doge-regime-research.service
-```
-
-Run one scheduled cycle manually when needed:
-
-```bash
-systemctl --user start pm-bot-doge-regime-research.service
-```
-
-## Native Linux x64 archive
-
-The existing native deployment remains available:
-
-```bash
-npm run deploy -- --tiny
-npm run deploy -- --full
-```
-
-The native executable and npm application commands use a 6 GiB V8 old-space limit.
+Use `DOGE Baseline`, `Settings`, then `Weekly research` to install or update the
+systemd timer. Its settings are available in the same submenu.
+Installation derives the current archive directory, so the package may be
+unpacked anywhere under the user account.
+The weekly run keeps collection active, pauses strategy and refresh while it
+researches the regime profile, then waits for a successful refresh before
+starting strategy again.
+If it is interrupted, it uses the same refresh gate before it restores strategy.

@@ -19,6 +19,7 @@ out/
 .env.local
 .env.*.local
 compose.override.yaml
+compose.override.yaml.disabled
 
 # Logs
 logs/
@@ -75,6 +76,7 @@ jest.config.js
 /history/
 /secret/
 /runtime/wireguard/
+/systemd/doge-regime/generated/
 
 TODO.txt
 AGENTS.md

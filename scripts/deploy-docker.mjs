@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +32,23 @@ function run(command, args, options = {}) {
 function runDocker(args, useSudo, options = {}) {
     const [command, commandArgs] = useSudo ? ['sudo', ['docker', ...args]] : ['docker', args];
     run(command, commandArgs, options);
+}
+
+function readDockerOutput(args, useSudo) {
+    const [command, commandArgs] = useSudo ? ['sudo', ['docker', ...args]] : ['docker', args];
+    return execFileSync(command, commandArgs, { cwd: root, encoding: 'utf8' }).trim();
+}
+
+function readGitRevision() {
+    try {
+        return execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    } catch {
+        return 'unknown';
+    }
+}
+
+async function sha256(filePath) {
+    return createHash('sha256').update(await fs.readFile(filePath)).digest('hex');
 }
 
 function saveDockerImages(imagePath, useSudo) {
@@ -86,18 +104,37 @@ async function build(mode, useSudo) {
             fs.mkdir(path.join(runtimeDirectory, 'wireguard', 'wg_confs'), { recursive: true }),
         ]);
         saveDockerImages(imagePath, useSudo);
+        const manifest = {
+            gitRevision: readGitRevision(),
+            builtAt: new Date().toISOString(),
+            mode,
+            imageSha256: await sha256(imagePath),
+            imageName,
+            imageId: readDockerOutput(['image', 'inspect', '--format', '{{.Id}}', imageName], useSudo),
+            wireguardImageName,
+            wireguardImageId: readDockerOutput(['image', 'inspect', '--format', '{{.Id}}', wireguardImageName], useSudo),
+        };
+        await fs.writeFile(path.join(packageDirectory, 'release-manifest.json'), `${JSON.stringify(manifest, undefined, 2)}\n`);
         await fs.copyFile(path.join(root, 'compose.yaml'), path.join(packageDirectory, 'compose.yaml'));
-        await fs.copyFile(path.join(root, 'compose.override.yaml.example'), path.join(packageDirectory, 'compose.override.yaml.example'));
+        await fs.copyFile(path.join(root, 'compose.wireguard.override.yaml.example'), path.join(packageDirectory, 'compose.wireguard.override.yaml.example'));
         await fs.copyFile(path.join(root, 'compose.env.example'), path.join(packageDirectory, 'compose.env.example'));
+        await fs.copyFile(path.join(root, 'runtime.env.example'), path.join(packageDirectory, 'runtime.env.example'));
         await fs.copyFile(path.join(root, 'README.md'), path.join(packageDirectory, 'README.md'));
+        await fs.copyFile(path.join(root, 'install.sh'), path.join(packageDirectory, 'install.sh'));
+        await fs.copyFile(path.join(root, 'menu.sh'), path.join(packageDirectory, 'menu.sh'));
+        await fs.chmod(path.join(packageDirectory, 'install.sh'), 0o755);
+        await fs.chmod(path.join(packageDirectory, 'menu.sh'), 0o755);
+        await fs.cp(path.join(root, 'docs'), path.join(packageDirectory, 'docs'), { recursive: true });
+        await fs.cp(path.join(root, 'network'), path.join(packageDirectory, 'network'), { recursive: true });
         await fs.cp(path.join(root, 'systemd'), path.join(packageDirectory, 'systemd'), {
             recursive: true,
-            filter: source => path.basename(source) !== 'research.env',
+            filter: source => !['research.env', 'generated'].includes(path.basename(source)),
         });
         await fs.writeFile(path.join(runtimeDirectory, 'README.md'), [
             '# Runtime data',
             '',
-            'Create `.env` here manually. It is never included in deployment archives.',
+            'The installer or Application settings creates `.env` here from runtime.env.example.',
+            'Replace its live API placeholders before using live trading. It is never included in deployment archives.',
             'The `history`, `models`, and `logs` directories are included in this archive.',
             'Copy a WireGuard client config to `wireguard/wg_confs/wg0.conf` only when enabling the VPN override.',
             '',
