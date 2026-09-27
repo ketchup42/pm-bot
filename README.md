@@ -27,7 +27,7 @@ before its `Saved ... complete=true` message.
 
 Run these three commands in separate terminals. In its cyclic form, the
 collector's `--count 2400` retains the newest 2,400 complete frames, while
-`HISTORY_DIAGNOSTIC_FRAMES=250` retains diagnostic incomplete frames. The strategy
+`HISTORY_DIAGNOSTIC_FRAMES=100` retains diagnostic incomplete frames. The strategy
 uses a virtual wallet. Refresh confirms outcomes, re-trains, tunes configuration,
 and compares the working and candidate pairs.
 

@@ -27,6 +27,7 @@ test('account status reports the full supplied open-order count without exposing
     const text = formatAccountStatusText(status);
     assert.match(text, /AVAILABLE BALANCE\s+\$123\.46/);
     assert.match(text, /POSITIONS VALUE\s+\$0\.00/);
+    assert.match(text, /UPDATED\s+2023-11-14 22:13 UTC/);
     assert.doesNotMatch(text, /SIGNATURE TYPE|POLYGON pUSD|POSITION |ORDER BUY/);
     assert.doesNotMatch(text, /0x1234567890abcdef1234567890abcdef12345678/);
 });

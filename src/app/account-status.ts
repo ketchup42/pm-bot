@@ -91,6 +91,10 @@ function formatUsd(value: number | undefined): string {
     return value === undefined ? 'not available' : `$${value.toFixed(2)}`;
 }
 
+function formatUtcMinute(timestamp: number): string {
+    return `${new Date(timestamp).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
 /** Text mode is intentionally presentation-ready for the dependency-free Bash menu. */
 export function formatAccountStatusText(status: Readonly<AccountStatus>): string {
     const lines = [
@@ -99,7 +103,7 @@ export function formatAccountStatusText(status: Readonly<AccountStatus>): string
         `POSITIONS VALUE     ${status.portfolioValue.available ? formatUsd(status.portfolioValue.value) : 'not available'}`,
         `OPEN ORDERS         ${status.openOrders.available ? status.openOrders.value : 'not available'}`,
     ];
-    lines.push(`UPDATED             ${new Date(status.refreshedAt).toISOString().replace('.000Z', 'Z')}`);
+    lines.push(`UPDATED             ${formatUtcMinute(status.refreshedAt)}`);
     return lines.join('\n');
 }
 

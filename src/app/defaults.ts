@@ -18,7 +18,7 @@ export const DEFAULT_HISTORY_BOOK_DEPTH = 10;
 export const DEFAULT_HISTORY_GZIP = true;
 export const DEFAULT_HISTORY_FRAME_COUNT = 0;
 /** Diagnostic incomplete frames retained per collected coin. */
-export const DEFAULT_HISTORY_DIAGNOSTIC_FRAMES = 250;
+export const DEFAULT_HISTORY_DIAGNOSTIC_FRAMES = 100;
 
 export const DEFAULT_REPLAY_INITIAL_BALANCE = 100;
 /** Artificial delay between a replay decision and its execution, in milliseconds. */

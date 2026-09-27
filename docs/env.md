@@ -55,13 +55,13 @@ select the frame, common price source and number of frames.
 | `HISTORY_SNAPSHOT_MS` | `100`            | Snapshot interval in milliseconds. Integer, at least `25`.                |
 | `HISTORY_BOOK_DEPTH`  | `10`             | Best bid/ask levels saved for each side. Integer from `1` to `100`.       |
 | `HISTORY_GZIP`        | `true`           | `true`/`false` or `1`/`0`. Gzip each frame file.                          |
-| `HISTORY_DIAGNOSTIC_FRAMES` | `250`     | Incomplete diagnostic frames retained per coin by that collector.         |
+| `HISTORY_DIAGNOSTIC_FRAMES` | `100`     | Incomplete diagnostic frames retained per coin by that collector.         |
 
 Recommended multi-coin 5-minute collection configuration:
 
 ```bash
 env HISTORY_DIR='history/frames' HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 \
-  HISTORY_GZIP=true HISTORY_DIAGNOSTIC_FRAMES=250 \
+  HISTORY_GZIP=true HISTORY_DIAGNOSTIC_FRAMES=100 \
   npm run collect -- --coin all --frame 5m --source chainlink-twap-60 --count 2400 --cycle
 ```
 
@@ -162,5 +162,5 @@ HISTORY_BOOK_DEPTH=10
 HISTORY_GZIP=true
 
 # Incomplete frames are kept separately for diagnostics. Set 0 to disable deletion.
-HISTORY_DIAGNOSTIC_FRAMES=250
+HISTORY_DIAGNOSTIC_FRAMES=100
 ```
