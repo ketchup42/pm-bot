@@ -685,7 +685,8 @@ test('retention separates diagnostics and rotates only after a complete frame', 
         directory,
         gzip: true,
         maxFrames: 0,
-        completeRetentionFrames: 2,
+        maxFramesPerCoin: 2,
+        retainedCoins: ['btc'],
         diagnosticRetentionFrames: 1,
     });
     await writer.write(makeFrame(1_000));
@@ -699,7 +700,7 @@ test('retention separates diagnostics and rotates only after a complete frame', 
     assert.equal((await fs.readdir(path.join(root, 'diagnostics'))).filter(name => name.endsWith('.json.gz')).length, 1);
 });
 
-test('retention keeps diagnostics separate when their deletion is disabled', async () => {
+test('writer without cycle retention preserves complete history and separates diagnostics', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-history-diagnostics-'));
     const directory = path.join(root, 'frames');
     temporaryDirectories.push(root);
@@ -707,7 +708,6 @@ test('retention keeps diagnostics separate when their deletion is disabled', asy
         directory,
         gzip: true,
         maxFrames: 0,
-        completeRetentionFrames: 0,
         diagnosticRetentionFrames: 0,
     });
     await writer.write(makeFrame(1_000));
@@ -727,7 +727,8 @@ test('profile status cache removes retained history frames without coupling to a
         directory,
         gzip: true,
         maxFrames: 0,
-        completeRetentionFrames: 1,
+        maxFramesPerCoin: 1,
+        retainedCoins: ['btc'],
     });
     await writer.write(makeFrame(1_000));
     const first = await rebuildHistoryProfileStatus(directory, profile, () => true);

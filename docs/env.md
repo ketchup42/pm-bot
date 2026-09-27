@@ -55,15 +55,14 @@ select the frame, common price source and number of frames.
 | `HISTORY_SNAPSHOT_MS` | `100`            | Snapshot interval in milliseconds. Integer, at least `25`.                |
 | `HISTORY_BOOK_DEPTH`  | `10`             | Best bid/ask levels saved for each side. Integer from `1` to `100`.       |
 | `HISTORY_GZIP`        | `true`           | `true`/`false` or `1`/`0`. Gzip each frame file.                          |
-| `HISTORY_COMPLETE_FRAMES` | `2400`       | Complete frames retained per coin by a continuous `--cycle` collector.    |
-| `HISTORY_DIAGNOSTIC_FRAMES` | `1000`    | Incomplete diagnostic frames retained per coin by that collector.         |
+| `HISTORY_DIAGNOSTIC_FRAMES` | `250`     | Incomplete diagnostic frames retained per coin by that collector.         |
 
 Recommended multi-coin 5-minute collection configuration:
 
 ```bash
 env HISTORY_DIR='history/frames' HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 \
-  HISTORY_GZIP=true HISTORY_COMPLETE_FRAMES=2400 HISTORY_DIAGNOSTIC_FRAMES=1000 \
-  npm run collect -- --coin all --frame 5m --source chainlink-twap-60
+  HISTORY_GZIP=true HISTORY_DIAGNOSTIC_FRAMES=250 \
+  npm run collect -- --coin all --frame 5m --source chainlink-twap-60 --count 2400 --cycle
 ```
 
 At the default 100 ms interval, a five-minute target frame expects 3,000 snapshots
@@ -78,11 +77,11 @@ Repeated failed connections wait 1, 2, 4, 8 seconds and so on, capped at 30 seco
 The timeout and stream-quality thresholds are code-level source settings in
 `src/market/price/price_source.ts`, deliberately not environment variables.
 
-`--count N --cycle` keeps collecting forever. `HISTORY_COMPLETE_FRAMES` retains
-the newest complete frames for each selected target coin, while
-`HISTORY_DIAGNOSTIC_FRAMES` retains incomplete diagnostic frames separately. Both
-settings use `0` to disable their respective automatic deletion. Rotation does not
-delete frames belonging to coins outside the current collector command.
+Without `--cycle`, `--count N` collects N frames and stops. With `--cycle`, the
+collector runs forever and retains the newest N complete frames for each selected
+target coin. `HISTORY_DIAGNOSTIC_FRAMES` retains incomplete diagnostic frames
+separately. Set it to `0` to disable diagnostic deletion. Rotation does not delete
+frames belonging to coins outside the current collector command.
 
 ## Strategy models
 
@@ -162,9 +161,6 @@ HISTORY_BOOK_DEPTH=10
 # Enable gzip compression for historical frame files.
 HISTORY_GZIP=true
 
-# Complete frames are available for training and replay. Set 0 to disable deletion.
-HISTORY_COMPLETE_FRAMES=2400
-
 # Incomplete frames are kept separately for diagnostics. Set 0 to disable deletion.
-HISTORY_DIAGNOSTIC_FRAMES=1000
+HISTORY_DIAGNOSTIC_FRAMES=250
 ```

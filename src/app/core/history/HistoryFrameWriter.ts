@@ -19,8 +19,6 @@ export interface HistoryFrameWriterOptions {
     maxFrames: number;
     maxFramesPerCoin?: number;
     retainedCoins?: readonly Coin[];
-    /** Complete frames retained per coin after a new complete frame is safely written. */
-    completeRetentionFrames?: number;
     /** Incomplete frames kept outside the training directory for diagnostics. */
     diagnosticRetentionFrames?: number;
 }
@@ -49,13 +47,9 @@ export class HistoryFrameWriter {
         if ((options.maxFramesPerCoin ?? 0) > 0 && (options.retainedCoins?.length ?? 0) === 0) {
             throw new Error('History retainedCoins must not be empty when maxFramesPerCoin is enabled');
         }
-        for (const [name, value] of [
-            ['completeRetentionFrames', options.completeRetentionFrames],
-            ['diagnosticRetentionFrames', options.diagnosticRetentionFrames],
-        ] as const) {
-            if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
-                throw new Error(`History ${name} must be an integer >= 0, got ${value}`);
-            }
+        if (options.diagnosticRetentionFrames !== undefined &&
+            (!Number.isInteger(options.diagnosticRetentionFrames) || options.diagnosticRetentionFrames < 0)) {
+            throw new Error(`History diagnosticRetentionFrames must be an integer >= 0, got ${options.diagnosticRetentionFrames}`);
         }
         this.options = options;
     }
@@ -105,7 +99,7 @@ export class HistoryFrameWriter {
     }
 
     private async rotate(frame: HistoryFrameV3, finalPath: string): Promise<string[]> {
-        const deletedPaths = await this.rotateRetention(frame, finalPath);
+        const deletedPaths = await this.rotateDiagnostics(frame);
         if ((this.options.maxFramesPerCoin ?? 0) > 0) {
             return [...deletedPaths, ...await this.rotateCoin(frame, finalPath)];
         }
@@ -120,22 +114,17 @@ export class HistoryFrameWriter {
         return deletedPaths;
     }
 
-    private async rotateRetention(frame: HistoryFrameV3, finalPath: string): Promise<string[]> {
-        const completeLimit = this.options.completeRetentionFrames ?? 0;
+    private async rotateDiagnostics(frame: HistoryFrameV3): Promise<string[]> {
         const diagnosticLimit = this.options.diagnosticRetentionFrames ?? 0;
         const deletedPaths: string[] = [];
-        if (completeLimit > 0) {
-            deletedPaths.push(...await this.rotateDirectoryForCoin(this.options.directory, frame.coin, completeLimit, finalPath));
-        }
         if (diagnosticLimit > 0) {
             deletedPaths.push(...await this.rotateDirectoryForCoin(this.getDiagnosticDirectory(), frame.coin, diagnosticLimit));
         }
         return deletedPaths;
     }
 
-    private async rotateDirectoryForCoin(directory: string, coin: Coin, limit: number, addedPath?: string): Promise<string[]> {
+    private async rotateDirectoryForCoin(directory: string, coin: Coin, limit: number): Promise<string[]> {
         const paths = await this.getRetentionPaths(directory, coin);
-        if (addedPath !== undefined && !paths.includes(addedPath)) paths.push(addedPath);
         const excess = Math.max(0, paths.length - limit);
         const deletedPaths: string[] = [];
         for (let index = 0; index < excess; index++) {

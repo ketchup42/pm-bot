@@ -11,7 +11,6 @@ import { TIMER_FAST } from '../timer.js';
 import { logger, writeOutput } from '../log.js';
 import {
     DEFAULT_HISTORY_BOOK_DEPTH,
-    DEFAULT_HISTORY_COMPLETE_FRAMES,
     DEFAULT_HISTORY_COIN,
     DEFAULT_HISTORY_DIRECTORY,
     DEFAULT_HISTORY_FRAME,
@@ -69,9 +68,9 @@ export async function runCollect(): Promise<void> {
             'Usage: pm-bot collect --coin all --frame 5m --source chainlink-twap-60 [--count 1] [--cycle]',
             '',
             'The collector is read-only and waits for the next complete frame boundary.',
+            'Without --cycle, --count limits collected frames. With --cycle, it limits retained complete frames per coin.',
             'Configuration: HISTORY_DIR, HISTORY_SNAPSHOT_MS, HISTORY_BOOK_DEPTH,',
-            'HISTORY_GZIP, HISTORY_COMPLETE_FRAMES,',
-            'HISTORY_DIAGNOSTIC_FRAMES.',
+            'HISTORY_GZIP, HISTORY_DIAGNOSTIC_FRAMES.',
             `Supported coins: ${getSupportedCoins().join(', ')}`,
             `Supported frames: ${getSupportedFrames().join(', ')}`,
             `Supported sources: ${getSupportedPriceSources().join(', ')}`,
@@ -98,9 +97,6 @@ export async function runCollect(): Promise<void> {
     const snapshotIntervalMs = readInteger('HISTORY_SNAPSHOT_MS', DEFAULT_HISTORY_SNAPSHOT_INTERVAL_MS, 25);
     const bookDepth = readInteger('HISTORY_BOOK_DEPTH', DEFAULT_HISTORY_BOOK_DEPTH, 1);
     if (bookDepth > 100) throw new Error(`HISTORY_BOOK_DEPTH must be <= 100, got ${bookDepth}`);
-    const completeRetentionFrames = readInteger(
-        'HISTORY_COMPLETE_FRAMES', DEFAULT_HISTORY_COMPLETE_FRAMES, 0,
-    );
     const diagnosticRetentionFrames = readInteger(
         'HISTORY_DIAGNOSTIC_FRAMES', DEFAULT_HISTORY_DIAGNOSTIC_FRAMES, 0,
     );
@@ -120,9 +116,9 @@ export async function runCollect(): Promise<void> {
             directory,
             gzip: gzipEnabled,
             maxFrames: 0,
-            maxFramesPerCoin: 0,
-            completeRetentionFrames: cycle ? completeRetentionFrames : 0,
+            maxFramesPerCoin: cycle ? frameCount : 0,
             diagnosticRetentionFrames: cycle ? diagnosticRetentionFrames : 0,
+            ...(cycle ? { retainedCoins: coins } : {}),
         });
         const collectors = coins.map(coin => new HistoryCollector(
             { coin, frame, snapshotIntervalMs, bookDepth, frameCount: collectorFrameCount },
@@ -137,8 +133,8 @@ export async function runCollect(): Promise<void> {
 
         logger.info(
             `[HistoryCollector] Config coins=${coins.join(',')} frame=${frame} source=${source} interval=${snapshotIntervalMs}ms ` +
-            `depth=${bookDepth} gzip=${gzipEnabled} completeFrames=${completeRetentionFrames} ` +
-            `diagnosticFrames=${diagnosticRetentionFrames} count=${frameCount} cycle=${cycle} directory=${directory}`,
+            `depth=${bookDepth} gzip=${gzipEnabled} completeFrames=${cycle ? frameCount : 'none'} ` +
+            `diagnosticFrames=${cycle ? diagnosticRetentionFrames : 'none'} count=${frameCount} cycle=${cycle} directory=${directory}`,
         );
         try {
             await Promise.all(collectors.map(collector => collector.run()));

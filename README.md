@@ -25,9 +25,11 @@ before its `Saved ... complete=true` message.
 
 ## DOGE virtual working loop
 
-Run these three commands in separate terminals. The collector retains the newest
-2,400 complete frames and 1,000 diagnostic incomplete frames. The strategy uses a virtual wallet. Refresh confirms outcomes,
-re-trains, tunes configuration, and compares the working and candidate pairs.
+Run these three commands in separate terminals. In its cyclic form, the
+collector's `--count 2400` retains the newest 2,400 complete frames, while
+`HISTORY_DIAGNOSTIC_FRAMES=250` retains diagnostic incomplete frames. The strategy
+uses a virtual wallet. Refresh confirms outcomes, re-trains, tunes configuration,
+and compares the working and candidate pairs.
 
 `--no-dumps` is valid with both strategy modes. It disables legacy dumps in
 `--debug`. Dumps are already disabled in `--live`.
