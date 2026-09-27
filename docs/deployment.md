@@ -48,7 +48,7 @@ submits, cancels, or synchronizes orders.
 | Menu item | Purpose |
 | --- | --- |
 | Status | Show validated artifacts, trading permission, recent refresh, history, disk, VPN, and package version. |
-| Start / Stop / Restart | Manage the complete DOGE contour. Start checks required artifacts first. |
+| Start / Stop / Restart | Manage the complete DOGE contour. Start checks required artifacts first. Restart recreates containers on the loaded image. |
 | VPN | Configure a supported VPN profile. |
 | Settings | Edit DOGE service settings and manage weekly research. |
 | Services | Start, stop, restart, follow, filter, or inspect one service log. |
@@ -56,6 +56,8 @@ submits, cancels, or synchronizes orders.
 The global `Settings` menu edits application settings and force-loads a new Docker
 image. DOGE `Settings`, `Service settings` opens only the marked
 `DOGE_BASELINE_*` block in `compose.env`. Other Compose settings remain untouched.
+After `Update image`, select `DOGE Baseline`, then `Restart` to recreate the
+trading services on that image.
 
 Use Up and Down to select an item, Enter to run it, and Esc to return. Long
 lists, including archived log files, show ten entries at a time and scroll with

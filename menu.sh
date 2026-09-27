@@ -542,8 +542,39 @@ stop_doge_contour() {
 
 restart_doge_contour() {
     local -a services=(collector-doge-baseline strategy-doge-baseline refresh-doge-baseline)
-    [[ -f compose.override.yaml ]] && services+=(wireguard-bridge)
-    "${compose[@]}" restart "${services[@]}"
+    if [[ ! -f compose.override.yaml ]]; then
+        "${compose[@]}" up -d --no-deps --force-recreate "${services[@]}"
+        return
+    fi
+    if service_is_running console; then
+        services+=(console)
+    fi
+    "${menu_compose[@]}" up -d --force-recreate wireguard-bridge "${services[@]}"
+}
+
+service_is_running() {
+    local service="$1"
+    "${menu_compose[@]}" ps --status running --services 2>/dev/null | grep -Fxq "$service"
+}
+
+restart_wireguard_bridge() {
+    local -a services=(wireguard-bridge)
+    local service
+    for service in console collector-doge-baseline strategy-doge-baseline refresh-doge-baseline; do
+        if service_is_running "$service"; then
+            services+=("$service")
+        fi
+    done
+    "${menu_compose[@]}" up -d --force-recreate "${services[@]}"
+}
+
+restart_service() {
+    local service="$1"
+    if [[ "$service" == wireguard-bridge ]]; then
+        restart_wireguard_bridge
+        return
+    fi
+    "${compose[@]}" up -d --no-deps --force-recreate "$service"
 }
 
 show_account() {
@@ -901,7 +932,7 @@ service_menu() {
             case "$menu_choice" in
                 0) run_menu_action "Start $service" "${compose[@]}" up -d "$service" ;;
                 1) run_menu_action "Stop $service" "${compose[@]}" stop "$service" ;;
-                2) run_menu_action "Restart $service" "${compose[@]}" restart "$service" ;;
+                2) run_menu_action "Restart $service" restart_service "$service" ;;
                 3) view_service_logs "$service" ;;
                 4) break ;;
             esac
