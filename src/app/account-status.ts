@@ -26,7 +26,7 @@ export interface AccountStatusSources {
 }
 
 function maskAddress(address: string): string {
-    return `${address.slice(0, 6)}…${address.slice(-4)}`;
+    return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function getSafeError(error: unknown): string {

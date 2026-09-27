@@ -133,7 +133,7 @@ async function build(mode, useSudo) {
         await fs.writeFile(path.join(runtimeDirectory, 'README.md'), [
             '# Runtime data',
             '',
-            'The installer or Application settings creates `.env` here from runtime.env.example.',
+            'The installer or System settings creates `.env` here from runtime.env.example.',
             'Replace its live API placeholders before using live trading. It is never included in deployment archives.',
             'The `history`, `models`, and `logs` directories are included in this archive.',
             'Copy a WireGuard client config to `wireguard/wg_confs/wg0.conf` only when enabling the VPN override.',

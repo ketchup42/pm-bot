@@ -113,7 +113,7 @@ npm run deploy:docker -- --full --sudo
 ```
 
 See [Deployment](docs/deployment.md) for Docker requirements, server setup, and
-the interactive `install.sh` and `menu.sh`. Runtime application settings remain
+the interactive `install.sh` and `menu.sh`. Runtime system settings remain
 in `runtime/.env`. DOGE Baseline command parameters are configured separately in
 `compose.env`.
 

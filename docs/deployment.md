@@ -12,7 +12,7 @@ Use `--full` when the archive must include the current DOGE model and collected
 history. Upload, unpack, and enter the resulting directory on the server.
 
 The installer creates `runtime/.env` from `runtime.env.example` when it is
-absent. Replace the live API placeholders in Application settings before live
+absent. Replace the live API placeholders in System settings before live
 trading. The completed file is mounted read-only and is never included in Git or
 deployment archives.
 
@@ -53,7 +53,7 @@ submits, cancels, or synchronizes orders.
 | Settings | Edit DOGE service settings and manage weekly research. |
 | Services | Start, stop, restart, follow, filter, or inspect one service log. |
 
-The global `Settings` menu edits application settings and force-loads a new Docker
+The global `Settings` menu edits system settings and force-loads a new Docker
 image. DOGE `Settings`, `Service settings` opens only the marked
 `DOGE_BASELINE_*` block in `compose.env`. Other Compose settings remain untouched.
 After `Update image`, select `DOGE Baseline`, then `Restart` to recreate the

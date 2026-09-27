@@ -42,11 +42,13 @@ menu_choice=0
 menu_page_size=10
 menu_width=54
 menu_inner_width=$((menu_width - 4))
+readonly LOG_MENU_WIDTH=64
 doge_service_settings_begin='# BEGIN DOGE BASELINE SERVICE SETTINGS'
 doge_service_settings_end='# END DOGE BASELINE SERVICE SETTINGS'
 
 if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == dumb ]]; then
     color_reset=''
+    color_terminal_reset=''
     color_blue=''
     color_cyan=''
     color_green=''
@@ -55,13 +57,16 @@ if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == dumb ]]; then
     color_red=''
 else
     color_reset=$'\033[0m'
-    color_blue=$'\033[1;34m'
-    color_cyan=$'\033[1;36m'
-    color_green=$'\033[1;32m'
-    color_gray=$'\033[0;90m'
-    color_yellow=$'\033[1;33m'
-    color_red=$'\033[1;31m'
+    color_terminal_reset=$'\033[0m'
+    color_blue=$'\033[38;2;120;175;194m'
+    color_cyan=$'\033[38;2;130;216;208m'
+    color_green=$'\033[38;2;199;222;114m'
+    color_gray=$'\033[38;2;133;137;144m'
+    color_yellow=$'\033[38;2;229;180;92m'
+    color_red=$'\033[38;2;229;180;92m'
 fi
+
+trap 'printf "%b" "$color_terminal_reset"' EXIT
 
 clear_screen() {
     if [[ "${TERM:-}" == dumb ]]; then
@@ -274,7 +279,7 @@ choose_menu() {
         render_section "$title"
         for ((index = first; index < last; index += 1)); do
             if ((index == selected)); then
-                render_line "$color_blue" "> $((index + 1)). ${items[index]}"
+                render_line "$color_green" "> $((index + 1)). ${items[index]}"
             else
                 render_line "$color_gray" "  $((index + 1)). ${items[index]}"
             fi
@@ -330,15 +335,15 @@ ensure_application_settings() {
         return 0
     fi
     if [[ ! -f "$APPLICATION_ENV_TEMPLATE" ]]; then
-        show_message "Application settings template is missing: $APPLICATION_ENV_TEMPLATE."
+        show_message "System settings template is missing: $APPLICATION_ENV_TEMPLATE."
         return 1
     fi
     if ! mkdir -p "$RUNTIME_DIRECTORY"; then
-        show_message 'Unable to create the runtime directory for application settings.'
+        show_message 'Unable to create the runtime directory for System settings.'
         return 1
     fi
     if ! cp "$APPLICATION_ENV_TEMPLATE" "$APPLICATION_ENV_FILE"; then
-        show_message "Unable to create $APPLICATION_ENV_FILE from the application settings template."
+        show_message "Unable to create $APPLICATION_ENV_FILE from the System settings template."
         return 1
     fi
     return 0
@@ -618,7 +623,7 @@ show_account() {
         done <<< "$account_text"
     else
         render_line "$color_yellow" 'Account status is not available.'
-        render_line "$color_gray" 'Check Docker access and Application settings.'
+        render_line "$color_gray" 'Check Docker access and System settings.'
     fi
     render_rule
     render_line "$color_gray" 'Press Enter to continue'
@@ -703,15 +708,19 @@ show_status() {
 
 global_settings_menu() {
     while true; do
-        choose_menu 'Settings' 'Application settings' 'Update image' 'Back'
+        choose_menu 'Settings' 'Update image' 'System settings' 'Back'
         case "$menu_choice" in
             0)
+                run_menu_action 'Image update' bash "$INSTALL_SCRIPT" --update-image --no-menu
+                ;;
+            1)
                 if ensure_application_settings; then
                     open_editor "$APPLICATION_ENV_FILE" || true
                 fi
                 ;;
-            1) run_menu_action 'Image update' bash "$INSTALL_SCRIPT" --update-image --no-menu ;;
-            2) return ;;
+            2)
+                return
+                ;;
         esac
     done
 }
@@ -915,12 +924,33 @@ log_file_menu() {
 }
 
 view_service_logs() {
-    local service="$1"
+    local service="$1" original_menu_width="$menu_width" original_menu_inner_width="$menu_inner_width"
+    menu_width=$LOG_MENU_WIDTH
+    menu_inner_width=$((menu_width - 4))
+    if [[ "$service" == "$WIREGUARD_SERVICE" ]]; then
+        if ! command -v less >/dev/null 2>&1; then
+            show_message 'less is required to view logs. Install it and try again.'
+            menu_width=$original_menu_width
+            menu_inner_width=$original_menu_inner_width
+            return
+        fi
+        { "${compose[@]}" logs --tail 200 "$service" || true; } | less +G || true
+        menu_width=$original_menu_width
+        menu_inner_width=$original_menu_inner_width
+        return
+    fi
     local -a files labels
     mapfile -t files < <(list_service_log_files "$service")
     if ((${#files[@]} == 0)); then
-        command -v less >/dev/null 2>&1 || { show_message 'less is required to view logs. Install it and try again.'; return; }
+        if ! command -v less >/dev/null 2>&1; then
+            show_message 'less is required to view logs. Install it and try again.'
+            menu_width=$original_menu_width
+            menu_inner_width=$original_menu_inner_width
+            return
+        fi
         { "${compose[@]}" logs --tail 200 --follow "$service" || true; } | less +F || true
+        menu_width=$original_menu_width
+        menu_inner_width=$original_menu_inner_width
         return
     fi
     local file
@@ -935,6 +965,8 @@ view_service_logs() {
         fi
         log_file_menu "${files[menu_choice]}"
     done
+    menu_width=$original_menu_width
+    menu_inner_width=$original_menu_inner_width
 }
 
 service_menu() {

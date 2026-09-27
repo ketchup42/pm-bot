@@ -20,7 +20,7 @@ function sources(overrides = {}) {
 
 test('account status reports the full supplied open-order count without exposing the address', async () => {
     const status = await getAccountStatus(sources());
-    assert.deepEqual(status.account, { available: true, value: { address: '0x1234…5678' } });
+    assert.deepEqual(status.account, { available: true, value: { address: '0x1234...5678' } });
     assert.deepEqual(status.availableCollateral, { available: true, value: 123.456 });
     assert.deepEqual(status.portfolioValue, { available: true, value: 0 });
     assert.equal(status.openOrders.value, 2);
