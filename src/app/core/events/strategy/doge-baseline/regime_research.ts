@@ -15,6 +15,7 @@ import {
 import { makeDogeBaselineObservation, type DogeBaselineModel, type DogeBaselineObservation } from './DogeBaselineModel.js';
 import { compactDogeBaselineConfigurationFrame } from './DogeBaselineResearch.js';
 import {
+    areDogeBaselineEvaluationTradingPointsComparable,
     type DogeBaselineConfigurationEvaluation,
     getDogeBaselineEvaluationTradingPoint,
     type DogeBaselineEvaluationTradingPoint,
@@ -169,14 +170,6 @@ function getSummary(windows: readonly DogeBaselineRegimeResearchWindow[]): DogeB
     };
 }
 
-function areComparable(
-    previous: Readonly<DogeBaselineEvaluationTradingPoint> | undefined,
-    current: Readonly<DogeBaselineEvaluationTradingPoint>,
-): previous is DogeBaselineEvaluationTradingPoint {
-    return previous !== undefined && previous.replayFrames === current.replayFrames &&
-        previous.initialBalance === current.initialBalance && previous.latencyMs === current.latencyMs;
-}
-
 function decide(
     state: Readonly<PolicyState>,
     policy: Readonly<DogeBaselineRegimeResearchPolicy>,
@@ -188,7 +181,7 @@ function decide(
         consecutiveRises: state.previous?.state.consecutiveRises ?? 0,
     };
     const current = getDogeBaselineEvaluationTradingPoint(evaluation);
-    const comparable = areComparable(state.previous?.point, current);
+    const comparable = areDogeBaselineEvaluationTradingPointsComparable(state.previous?.point, current);
     const previousNetPnl = comparable ? state.previous!.point.netPnl : undefined;
     const netPnlDelta = comparable ? current.netPnl - state.previous!.point.netPnl : undefined;
     const minimumNetPnl = current.replayFrames * policy.minimumNetPnlPerReplayFrame;

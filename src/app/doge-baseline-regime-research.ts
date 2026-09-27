@@ -14,7 +14,7 @@ import {
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
 import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/DogeBaselineRefreshLock.js';
 import { runDogeBaselineRegimeHistoryResearch as runResearch } from './core/events/strategy/doge-baseline/regime_research.js';
-import { selectDogeBaselineRefreshArtifacts } from './doge-baseline-refresh.js';
+import { selectDogeBaselineRefreshArtifacts } from './core/events/strategy/doge-baseline/DogeBaselineSelection.js';
 import { fileWrite } from '../utils.js';
 
 const DOGE_BASELINE_REGIME_RESEARCH_OUTPUT_DIRECTORY = `${DEFAULT_HISTORY_REPORTS_DIRECTORY}/doge-baseline-regime/latest`;

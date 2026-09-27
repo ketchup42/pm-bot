@@ -9,13 +9,9 @@ import {
     DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
     getDogeBaselineEntrySummary,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
-import {
-    buildDogeBaselineModel,
-    readDogeBaselineTrainReplaySplit,
-} from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
+import { readDogeBaselineTrainReplaySplit } from './core/events/strategy/doge-baseline/DogeBaselineResearch.js';
 import {
     type DogeBaselineModel,
-    type DogeBaselineObservation,
     getDogeBaselineArtifactPath,
     readDogeBaselineModel,
     writeDogeBaselineModel,
@@ -23,80 +19,25 @@ import {
 import {
     createDogeBaselineStrategyConfig,
     readDogeBaselineStrategyConfigOrDefault,
-    rebindDogeBaselineStrategyConfig,
     type DogeBaselineStrategyConfig,
     type DogeBaselineRegimeSettings,
     writeDogeBaselineArtifacts,
     writeDogeBaselineStrategyConfig,
 } from './core/events/strategy/doge-baseline/artifacts.js';
-import { researchDogeBaselineConfigMatrix } from './core/events/strategy/doge-baseline/research_matrix.js';
 import {
+    areDogeBaselineEvaluationTradingPointsComparable,
     type DogeBaselineConfigurationEvaluation,
     type DogeBaselineEvaluationTradingPoint,
     type DogeBaselineEvaluationTradingState,
-    evaluateDogeBaselineModelConfigurations,
     getDogeBaselineEvaluationTradingPoint,
     readDogeBaselineEvaluationTradingState,
     writeDogeBaselineEvaluation,
 } from './core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
 import { DogeBaselineRefreshLock } from './core/events/strategy/doge-baseline/DogeBaselineRefreshLock.js';
+import { rebuildDogeBaselineHistoryStatus } from './core/events/strategy/doge-baseline/DogeBaselineHistoryStatus.js';
 import { settleHistoryDirectory } from './core/history/HistorySettlementService.js';
 import { isFileMissingError } from '../file_lock.js';
-import type { ReplayExecutionConfig } from './core/backtest/replay.js';
-import type { HistoryFrameV3 } from './core/history/history_frame.js';
-
-export interface DogeBaselineRefreshArtifacts {
-    model: DogeBaselineModel;
-    config: DogeBaselineStrategyConfig;
-}
-
-export interface DogeBaselineRefreshSelection {
-    candidate: DogeBaselineModel;
-    selected: DogeBaselineRefreshArtifacts;
-    evaluation: DogeBaselineConfigurationEvaluation | undefined;
-}
-
-/** Pure model/config selection shared by live refresh and historical regime research. */
-export function selectDogeBaselineRefreshArtifacts(
-    trainingObservations: readonly DogeBaselineObservation[],
-    trainingFrames: readonly HistoryFrameV3[],
-    replay: readonly HistoryFrameV3[],
-    working: Readonly<DogeBaselineRefreshArtifacts> | undefined,
-    executionConfig: Readonly<ReplayExecutionConfig>,
-): DogeBaselineRefreshSelection {
-    const candidate = buildDogeBaselineModel(trainingObservations);
-    if (working === undefined) {
-        const selected = researchDogeBaselineConfigMatrix(
-            trainingFrames, candidate, executionConfig, createDogeBaselineStrategyConfig(candidate),
-        ).selected.config;
-        return { candidate, selected: { model: candidate, config: selected }, evaluation: undefined };
-    }
-    const workingMatrix = researchDogeBaselineConfigMatrix(
-        trainingFrames, working.model, executionConfig, working.config,
-    );
-    const candidateCurrent = rebindDogeBaselineStrategyConfig(candidate, working.config);
-    const candidateMatrix = researchDogeBaselineConfigMatrix(
-        trainingFrames, candidate, executionConfig, candidateCurrent,
-    );
-    const evaluation = evaluateDogeBaselineModelConfigurations(
-        trainingObservations.length,
-        replay,
-        working.model,
-        working.config,
-        workingMatrix.selected.config,
-        candidate,
-        candidateCurrent,
-        candidateMatrix.selected.config,
-        executionConfig,
-    );
-    return {
-        candidate,
-        selected: evaluation.selected.model === 'working'
-            ? { model: working.model, config: evaluation.selected.strategyConfig }
-            : { model: candidate, config: evaluation.selected.strategyConfig },
-        evaluation,
-    };
-}
+import { selectDogeBaselineRefreshArtifacts } from './core/events/strategy/doge-baseline/DogeBaselineSelection.js';
 
 async function readWorkingConfig(model: Readonly<DogeBaselineModel>) {
     const config = await readDogeBaselineStrategyConfigOrDefault(model);
@@ -139,14 +80,6 @@ export interface DogeBaselineTradingRegimeDecision {
     requiredConsecutiveRises: number;
 }
 
-function areDogeBaselineTradingPointsComparable(
-    previous: Readonly<DogeBaselineEvaluationTradingPoint> | undefined,
-    current: Readonly<DogeBaselineEvaluationTradingPoint>,
-): previous is DogeBaselineEvaluationTradingPoint {
-    return previous !== undefined && previous.replayFrames === current.replayFrames &&
-        previous.initialBalance === current.initialBalance && previous.latencyMs === current.latencyMs;
-}
-
 function isDogeBaselineTradingRegimeComparable(
     previous: Readonly<DogeBaselineRegimeSettings> | undefined,
     current: Readonly<DogeBaselineRegimeSettings>,
@@ -166,7 +99,7 @@ export function getDogeBaselineTradingRegimeDecision(
     const current = getDogeBaselineEvaluationTradingPoint(evaluation);
     const minimumNetPnl = current.replayFrames * settings.minimumNetPnlPerReplayFrame;
     const trendStep = current.replayFrames * settings.trendStepPerReplayFrame;
-    const previousComparable = areDogeBaselineTradingPointsComparable(previous?.point, current);
+    const previousComparable = areDogeBaselineEvaluationTradingPointsComparable(previous?.point, current);
     const previousNetPnl = previousComparable ? previous.point.netPnl : undefined;
     const netPnlDelta = previousComparable ? current.netPnl - previous.point.netPnl : undefined;
     const previousRises = previousComparable && isDogeBaselineTradingRegimeComparable(previous?.state.regime, settings)
@@ -265,6 +198,7 @@ async function refreshModel(
     await writeDogeBaselineEvaluation(evaluation, {
         consecutiveRises: regime.consecutiveRises,
         regime: working.config.regime,
+        reason: regime.reason,
     });
     const regimeMessage = formatDogeBaselineTradingRegimeDecision(regime);
     const tradingEnabled = regime.tradingEnabled;
@@ -314,6 +248,13 @@ export async function runDogeBaselineRefresh(): Promise<void> {
                 `unresolved=${settlement.unresolved} disappeared=${settlement.disappeared} failed=${settlement.failed}`,
             );
             if (stopped) break;
+            if (settlement.updated > 0) {
+                try {
+                    await rebuildDogeBaselineHistoryStatus(history);
+                } catch (error) {
+                    logger.warn(`[DogeBaselineRefresh] History status cache rebuild failed: ${error_str(error)}`);
+                }
+            }
             try {
                 logger.info(`[DogeBaselineRefresh] ${await refreshModel(history, trainFrames, replayFrames, () => stopped)}`);
             } catch (error) {

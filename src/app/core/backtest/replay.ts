@@ -94,6 +94,38 @@ export interface ReplayFill {
     slippage_cost: number;
 }
 
+interface ReplayFillSummary {
+    tradeCount: number;
+    filledOrders: number;
+    partialOrders: number;
+    rejectedOrders: number;
+    rejectedOrdersByReason: Record<string, number>;
+}
+
+function summarizeReplayFills(fills: readonly ReplayFill[]): ReplayFillSummary {
+    const summary: ReplayFillSummary = {
+        tradeCount: 0,
+        filledOrders: 0,
+        partialOrders: 0,
+        rejectedOrders: 0,
+        rejectedOrdersByReason: {},
+    };
+    for (const fill of fills) {
+        if (fill.status === 'filled') {
+            summary.tradeCount++;
+            summary.filledOrders++;
+        } else if (fill.status === 'partial') {
+            summary.tradeCount++;
+            summary.partialOrders++;
+        } else {
+            summary.rejectedOrders++;
+            summary.rejectedOrdersByReason[fill.reason_code] =
+                (summary.rejectedOrdersByReason[fill.reason_code] ?? 0) + 1;
+        }
+    }
+    return summary;
+}
+
 /** An accepted decision that is waiting for its delayed execution snapshot. */
 export interface ReplayOrderSubmission {
     timestamp: number;
@@ -249,10 +281,7 @@ export class ReplayRunner {
             return [...wins].sort((left, right) => right - left).slice(0, count)
                 .reduce((sum, value) => sum + value, 0) / this.positiveFramePnl;
         };
-        const rejectedOrdersByReason: Record<string, number> = {};
-        for (const fill of this.fills) {
-            if (fill.status === 'rejected') rejectedOrdersByReason[fill.reason_code] = (rejectedOrdersByReason[fill.reason_code] ?? 0) + 1;
-        }
+        const fillSummary = summarizeReplayFills(this.fills);
         const netPnl = this.cash - this.config.initial_balance;
         return {
             config: { ...this.config, strategy: this.strategy.name },
@@ -268,11 +297,10 @@ export class ReplayRunner {
                 sharpe: this.frameReturns.length >= 30 && variance > 0 ? meanReturn / Math.sqrt(variance) * Math.sqrt(this.frameReturns.length) : undefined,
                 top_1_percent_profit_share: profitConcentration(0.01), top_5_percent_profit_share: profitConcentration(0.05),
                 top_10_percent_profit_share: profitConcentration(0.10), pnl_by_utc_hour: this.pnlByUtcHour,
-                trade_count: this.fills.filter(fill => fill.status !== 'rejected').length, position_frames: this.positionFrames,
-                filled_orders: this.fills.filter(fill => fill.status === 'filled').length,
-                partial_orders: this.fills.filter(fill => fill.status === 'partial').length,
-                rejected_orders: this.fills.filter(fill => fill.status === 'rejected').length,
-                rejected_orders_by_reason: rejectedOrdersByReason, frames: this.frames, skipped_frames: this.skippedFrames,
+                trade_count: fillSummary.tradeCount, position_frames: this.positionFrames,
+                filled_orders: fillSummary.filledOrders, partial_orders: fillSummary.partialOrders,
+                rejected_orders: fillSummary.rejectedOrders, rejected_orders_by_reason: fillSummary.rejectedOrdersByReason,
+                frames: this.frames, skipped_frames: this.skippedFrames,
                 confirmed_settlements: this.confirmedSettlements, derived_settlements: this.derivedSettlements,
                 settlement_mismatches: this.settlementMismatches,
                 profit_factor: this.negativeFramePnl > 0 ? this.positiveFramePnl / this.negativeFramePnl : undefined,
@@ -571,12 +599,7 @@ function runReplayEager(
         return [...wins].sort((left, right) => right - left).slice(0, count)
             .reduce((sum, value) => sum + value, 0) / positiveFramePnl;
     };
-    const rejectedOrdersByReason: Record<string, number> = {};
-    for (const fill of fills) {
-        if (fill.status === 'rejected') {
-            rejectedOrdersByReason[fill.reason_code] = (rejectedOrdersByReason[fill.reason_code] ?? 0) + 1;
-        }
-    }
+    const fillSummary = summarizeReplayFills(fills);
     return {
         config: { ...config, strategy: strategy.name },
         metrics: {
@@ -601,12 +624,12 @@ function runReplayEager(
             top_5_percent_profit_share: profitConcentration(0.05),
             top_10_percent_profit_share: profitConcentration(0.10),
             pnl_by_utc_hour: pnlByUtcHour,
-            trade_count: fills.filter(fill => fill.status !== 'rejected').length,
+            trade_count: fillSummary.tradeCount,
             position_frames: positionFrames,
-            filled_orders: fills.filter(fill => fill.status === 'filled').length,
-            partial_orders: fills.filter(fill => fill.status === 'partial').length,
-            rejected_orders: fills.filter(fill => fill.status === 'rejected').length,
-            rejected_orders_by_reason: rejectedOrdersByReason,
+            filled_orders: fillSummary.filledOrders,
+            partial_orders: fillSummary.partialOrders,
+            rejected_orders: fillSummary.rejectedOrders,
+            rejected_orders_by_reason: fillSummary.rejectedOrdersByReason,
             frames: frames.length,
             skipped_frames: skippedFrames,
             confirmed_settlements: confirmedSettlements,

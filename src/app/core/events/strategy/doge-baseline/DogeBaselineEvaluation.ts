@@ -79,10 +79,20 @@ export interface DogeBaselineEvaluationTradingPoint {
     netPnl: number;
 }
 
+export function areDogeBaselineEvaluationTradingPointsComparable(
+    previous: Readonly<DogeBaselineEvaluationTradingPoint> | undefined,
+    current: Readonly<DogeBaselineEvaluationTradingPoint>,
+): previous is DogeBaselineEvaluationTradingPoint {
+    return previous !== undefined && previous.replayFrames === current.replayFrames &&
+        previous.initialBalance === current.initialBalance && previous.latencyMs === current.latencyMs;
+}
+
 /** Persisted refresh-only state used to confirm a recovery across evaluations. */
 export interface DogeBaselineEvaluationTradingState {
     consecutiveRises: number;
     regime?: DogeBaselineRegimeSettings;
+    /** Last refresh decision, persisted for operational status only. */
+    reason?: string;
 }
 
 export interface DogeBaselineEvaluationTradingPointSource {
@@ -306,7 +316,15 @@ export function getDogeBaselineEvaluationTradingState(
         regime.minimumConsecutiveRises <= 0)) {
         throw new Error('invalid_doge_baseline_latest_evaluation_trading_regime');
     }
-    return regime === undefined ? { consecutiveRises } : { consecutiveRises, regime: { ...regime } };
+    const reason = evaluation.tradingRegime?.reason;
+    if (reason !== undefined && (typeof reason !== 'string' || reason.length === 0)) {
+        throw new Error('invalid_doge_baseline_latest_evaluation_trading_regime');
+    }
+    return {
+        consecutiveRises,
+        ...(regime === undefined ? {} : { regime: { ...regime } }),
+        ...(reason === undefined ? {} : { reason }),
+    };
 }
 
 function parseDogeBaselineEvaluationTradingPoint(value: unknown): DogeBaselineEvaluationTradingPoint {

@@ -21,6 +21,8 @@ import { getSupportedCoins } from '../dist/market/coins.js';
 import { VirtualTakerLiveOrderWallet } from '../dist/market/orders/VirtualTakerLiveOrderWallet.js';
 import { TakerLiveOrderWallet } from '../dist/market/orders/TakerLiveOrderWallet.js';
 import { calculateTakerExecution } from '../dist/market/orders/TakerExecution.js';
+import { HistoryFrameWriter } from '../dist/app/core/history/HistoryFrameWriter.js';
+import { getDogeBaselineStatus } from '../dist/app/doge-baseline-status.js';
 import { calculateTakerFee } from '../dist/rest/fees.js';
 import { placeMakerOrder } from '../dist/rest/orders.js';
 import { createDogeBaselineSettlementReport } from '../dist/app/core/events/strategy/doge-baseline/settlement_report.js';
@@ -183,6 +185,34 @@ test('DOGE replay mode reports use decisions from their own single-mode runs', (
     assert.equal(replay.modes['late-120'].metrics.trade_count, 1);
     assert.equal(replay.entryDecisions['early-60'].accepted, 1);
     assert.equal(replay.entryDecisions['late-120'].accepted, 1);
+});
+
+test('DOGE status excludes complete frames that cannot produce a DOGE observation', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-doge-status-'));
+    const historyDirectory = path.join(root, 'history', 'frames');
+    const previousModelsDirectory = process.env.STRATEGY_MODELS_DIR;
+    const previousHistoryDirectory = process.env.HISTORY_DIR;
+    process.env.STRATEGY_MODELS_DIR = path.join(root, 'models');
+    process.env.HISTORY_DIR = historyDirectory;
+    try {
+        await new HistoryFrameWriter({ directory: historyDirectory, gzip: true, maxFrames: 0 }).write(makeFrame());
+        const status = await getDogeBaselineStatus();
+        assert.equal(status.history.eligibleFrames, 0);
+        assert.equal(status.history.latestFrameStart, undefined);
+        const cachePath = path.join(root, 'history', 'status', 'doge-5m-chainlink-twap-60.json');
+        assert.ok((await fs.stat(cachePath)).isFile());
+        await fs.writeFile(cachePath, '{broken');
+        const rebuilt = await getDogeBaselineStatus(historyDirectory);
+        assert.equal(rebuilt.history.eligibleFrames, 0);
+        const rebuiltCachePayload = await fs.readFile(cachePath, 'utf8');
+        assert.doesNotThrow(() => JSON.parse(rebuiltCachePayload));
+    } finally {
+        if (previousModelsDirectory === undefined) delete process.env.STRATEGY_MODELS_DIR;
+        else process.env.STRATEGY_MODELS_DIR = previousModelsDirectory;
+        if (previousHistoryDirectory === undefined) delete process.env.HISTORY_DIR;
+        else process.env.HISTORY_DIR = previousHistoryDirectory;
+        await fs.rm(root, { recursive: true, force: true });
+    }
 });
 
 test('DOGE baseline features use only prices available at the decision timestamp', () => {
