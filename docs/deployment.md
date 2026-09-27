@@ -39,9 +39,9 @@ run Docker are required.
 ## Menu guide
 
 The main menu begins with `Account`, then lists available trading contours.
-`Account` shows the masked account address, Polygon pUSD balance, public
-mark-to-market position data, and read-only CLOB open orders. It never submits,
-cancels, or synchronizes orders.
+`Account` shows the masked account address, CLOB available collateral, public
+open-position value, and the number of read-only CLOB open orders. It never
+submits, cancels, or synchronizes orders.
 
 `DOGE Baseline` currently provides the following actions:
 

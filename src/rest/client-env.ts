@@ -1,22 +1,12 @@
 import { ClobClient, Chain, AssetType } from "@polymarket/clob-client-v2";
-import { createWalletClient, http, createPublicClient, formatUnits } from "viem";
+import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { polygon } from "viem/chains";
 import "dotenv/config";
 
 import { error_str, safeToNum } from "../utils.js";
 import { REST_DEFAULT_HOST_CLOB, REST_CHAIN_ID } from "./hosts.js";
 import { isMeBlocked } from "./block.js";
 import { ClobApiKeyCreds } from "@polymarket/real-time-data-client";
-
-/** Address of the pUSD token contract on Polygon Mainnet. */
-const PUSD_TOKEN_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
-
-/** Minimal ERC-20 ABI for balanceOf and decimals. */
-const ERC20_ABI = [
-    "function balanceOf(address) view returns (uint256)",
-    "function decimals() view returns (uint8)"
-];
 
 /** RPC URL for Polygon network – uses environment variable or public default. */
 const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
@@ -218,6 +208,14 @@ export function getReadOnlyTradingClient(): ClobClient {
     return createAuthenticatedTradingClient(getTradingEnvConfig());
 }
 
+/** Returns collateral currently available to the authenticated CLOB account. */
+export async function getReadOnlyCollateralBalance(): Promise<number> {
+    const response = await getReadOnlyTradingClient().getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+    const balance = Number(response.balance);
+    if (!Number.isFinite(balance) || balance < 0) throw new Error('CLOB collateral balance is invalid');
+    return balance / 1e6;
+}
+
 export async function getTradingClient(): Promise<ClobClient> {
     const block = await isMeBlocked();
     if (block) throw new Error("TRADING CLIENT INIT FAILED: IP GEO BLOCKED!");
@@ -232,36 +230,6 @@ export async function getTradingClient(): Promise<ClobClient> {
         }
     }
     return client;
-}
-
-const publicClient = createPublicClient({
-    chain: polygon,
-    transport: http(POLYGON_RPC_URL),
-});
-
-/**
- * Returns the pUSD (Polymarket USD) balance for a given address.
- * The function name is kept as `getUSDBalance` for backward compatibility,
- * but it queries the official pUSD token contract.
- * @param address - Wallet address (proxy or EOA) to check balance for.
- * @returns pUSD balance as a number (human‑readable, with 6 decimals).
- * @throws Error if the address is invalid or the contract call fails.
- */
-export async function getUSDBalance(address: string): Promise<number> {
-    if (!isValidEthereumAddress(address)) throw new Error('Invalid address');
-
-    try {
-        const rawBalance = await publicClient.readContract({
-            address: PUSD_TOKEN_ADDRESS,
-            abi: ERC20_ABI,
-            functionName: 'balanceOf',
-            args: [address as `0x${string}`],
-        }) as bigint;
-        // decimals = 6
-        return safeToNum(formatUnits(rawBalance, 6));
-    } catch (error) {
-        throw new Error(`Failed to fetch pUSD balance: ${error_str(error)}`);
-    }
 }
 
 /**

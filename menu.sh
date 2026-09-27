@@ -111,6 +111,81 @@ render_value() {
     render_line "$color" "$(printf '%-18s %s' "$label" "$value")"
 }
 
+setup_status_width() {
+    local columns available status_width=96
+    columns="$(tput cols 2>/dev/null || true)"
+    if [[ "$columns" =~ ^[1-9][0-9]*$ ]]; then
+        # Leave a small margin so the frame does not wrap in a terminal window.
+        available=$((columns - 2))
+        ((available < status_width)) && status_width=$available
+    else
+        # Keep the established compact width when the terminal size is unknown.
+        status_width=$menu_width
+    fi
+    ((status_width < 4)) && status_width=4
+    menu_inner_width=$((status_width - 2))
+}
+
+status_wrap_text() {
+    local text="$1" maximum="$2" comma_break space_break index character chunk
+    while ((${#text} > maximum)); do
+        comma_break=-1
+        space_break=-1
+        for ((index = 0; index < maximum; index += 1)); do
+            character="${text:index:1}"
+            [[ "$character" == ',' ]] && comma_break=$((index + 1))
+            [[ "$character" =~ [[:space:]] ]] && space_break=$index
+        done
+        if ((comma_break > 0)); then
+            chunk="${text:0:comma_break}"
+            text="${text:comma_break}"
+        elif ((space_break > 0)); then
+            chunk="${text:0:space_break}"
+            text="${text:space_break}"
+        else
+            chunk="${text:0:maximum}"
+            text="${text:maximum}"
+        fi
+        text="${text#"${text%%[![:space:]]*}"}"
+        printf '%s\n' "$chunk"
+    done
+    printf '%s\n' "$text"
+}
+
+render_status_line() {
+    local color="$1" text="$2" line
+    local -a lines
+    local text_width=$((menu_inner_width - 2))
+    mapfile -t lines < <(status_wrap_text "$text" "$text_width")
+    for line in "${lines[@]}"; do
+        render_line "$color" "$line"
+    done
+}
+
+render_status_value() {
+    local label="$1" value="$2" color="$3" line
+    local -a lines
+    local text_width=$((menu_inner_width - 2))
+    local value_width=$((text_width - 19))
+    local label_prefix
+    label_prefix="$(printf '%-18s ' "$label")"
+
+    if ((value_width < 1)); then
+        render_status_line "$color" "$label"
+        mapfile -t lines < <(status_wrap_text "$value" "$text_width")
+        for line in "${lines[@]}"; do
+            render_line "$color" "$line"
+        done
+        return
+    fi
+
+    mapfile -t lines < <(status_wrap_text "$value" "$value_width")
+    render_line "$color" "${label_prefix}${lines[0]}"
+    for ((line = 1; line < ${#lines[@]}; line += 1)); do
+        render_line "$color" "$(printf '%19s%s' '' "${lines[line]}")"
+    done
+}
+
 pause() {
     printf '\n%bPress Enter to continue...%b' "$color_gray" "$color_reset"
     read -r
@@ -498,30 +573,32 @@ show_account() {
 
 show_status() {
     local strategy_mode='not available'
+    local original_menu_inner_width="$menu_inner_width"
+    setup_status_width
     if [[ -f compose.env ]]; then
         strategy_mode="$(environment_value compose.env DOGE_BASELINE_STRATEGY_MODE || true)"
     fi
     local status_json='' trading_enabled eligible_frames entry_profile exit_profile pause_reason model_version config_version model_config
     render_top
     render_section 'STATUS'
-    render_value 'STRATEGY MODE' "$(or_not_available "$strategy_mode")" "$color_green"
+    render_status_value 'STRATEGY MODE' "$(or_not_available "$strategy_mode")" "$color_green"
     render_rule
-    render_line "$color_gray" 'Loading validated status...'
-    render_line "$color_gray" 'First history analysis can take longer.'
+    render_status_line "$color_gray" 'Loading validated status...'
+    render_status_line "$color_gray" 'First history analysis can take longer.'
     render_bottom
     if [[ -f compose.env ]]; then
         status_json="$(run_doge_status || true)"
     fi
     render_top
     render_section 'STATUS'
-    render_value 'STRATEGY MODE' "$(or_not_available "$strategy_mode")" "$color_green"
+    render_status_value 'STRATEGY MODE' "$(or_not_available "$strategy_mode")" "$color_green"
     trading_enabled="$(status_value tradingEnabled "$status_json")"
     if [[ "$trading_enabled" == true ]]; then
-            render_value 'TRADING' 'enabled' "$color_green"
+            render_status_value 'TRADING' 'enabled' "$color_green"
     elif [[ "$trading_enabled" == false ]]; then
-            render_value 'TRADING' 'paused' "$color_yellow"
+            render_status_value 'TRADING' 'paused' "$color_yellow"
     else
-            render_value 'TRADING' 'not available' "$color_yellow"
+            render_status_value 'TRADING' 'not available' "$color_yellow"
     fi
     eligible_frames="$(status_value eligibleFrames "$status_json" || true)"
     entry_profile="$(status_text_value entryProfile "$status_json" || true)"
@@ -534,39 +611,39 @@ show_status() {
     else
         model_config='not available'
     fi
-    render_value 'ELIGIBLE FRAMES' "$(or_not_available "$eligible_frames")" "$color_gray"
-    render_value 'LAST FRAME' "$(format_epoch_seconds "$(status_value latestFrameStart "$status_json")")" "$color_gray"
-    render_value 'HISTORY SPAN' "$(format_duration_ms "$(status_value historySpanMs "$status_json")")" "$color_gray"
-    render_value 'LATEST AGE' "$(format_duration_ms "$(status_value latestFrameAgeMs "$status_json")")" "$color_gray"
-    render_value 'LAST REFRESH' "$(format_epoch_ms "$(status_value lastSuccessfulRefreshAt "$status_json")")" "$color_gray"
-    render_value 'ENTRY PROFILE' "$(or_not_available "$entry_profile")" "$color_gray"
-    render_value 'EXIT PROFILE' "$(or_not_available "$exit_profile")" "$color_gray"
-    render_value 'PAUSE REASON' "$(or_not_available "$pause_reason")" "$color_yellow"
-    render_value 'MODEL / CONFIG' "$model_config" "$color_gray"
-    render_value 'DISK FREE' "$(or_not_available "$(df -h runtime 2>/dev/null | awk 'NR == 2 { print $4 }')")" "$color_gray"
-    render_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
-    render_value 'RELEASE' "$(or_not_available "$(manifest_value gitRevision || true)")" "$color_gray"
-    render_value 'IMAGE' "$(or_not_available "$(manifest_value imageId || true)")" "$color_gray"
+    render_status_value 'ELIGIBLE FRAMES' "$(or_not_available "$eligible_frames")" "$color_gray"
+    render_status_value 'LAST FRAME' "$(format_epoch_seconds "$(status_value latestFrameStart "$status_json")")" "$color_gray"
+    render_status_value 'HISTORY SPAN' "$(format_duration_ms "$(status_value historySpanMs "$status_json")")" "$color_gray"
+    render_status_value 'LAST REFRESH' "$(format_epoch_ms "$(status_value lastSuccessfulRefreshAt "$status_json")")" "$color_gray"
+    render_status_value 'ENTRY PROFILE' "$(or_not_available "$entry_profile")" "$color_gray"
+    render_status_value 'EXIT PROFILE' "$(or_not_available "$exit_profile")" "$color_gray"
+    render_status_value 'PAUSE REASON' "$(or_not_available "$pause_reason")" "$color_yellow"
+    render_status_value 'MODEL / CONFIG' "$model_config" "$color_gray"
+    render_status_value 'DISK FREE' "$(or_not_available "$(df -h runtime 2>/dev/null | awk 'NR == 2 { print $4 }')")" "$color_gray"
+    render_status_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
+    render_status_value 'RELEASE' "$(or_not_available "$(manifest_value gitRevision || true)")" "$color_gray"
+    render_status_value 'IMAGE' "$(or_not_available "$(manifest_value imageId || true)")" "$color_gray"
     render_rule
-    render_line "$color_cyan" 'SERVICES'
+    render_status_line "$color_cyan" 'SERVICES'
     if [[ -f compose.env ]]; then
         local -a service_rows
         mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}  {{.Status}}' 2>/dev/null | awk '$1 != "console"' || true)
         if ((${#service_rows[@]} == 0)); then
-            render_line "$color_yellow" 'not available'
+            render_status_line "$color_yellow" 'not available'
         else
             local service_row
             for service_row in "${service_rows[@]}"; do
-                render_line "$color_gray" "$service_row"
+                render_status_line "$color_gray" "$service_row"
             done
         fi
     else
-        render_line "$color_yellow" 'not available: compose.env is missing'
+        render_status_line "$color_yellow" 'not available: compose.env is missing'
     fi
     render_rule
-    render_line "$color_gray" 'Press Enter to continue'
+    render_status_line "$color_gray" 'Press Enter to continue'
     render_bottom
     pause
+    menu_inner_width="$original_menu_inner_width"
 }
 
 global_settings_menu() {

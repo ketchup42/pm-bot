@@ -69,7 +69,7 @@ collect → history frames → history:settle → model/config refresh → strat
 | `npm run refresh:doge-baseline -- --frame 5m --count 50 --train-count 500 --replay 100` | Refresh and compare four model/config pairs using the same delay.       |
 | `npm run strategy:doge-baseline -- --debug --no-dumps --balance 100 --trade-value 10`   | Run with a virtual wallet without legacy dumps.                         |
 | `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`               | Submit real orders.                                                     |
-| `npm run status:account`                                                                 | Print read-only Polygon balance, positions, and open orders as JSON.   |
+| `npm run status:account`                                                                 | Print collateral, open-position value, and open-order count as JSON.  |
 | `npm run status:doge-baseline`                                                           | Print validated DOGE artifact, evaluation, and history status as JSON. |
 
 ## Deployment archive
