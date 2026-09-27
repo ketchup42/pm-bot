@@ -922,12 +922,12 @@ open_log_tail() {
 log_file_menu() {
     local file="$1"
     while true; do
-        choose_menu "LOG / $(basename "$file")" 'Open at end' 'Follow current log' 'Warnings and errors' 'Last N lines' 'Back'
+        choose_menu "LOG / $(basename "$file")" 'Open at end' 'Warnings and errors' 'Last N lines' 'Follow current log' 'Back'
         case "$menu_choice" in
             0) open_log_file "$file" ;;
-            1) follow_log_file "$file" ;;
-            2) open_filtered_log_file "$file" ;;
-            3) open_log_tail "$file" ;;
+            1) open_filtered_log_file "$file" ;;
+            2) open_log_tail "$file" ;;
+            3) follow_log_file "$file" ;;
             4) return ;;
         esac
     done
