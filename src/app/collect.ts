@@ -11,12 +11,13 @@ import { TIMER_FAST } from '../timer.js';
 import { logger, writeOutput } from '../log.js';
 import {
     DEFAULT_HISTORY_BOOK_DEPTH,
+    DEFAULT_HISTORY_COMPLETE_FRAMES,
     DEFAULT_HISTORY_COIN,
     DEFAULT_HISTORY_DIRECTORY,
     DEFAULT_HISTORY_FRAME,
     DEFAULT_HISTORY_FRAME_COUNT,
+    DEFAULT_HISTORY_DIAGNOSTIC_FRAMES,
     DEFAULT_HISTORY_GZIP,
-    DEFAULT_HISTORY_MAX_FRAMES,
     DEFAULT_HISTORY_SNAPSHOT_INTERVAL_MS,
     DEFAULT_HISTORY_SOURCE,
     HISTORY_COIN_ALL,
@@ -69,7 +70,8 @@ export async function runCollect(): Promise<void> {
             '',
             'The collector is read-only and waits for the next complete frame boundary.',
             'Configuration: HISTORY_DIR, HISTORY_SNAPSHOT_MS, HISTORY_BOOK_DEPTH,',
-            'HISTORY_GZIP, HISTORY_MAX_FRAMES.',
+            'HISTORY_GZIP, HISTORY_COMPLETE_FRAMES,',
+            'HISTORY_DIAGNOSTIC_FRAMES.',
             `Supported coins: ${getSupportedCoins().join(', ')}`,
             `Supported frames: ${getSupportedFrames().join(', ')}`,
             `Supported sources: ${getSupportedPriceSources().join(', ')}`,
@@ -96,27 +98,31 @@ export async function runCollect(): Promise<void> {
     const snapshotIntervalMs = readInteger('HISTORY_SNAPSHOT_MS', DEFAULT_HISTORY_SNAPSHOT_INTERVAL_MS, 25);
     const bookDepth = readInteger('HISTORY_BOOK_DEPTH', DEFAULT_HISTORY_BOOK_DEPTH, 1);
     if (bookDepth > 100) throw new Error(`HISTORY_BOOK_DEPTH must be <= 100, got ${bookDepth}`);
-    const maxFrames = readInteger('HISTORY_MAX_FRAMES', DEFAULT_HISTORY_MAX_FRAMES, 0);
+    const completeRetentionFrames = readInteger(
+        'HISTORY_COMPLETE_FRAMES', DEFAULT_HISTORY_COMPLETE_FRAMES, 0,
+    );
+    const diagnosticRetentionFrames = readInteger(
+        'HISTORY_DIAGNOSTIC_FRAMES', DEFAULT_HISTORY_DIAGNOSTIC_FRAMES, 0,
+    );
     const directory = process.env.HISTORY_DIR || DEFAULT_HISTORY_DIRECTORY;
     const gzipEnabled = readBoolean('HISTORY_GZIP', DEFAULT_HISTORY_GZIP);
     const frameCount = readArgumentInteger('count', DEFAULT_HISTORY_FRAME_COUNT, 0);
     const cycle = process.argv.includes('--cycle');
     if (cycle && frameCount === 0) throw new Error('--cycle requires --count greater than 0');
-    if (cycle && maxFrames !== 0) throw new Error('--cycle cannot be combined with HISTORY_MAX_FRAMES greater than 0');
 
     const priceWatchers = PriceWatcherFactory.createSharedCoinWatchers(source);
     const watchers = [...priceWatchers.values()];
     try {
         const warmUpTimeoutMs = getPriceSourceConfig(source).framePriceCaptureTimeoutMs;
         await Promise.all(watchers.map(watcher => waitForFirstWatcherPrice(watcher, warmUpTimeoutMs)));
-        const retainedFrames = maxFrames;
         const collectorFrameCount = cycle ? 0 : frameCount;
         const writer = new HistoryFrameWriter({
             directory,
             gzip: gzipEnabled,
-            maxFrames: retainedFrames,
-            maxFramesPerCoin: cycle ? frameCount : 0,
-            retainedCoins: coins,
+            maxFrames: 0,
+            maxFramesPerCoin: 0,
+            completeRetentionFrames: cycle ? completeRetentionFrames : 0,
+            diagnosticRetentionFrames: cycle ? diagnosticRetentionFrames : 0,
         });
         const collectors = coins.map(coin => new HistoryCollector(
             { coin, frame, snapshotIntervalMs, bookDepth, frameCount: collectorFrameCount },
@@ -131,7 +137,8 @@ export async function runCollect(): Promise<void> {
 
         logger.info(
             `[HistoryCollector] Config coins=${coins.join(',')} frame=${frame} source=${source} interval=${snapshotIntervalMs}ms ` +
-            `depth=${bookDepth} gzip=${gzipEnabled} maxFrames=${retainedFrames} count=${frameCount} cycle=${cycle} directory=${directory}`,
+            `depth=${bookDepth} gzip=${gzipEnabled} completeFrames=${completeRetentionFrames} ` +
+            `diagnosticFrames=${diagnosticRetentionFrames} count=${frameCount} cycle=${cycle} directory=${directory}`,
         );
         try {
             await Promise.all(collectors.map(collector => collector.run()));

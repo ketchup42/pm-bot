@@ -4,11 +4,11 @@ import { gunzip as gunzipCallback } from 'node:zlib';
 import { promisify } from 'node:util';
 import { isFileMissingError } from '../../../file_lock.js';
 import { HISTORY_SCHEMA_VERSION, HistoryFrameV3, validateHistoryFrame } from './history_frame.js';
-import { HistoryFrameIndex } from './history_frame_window.js';
+import { HistoryFrameIndex, type HistoryReadStopCheck } from './history_frame_window.js';
+
+export type { HistoryReadStopCheck } from './history_frame_window.js';
 
 const gunzip = promisify(gunzipCallback);
-
-export type HistoryReadStopCheck = () => boolean;
 
 export async function readHistoryFrame(filePath: string): Promise<HistoryFrameV3> {
     const payload = await fs.readFile(filePath);

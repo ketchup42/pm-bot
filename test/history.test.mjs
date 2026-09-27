@@ -10,6 +10,12 @@ import { HistoryFrameWriter } from '../dist/app/core/history/HistoryFrameWriter.
 import { readHistoryFrame, readHistoryFrames } from '../dist/app/core/history/HistoryFrameReader.js';
 import { HistoryFrameRollingWindow } from '../dist/app/core/history/history_frame_window.js';
 import {
+    getHistoryProfileStatusPath,
+    readHistoryProfileStatus,
+    rebuildHistoryProfileStatus,
+    writeHistoryProfileStatus,
+} from '../dist/app/core/history/HistoryProfileStatus.js';
+import {
     getConfirmedOutcome,
     getConfirmedOutcomeForFrame,
     settleHistoryDirectory,
@@ -635,9 +641,11 @@ test('writer atomically stores gzip with stable names and rotates by frame', asy
 
     const files = (await fs.readdir(directory)).sort();
     assert.equal(files.length, 2);
-    assert.ok(!files.some(name => name.startsWith('1000-')));
+    assert.ok(files.some(name => name.startsWith('1000-')));
+    assert.ok(files.some(name => name.startsWith('1600-')));
     assert.ok(files.every(name => !name.includes('.partial.')));
     assert.ok(files.every(name => !name.endsWith('.tmp')));
+    assert.equal((await fs.readdir(path.join(path.dirname(directory), 'diagnostics'))).length, 1);
 
     const decoded = JSON.parse((await unzip(await fs.readFile(latest.path))).toString('utf8'));
     assert.equal(decoded.start_time, 1_600);
@@ -667,6 +675,89 @@ test('cyclic writer retains the newest limit per selected coin without deleting 
     for (const name of await fs.readdir(directory)) frames.push(await readHistoryFrame(path.join(directory, name)));
     assert.equal(frames.filter(frame => frame.coin === 'btc').length, 3);
     assert.deepEqual(frames.filter(frame => frame.coin === 'doge').map(frame => frame.start_time).sort(), [2_200, 2_500]);
+});
+
+test('retention separates diagnostics and rotates only after a complete frame', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-history-retention-'));
+    const directory = path.join(root, 'frames');
+    temporaryDirectories.push(root);
+    const writer = new HistoryFrameWriter({
+        directory,
+        gzip: true,
+        maxFrames: 0,
+        completeRetentionFrames: 2,
+        diagnosticRetentionFrames: 1,
+    });
+    await writer.write(makeFrame(1_000));
+    await writer.write(makeFrame(1_300));
+    await writer.write(makeFrame(1_600, true));
+    assert.equal((await fs.readdir(directory)).filter(name => name.endsWith('.json.gz')).length, 2);
+    assert.equal((await fs.readdir(path.join(root, 'diagnostics'))).filter(name => name.endsWith('.json.gz')).length, 1);
+
+    await writer.write(makeFrame(1_900));
+    assert.equal((await fs.readdir(directory)).filter(name => name.endsWith('.json.gz')).length, 2);
+    assert.equal((await fs.readdir(path.join(root, 'diagnostics'))).filter(name => name.endsWith('.json.gz')).length, 1);
+});
+
+test('retention keeps diagnostics separate when their deletion is disabled', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-history-diagnostics-'));
+    const directory = path.join(root, 'frames');
+    temporaryDirectories.push(root);
+    const writer = new HistoryFrameWriter({
+        directory,
+        gzip: true,
+        maxFrames: 0,
+        completeRetentionFrames: 0,
+        diagnosticRetentionFrames: 0,
+    });
+    await writer.write(makeFrame(1_000));
+    await writer.write(makeFrame(1_300, true));
+    await writer.write(makeFrame(1_600));
+
+    assert.equal((await fs.readdir(directory)).filter(name => name.endsWith('.json.gz')).length, 2);
+    assert.equal((await fs.readdir(path.join(root, 'diagnostics'))).filter(name => name.endsWith('.json.gz')).length, 1);
+});
+
+test('profile status cache removes retained history frames without coupling to a strategy', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-history-profile-status-'));
+    const directory = path.join(root, 'frames');
+    temporaryDirectories.push(root);
+    const profile = { coin: 'btc', frame: '5m', source: PS_CHAINLINK_TWAP_60 };
+    const writer = new HistoryFrameWriter({
+        directory,
+        gzip: true,
+        maxFrames: 0,
+        completeRetentionFrames: 1,
+    });
+    await writer.write(makeFrame(1_000));
+    const first = await rebuildHistoryProfileStatus(directory, profile, () => true);
+    assert.equal(first.eligibleFrames, 1);
+    assert.match(getHistoryProfileStatusPath(directory, profile), /status\/btc-5m-chainlink-twap-60\.json$/);
+
+    await writer.write(makeFrame(1_300));
+    const cached = await readHistoryProfileStatus(directory, profile);
+    assert.equal(cached.eligibleFrames, 0);
+    assert.deepEqual(Object.keys(cached.frames).map(name => cached.frames[name].startTime), [1_300]);
+});
+
+test('profile status cache rejects inconsistent aggregate fields', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-history-profile-status-invalid-'));
+    const directory = path.join(root, 'frames');
+    temporaryDirectories.push(root);
+    const profile = { coin: 'btc', frame: '5m', source: PS_CHAINLINK_TWAP_60 };
+    await new HistoryFrameWriter({ directory, gzip: true, maxFrames: 0 }).write(makeFrame(1_000));
+    const status = await rebuildHistoryProfileStatus(directory, profile, () => true);
+    await writeHistoryProfileStatus(directory, { ...status, eligibleFrames: 999 });
+    assert.equal(await readHistoryProfileStatus(directory, profile), undefined);
+});
+
+test('history frame persistence survives an unavailable profile status directory', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-history-profile-status-unavailable-'));
+    const directory = path.join(root, 'frames');
+    temporaryDirectories.push(root);
+    await fs.writeFile(path.join(root, 'status'), 'not a directory');
+    const written = await new HistoryFrameWriter({ directory, gzip: true, maxFrames: 0 }).write(makeFrame(1_000));
+    assert.equal((await readHistoryFrame(written.path)).start_time, 1_000);
 });
 
 test('history stream tolerates a cyclic file disappearing after directory scan', async () => {
