@@ -5,7 +5,7 @@
 Build a Linux x86-64 archive locally:
 
 ```bash
-npm run deploy:docker -- --tiny
+npm run deploy:docker -- --tiny --sudo
 ```
 
 Use `--full` when the archive must include the current DOGE model and collected
