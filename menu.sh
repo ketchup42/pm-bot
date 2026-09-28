@@ -668,18 +668,37 @@ refresh_now() {
     run_menu_action 'Immediate refresh' restart_service "$REFRESH_SERVICE"
 }
 
+configured_service_names() {
+    [[ -f "$COMPOSE_ENV_FILE" ]] || return
+    "${compose[@]}" config --services 2>/dev/null | awk -v console="$CONSOLE_SERVICE" '$0 != console'
+}
+
 service_status_rows() {
     [[ -f "$COMPOSE_ENV_FILE" ]] || return
     "${compose[@]}" ps --format '{{.Service}}|{{.Status}}' 2>/dev/null || true
 }
 
 render_service_statuses() {
-    local -a rows=() names=() statuses=()
+    local -a rows=() names=() statuses=() configured_services=()
+    local -A status_by_service=() shown_services=()
     local row service status service_width=0 index
     mapfile -t rows < <(service_status_rows)
     for row in "${rows[@]}"; do
         IFS='|' read -r service status <<< "$row"
         [[ "$service" == "$CONSOLE_SERVICE" || -z "$service" ]] && continue
+        status_by_service["$service"]="$status"
+    done
+    mapfile -t configured_services < <(configured_service_names)
+    for service in "${configured_services[@]}"; do
+        [[ -v "status_by_service[$service]" ]] || continue
+        names+=("$service")
+        statuses+=("${status_by_service[$service]}")
+        shown_services["$service"]=true
+        ((${#service} > service_width)) && service_width=${#service}
+    done
+    for row in "${rows[@]}"; do
+        IFS='|' read -r service status <<< "$row"
+        [[ "$service" == "$CONSOLE_SERVICE" || -z "$service" || -v "shown_services[$service]" ]] && continue
         names+=("$service")
         statuses+=("$status")
         ((${#service} > service_width)) && service_width=${#service}
@@ -729,6 +748,10 @@ show_health_check() {
     esac
     latest_frame="$(format_epoch_seconds "$(status_value latestFrameStart "$status_json")")"
     last_refresh="$(format_epoch_ms "$(status_value lastSuccessfulRefreshAt "$status_json")")"
+    render_top
+    render_section 'DOGE HEALTH CHECK'
+    render_value 'DOCKER' "$docker_status" "$color_gray"
+    render_value 'COMPOSE' "$compose_status" "$color_gray"
     render_value 'TRADING' "$trading_display" "$color_gray"
     render_value 'LAST FRAME' "$latest_frame" "$color_gray"
     render_value 'LAST REFRESH' "$last_refresh" "$color_gray"
@@ -1343,10 +1366,10 @@ view_service_logs() {
 
 service_menu() {
     local -a services=() configured_services=()
-    mapfile -t configured_services < <("${compose[@]}" config --services)
+    mapfile -t configured_services < <(configured_service_names)
     local service
     for service in "${configured_services[@]}"; do
-        [[ "$service" == "$CONSOLE_SERVICE" ]] || services+=("$service")
+        services+=("$service")
     done
     ((${#services[@]} > 0)) || { show_message 'No Compose services are available.'; return; }
     services+=('Back')
