@@ -12,6 +12,7 @@ import {
     DOGE_BASELINE_CANDIDATE_MAXIMUM_PNL_UNDERPERFORMANCE_RATIO,
     DOGE_BASELINE_CANDIDATE_MINIMUM_ACCURACY,
     DOGE_BASELINE_LATEST_EVALUATION_FILE,
+    DOGE_BASELINE_DEFAULT_TRADE_VALUE,
     DOGE_BASELINE_MODES,
     DOGE_BASELINE_REPLAY_SEGMENT_MAXIMUM_FRAME_COUNT,
     DOGE_BASELINE_REPLAY_SEGMENT_MINIMUM_COUNT,
@@ -64,6 +65,7 @@ export interface DogeBaselineConfigurationEvaluation {
     minimumCandidateTradeCount: number;
     minimumProfitableSegmentCount: number;
     replayConfig: ReplayExecutionConfig;
+    tradeValue: number;
     combinations: DogeBaselineEvaluationCombination[];
     selected: DogeBaselineEvaluationCombination;
     promoted: boolean;
@@ -76,6 +78,7 @@ export interface DogeBaselineEvaluationTradingPoint {
     replayFrames: number;
     initialBalance: number;
     latencyMs: number;
+    tradeValue: number | undefined;
     netPnl: number;
 }
 
@@ -84,7 +87,8 @@ export function areDogeBaselineEvaluationTradingPointsComparable(
     current: Readonly<DogeBaselineEvaluationTradingPoint>,
 ): previous is DogeBaselineEvaluationTradingPoint {
     return previous !== undefined && previous.replayFrames === current.replayFrames &&
-        previous.initialBalance === current.initialBalance && previous.latencyMs === current.latencyMs;
+        previous.initialBalance === current.initialBalance && previous.latencyMs === current.latencyMs &&
+        previous.tradeValue !== undefined && previous.tradeValue === current.tradeValue;
 }
 
 /** Persisted refresh-only state used to confirm a recovery across evaluations. */
@@ -98,6 +102,7 @@ export interface DogeBaselineEvaluationTradingState {
 export interface DogeBaselineEvaluationTradingPointSource {
     replayFrames: number;
     replayConfig: Pick<ReplayExecutionConfig, 'initial_balance' | 'latency_ms'>;
+    tradeValue?: number;
     selected: { replayMetrics: Pick<ReplayMetrics, 'net_pnl'> };
 }
 
@@ -127,8 +132,9 @@ function createEvaluationModel(
     model: Readonly<DogeBaselineModel>,
     config: ReplayExecutionConfig,
     strategyConfig: Readonly<DogeBaselineStrategyConfig>,
+    tradeValue: number,
 ): DogeBaselineEvaluationModel {
-    const runtimeConfig = toDogeBaselineRuntimeConfig(strategyConfig);
+    const runtimeConfig = { ...toDogeBaselineRuntimeConfig(strategyConfig), tradeValue };
     const replayStrategy = new DogeBaselineReplayStrategy(model, runtimeConfig);
     const replay = runReplay(frames, replayStrategy, config);
     const replaySegments = splitDogeBaselineReplayFrames(frames).map(segment => {
@@ -166,6 +172,7 @@ export function evaluateDogeBaselineModelConfigurations(
     candidateCurrent: Readonly<DogeBaselineStrategyConfig>,
     candidateSelected: Readonly<DogeBaselineStrategyConfig>,
     config: ReplayExecutionConfig,
+    tradeValue: number = DOGE_BASELINE_DEFAULT_TRADE_VALUE,
 ): DogeBaselineConfigurationEvaluation {
     const observations = getObservations(frames);
     const inputs = [
@@ -189,7 +196,7 @@ export function evaluateDogeBaselineModelConfigurations(
             regime: { ...strategyConfig.regime },
             exit: { ...strategyConfig.exit },
         },
-        ...createEvaluationModel(frames, observations, model, config, strategyConfig),
+        ...createEvaluationModel(frames, observations, model, config, strategyConfig, tradeValue),
     }));
     const baseline = combinations[0]!;
     const candidates = combinations.slice(1).map(value => ({
@@ -206,7 +213,7 @@ export function evaluateDogeBaselineModelConfigurations(
         replayFirstFrameStart: frames[0]!.start_time, replayLastFrameStart: frames.at(-1)!.start_time,
         minimumCandidateTradeCount: getDogeBaselineMinimumReplayTradeCount(frames.length),
         minimumProfitableSegmentCount: getDogeBaselineMinimumProfitableSegmentCount(frames.length),
-        replayConfig: { ...config },
+        replayConfig: { ...config }, tradeValue,
         combinations, selected, promoted: selected.id !== 'working-current', reasons: selectedReasons,
     };
 }
@@ -298,6 +305,7 @@ export function getDogeBaselineEvaluationTradingPoint(
         replayFrames: evaluation.replayFrames,
         initialBalance: evaluation.replayConfig.initial_balance,
         latencyMs: evaluation.replayConfig.latency_ms,
+        tradeValue: evaluation.tradeValue,
         netPnl: evaluation.selected.replayMetrics.net_pnl,
     };
 }
@@ -340,9 +348,14 @@ function parseDogeBaselineEvaluationTradingPoint(value: unknown): DogeBaselineEv
         typeof netPnl !== 'number' || !Number.isFinite(netPnl)) {
         throw new Error('invalid_doge_baseline_latest_evaluation');
     }
+    const tradeValue = evaluation.tradeValue;
+    if (tradeValue !== undefined && (!Number.isFinite(tradeValue) || tradeValue <= 0)) {
+        throw new Error('invalid_doge_baseline_latest_evaluation');
+    }
     const source: DogeBaselineEvaluationTradingPointSource = {
         replayFrames,
         replayConfig,
+        ...(tradeValue === undefined ? {} : { tradeValue }),
         selected: { replayMetrics: { net_pnl: netPnl } },
     };
     const stateSource = evaluation.tradingRegime === undefined ? {} : { tradingRegime: evaluation.tradingRegime };

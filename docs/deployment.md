@@ -111,6 +111,9 @@ the WireGuard kill switch.
 
 Use `DOGE Baseline`, `Settings`, then `Weekly research` to install or update the
 systemd timer. Its settings are available in the same submenu.
+Execution settings for weekly research are read from `DOGE Baseline`, `Settings`,
+then `Service settings`, together with strategy and refresh settings. Weekly research
+settings contain only the refresh wait timeout and polling interval.
 Installation derives the current archive directory, so the package may be
 unpacked anywhere under the user account.
 The weekly run keeps collection active, pauses strategy and refresh while it

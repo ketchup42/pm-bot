@@ -98,6 +98,7 @@ export interface DogeBaselineRegimeResearchInputs {
         replay: readonly HistoryFrameV3[],
         working: DogeBaselineRegimeResearchArtifacts | undefined,
         config: ReplayExecutionConfig,
+        tradeValue: number,
     ) => {
         selected: DogeBaselineRegimeResearchArtifacts;
         evaluation: DogeBaselineConfigurationEvaluation | undefined;
@@ -274,6 +275,7 @@ export function runDogeBaselineRegimeResearch(inputs: Readonly<DogeBaselineRegim
             replay.map(value => value.frame),
             working,
             inputs.executionConfig,
+            inputs.tradeValue,
         );
         working = selection.selected;
         const forwardMetrics = getReplayMetrics(future.map(value => value.frame), working, inputs.executionConfig, inputs.tradeValue);
@@ -375,6 +377,7 @@ export async function runDogeBaselineRegimeHistoryResearch(
             replay.values(),
             working,
             inputs.executionConfig,
+            inputs.tradeValue,
         );
         working = selection.selected;
         const futureFrames = future.values();

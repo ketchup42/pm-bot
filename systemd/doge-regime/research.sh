@@ -48,13 +48,69 @@ require_nonnegative_integer() {
     fi
 }
 
-require_nonempty DOGE_BASELINE_REGIME_FRAME
-require_positive_integer DOGE_BASELINE_REGIME_COUNT
-require_positive_integer DOGE_BASELINE_REGIME_TRAIN_COUNT
-require_positive_integer DOGE_BASELINE_REGIME_REPLAY_COUNT
-require_nonnegative_integer DOGE_BASELINE_REGIME_LATENCY_MS
+require_positive_number() {
+    local name="$1"
+    local value="${!name:-}"
+    if ! awk -v value="$value" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value + 0 > 0) }'; then
+        echo "[DogeBaselineRegimeResearch] ${name} must be a positive number." >&2
+        exit 1
+    fi
+}
+
+read_compose_value() {
+    local name="$1"
+    local value
+    if ! value="$(awk -v key="$name" '
+        { sub(/\r$/, "") }
+        $0 ~ /^[[:space:]]*(#|$)/ { next }
+        index($0, key "=") == 1 { value = substr($0, length(key) + 2); found = 1 }
+        END {
+            if (!found) exit 1
+            print value
+        }
+    ' "$COMPOSE_ENV_FILE")"; then
+        echo "[DogeBaselineRegimeResearch] ${name} must be set in ${COMPOSE_ENV_FILE}." >&2
+        exit 1
+    fi
+    printf -v "$name" '%s' "$value"
+}
+
+validate_compose_execution_settings() {
+    local name
+    for name in \
+        DOGE_BASELINE_BALANCE \
+        DOGE_BASELINE_TRADE_VALUE \
+        DOGE_BASELINE_REFRESH_FRAME \
+        DOGE_BASELINE_REFRESH_COUNT \
+        DOGE_BASELINE_REFRESH_TRAIN_COUNT \
+        DOGE_BASELINE_REFRESH_REPLAY_COUNT \
+        DOGE_BASELINE_REFRESH_LATENCY_MS; do
+        read_compose_value "$name"
+    done
+
+    require_positive_number DOGE_BASELINE_BALANCE
+    require_positive_number DOGE_BASELINE_TRADE_VALUE
+    case "$DOGE_BASELINE_REFRESH_FRAME" in
+        5m|15m) ;;
+        *)
+            echo '[DogeBaselineRegimeResearch] DOGE_BASELINE_REFRESH_FRAME must be a supported frame: 5m or 15m.' >&2
+            exit 1
+            ;;
+    esac
+    require_positive_integer DOGE_BASELINE_REFRESH_COUNT
+    require_positive_integer DOGE_BASELINE_REFRESH_TRAIN_COUNT
+    require_positive_integer DOGE_BASELINE_REFRESH_REPLAY_COUNT
+    require_nonnegative_integer DOGE_BASELINE_REFRESH_LATENCY_MS
+    if ! awk -v balance="$DOGE_BASELINE_BALANCE" -v trade_value="$DOGE_BASELINE_TRADE_VALUE" \
+        'BEGIN { exit !(trade_value + 0 <= balance + 0) }'; then
+        echo '[DogeBaselineRegimeResearch] DOGE_BASELINE_TRADE_VALUE must not exceed DOGE_BASELINE_BALANCE.' >&2
+        exit 1
+    fi
+}
+
 require_positive_integer DOGE_BASELINE_REGIME_REFRESH_WAIT_TIMEOUT_SECONDS
 require_positive_integer DOGE_BASELINE_REGIME_REFRESH_POLL_INTERVAL_SECONDS
+validate_compose_execution_settings
 
 mkdir -p "$DOGE_MODEL_DIRECTORY"
 exec 9>"$RESEARCH_LOCK_FILE"
@@ -117,11 +173,13 @@ research_status=0
     -e LOG_FILE="$RESEARCH_LOG_FILE" \
     "$REFRESH_SERVICE" \
     research:doge-baseline-regime \
-    --frame "$DOGE_BASELINE_REGIME_FRAME" \
-    --count "$DOGE_BASELINE_REGIME_COUNT" \
-    --train-count "$DOGE_BASELINE_REGIME_TRAIN_COUNT" \
-    --replay "$DOGE_BASELINE_REGIME_REPLAY_COUNT" \
-    --latency-ms "$DOGE_BASELINE_REGIME_LATENCY_MS" \
+    --balance "$DOGE_BASELINE_BALANCE" \
+    --trade-value "$DOGE_BASELINE_TRADE_VALUE" \
+    --frame "$DOGE_BASELINE_REFRESH_FRAME" \
+    --count "$DOGE_BASELINE_REFRESH_COUNT" \
+    --train-count "$DOGE_BASELINE_REFRESH_TRAIN_COUNT" \
+    --replay "$DOGE_BASELINE_REFRESH_REPLAY_COUNT" \
+    --latency-ms "$DOGE_BASELINE_REFRESH_LATENCY_MS" \
     --apply || research_status=$?
 
 if (( research_status != 0 )); then

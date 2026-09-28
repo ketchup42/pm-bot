@@ -250,12 +250,16 @@ incomparable evaluation resets it. Evaluations are comparable only when replay f
 initial balance and execution latency match.
 
 `research:doge-baseline-regime` evaluates 18 regime profiles with a chronological
-walk-forward simulation. It accepts the same `--frame`, `--count`, `--train-count`
-and `--replay` arguments as refresh. Without `--apply` it writes `summary.md` and
+walk-forward simulation. It accepts `--frame`, `--count`, `--train-count`, `--replay`,
+`--balance` and `--trade-value`. Without `--apply` it writes `summary.md` and
 `result.json` under `history/reports/doge-baseline-regime/latest`. With `--apply` it
 requires 24 future windows and atomically updates only the `regime` block of the
 published config. The report mode requires 12 future windows, so `500/100/25` needs
 at least 900 eligible frames.
+
+`refresh:doge-baseline` uses the same required `--balance` and `--trade-value`
+arguments. A change to either value makes the next refresh PnL point incomparable
+with the previous point, so it cannot incorrectly confirm a recovery or decline.
 
 ## Before changing live behaviour
 

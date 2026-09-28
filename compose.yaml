@@ -73,6 +73,10 @@ services:
       LOG_FILE: /app/logs/refresh-doge-baseline.log
     command:
       - refresh:doge-baseline
+      - --balance
+      - "${DOGE_BASELINE_BALANCE:?DOGE_BASELINE_BALANCE must be set in compose.env}"
+      - --trade-value
+      - "${DOGE_BASELINE_TRADE_VALUE:?DOGE_BASELINE_TRADE_VALUE must be set in compose.env}"
       - --frame
       - "${DOGE_BASELINE_REFRESH_FRAME:?DOGE_BASELINE_REFRESH_FRAME must be set in compose.env}"
       - --count

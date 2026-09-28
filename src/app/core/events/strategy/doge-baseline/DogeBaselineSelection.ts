@@ -25,20 +25,21 @@ export function selectDogeBaselineRefreshArtifacts(
     replay: readonly HistoryFrameV3[],
     working: Readonly<DogeBaselineRefreshArtifacts> | undefined,
     executionConfig: Readonly<ReplayExecutionConfig>,
+    tradeValue: number,
 ): DogeBaselineRefreshSelection {
     const candidate = buildDogeBaselineModel(trainingObservations);
     if (working === undefined) {
         const selected = researchDogeBaselineConfigMatrix(
-            trainingFrames, candidate, executionConfig, createDogeBaselineStrategyConfig(candidate),
+            trainingFrames, candidate, executionConfig, createDogeBaselineStrategyConfig(candidate), tradeValue,
         ).selected.config;
         return { candidate, selected: { model: candidate, config: selected }, evaluation: undefined };
     }
     const workingMatrix = researchDogeBaselineConfigMatrix(
-        trainingFrames, working.model, executionConfig, working.config,
+        trainingFrames, working.model, executionConfig, working.config, tradeValue,
     );
     const candidateCurrent = rebindDogeBaselineStrategyConfig(candidate, working.config);
     const candidateMatrix = researchDogeBaselineConfigMatrix(
-        trainingFrames, candidate, executionConfig, candidateCurrent,
+        trainingFrames, candidate, executionConfig, candidateCurrent, tradeValue,
     );
     const evaluation = evaluateDogeBaselineModelConfigurations(
         trainingObservations.length,
@@ -50,6 +51,7 @@ export function selectDogeBaselineRefreshArtifacts(
         candidateCurrent,
         candidateMatrix.selected.config,
         executionConfig,
+        tradeValue,
     );
     return {
         candidate,

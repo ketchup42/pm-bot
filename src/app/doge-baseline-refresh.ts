@@ -1,11 +1,10 @@
 import { logger } from '../log.js';
 import { getFrameDurationMs, isEventFrame, waitFrameStartMsUntil } from '../market/frame.js';
 import { delay, error_str, killSignalsHook } from '../utils.js';
-import { readArgument, readPositiveIntegerArgument, readReplayExecutionConfig } from './cli_args.js';
+import { readArgument, readPositiveIntegerArgument, readReplayExecutionConfig, readRequiredTradeArguments } from './cli_args.js';
 import { DEFAULT_HISTORY_DIRECTORY } from './defaults.js';
 import {
     DOGE_BASELINE_CANDIDATE_MODEL_FILE,
-    DOGE_BASELINE_DEFAULT_BALANCE,
     DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
     getDogeBaselineEntrySummary,
 } from './core/events/strategy/doge-baseline/DogeBaselineConfig.js';
@@ -92,7 +91,7 @@ function isDogeBaselineTradingRegimeComparable(
 
 export function getDogeBaselineTradingRegimeDecision(
     currentTradingEnabled: boolean,
-    evaluation: Pick<DogeBaselineConfigurationEvaluation, 'combinations' | 'replayFrames' | 'replayConfig' | 'selected'>,
+    evaluation: Pick<DogeBaselineConfigurationEvaluation, 'combinations' | 'replayFrames' | 'replayConfig' | 'tradeValue' | 'selected'>,
     previous: Readonly<{ point: DogeBaselineEvaluationTradingPoint; state: DogeBaselineEvaluationTradingState }> | undefined,
     settings: Readonly<DogeBaselineRegimeSettings>,
 ): DogeBaselineTradingRegimeDecision {
@@ -163,11 +162,9 @@ async function refreshModel(
     trainFrames: number,
     replayFrames: number,
     shouldStop: () => boolean,
+    executionConfig: ReturnType<typeof readReplayExecutionConfig>,
+    tradeValue: number,
 ): Promise<string> {
-    const executionConfig = readReplayExecutionConfig(
-        DOGE_BASELINE_DEFAULT_BALANCE,
-        DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS,
-    );
     const { trainingObservations, trainingFrames, replay } = await readDogeBaselineTrainReplaySplit(
         history, { trainingCount: trainFrames, replayCount: replayFrames }, shouldStop,
     );
@@ -184,6 +181,7 @@ async function refreshModel(
         replay,
         workingModel === undefined || workingConfig === undefined ? undefined : { model: workingModel, config: workingConfig },
         executionConfig,
+        tradeValue,
     );
     const { candidate, evaluation } = selection;
     await writeDogeBaselineModel(candidate, getDogeBaselineArtifactPath(DOGE_BASELINE_CANDIDATE_MODEL_FILE));
@@ -232,6 +230,8 @@ export async function runDogeBaselineRefresh(): Promise<void> {
     const refreshFrames = readPositiveIntegerArgument('count');
     const trainFrames = readPositiveIntegerArgument('train-count');
     const replayFrames = readPositiveIntegerArgument('replay');
+    const trade = readRequiredTradeArguments();
+    const executionConfig = readReplayExecutionConfig(trade.balance, DOGE_BASELINE_DEFAULT_REPLAY_LATENCY_MS);
     const history = readArgument('history') ?? DEFAULT_HISTORY_DIRECTORY;
     const lock = await DogeBaselineRefreshLock.acquire();
     logger.info('[DogeBaselineRefresh] Refresh lock acquired');
@@ -256,7 +256,9 @@ export async function runDogeBaselineRefresh(): Promise<void> {
                 }
             }
             try {
-                logger.info(`[DogeBaselineRefresh] ${await refreshModel(history, trainFrames, replayFrames, () => stopped)}`);
+                logger.info(`[DogeBaselineRefresh] ${await refreshModel(
+                    history, trainFrames, replayFrames, () => stopped, executionConfig, trade.tradeValue,
+                )}`);
             } catch (error) {
                 if (stopped) break;
                 logger.error(`[DogeBaselineRefresh] Refresh failed, working artifacts retained: ${error_str(error)}`);

@@ -3,6 +3,7 @@ import { DogeBaselineReplayStrategy } from '../../../backtest/strategy/DogeBasel
 import { HistoryFrameV3 } from '../../../history/history_frame.js';
 import {
     DOGE_BASELINE_CONFIG_FINALIST_COUNT,
+    DOGE_BASELINE_DEFAULT_TRADE_VALUE,
     DOGE_BASELINE_EMERGENCY_EXIT_DEVIATION_FACTORS,
     DOGE_BASELINE_EMERGENCY_EXIT_WINDOWS_MS,
     DOGE_BASELINE_LOCAL_CONFIDENCE_DELTA,
@@ -62,13 +63,14 @@ function replayConfigRow(
     model: Readonly<DogeBaselineModel>,
     executionConfig: ReplayExecutionConfig,
     config: DogeBaselineStrategyConfig,
+    tradeValue: number,
 ): DogeBaselineConfigMatrixRow {
     return {
         id: getConfigId(config),
         config,
         metrics: runReplay(
             frames,
-            new DogeBaselineReplayStrategy(model, toDogeBaselineRuntimeConfig(config)),
+            new DogeBaselineReplayStrategy(model, { ...toDogeBaselineRuntimeConfig(config), tradeValue }),
             executionConfig,
         ).metrics,
     };
@@ -193,26 +195,27 @@ function createEntryRows(
     executionConfig: ReplayExecutionConfig,
     baseline: Readonly<DogeBaselineStrategyConfig>,
     baselineRow: Readonly<DogeBaselineConfigMatrixRow>,
+    tradeValue: number,
 ): DogeBaselineConfigMatrixRow[] {
     const frameCount = frames.length;
     const coarseEarlyRows = createModeEntryConfigs(model, baseline, 'early-60')
-        .map(config => replayConfigRow(frames, model, executionConfig, config));
+        .map(config => replayConfigRow(frames, model, executionConfig, config, tradeValue));
     const coarseLateRows = createModeEntryConfigs(model, baseline, 'late-120')
-        .map(config => replayConfigRow(frames, model, executionConfig, config));
+        .map(config => replayConfigRow(frames, model, executionConfig, config, tradeValue));
     const coarseEarlyWinner = getTuningFinalists(coarseEarlyRows, baselineRow, frameCount)[0];
     const coarseLateWinner = getTuningFinalists(coarseLateRows, baselineRow, frameCount)[0];
     const localEarlyRows = coarseEarlyWinner === undefined ? [] : createLocalEntryConfigs(
         model, baseline, coarseEarlyWinner, 'early-60',
-    ).map(config => replayConfigRow(frames, model, executionConfig, config));
+    ).map(config => replayConfigRow(frames, model, executionConfig, config, tradeValue));
     const localLateRows = coarseLateWinner === undefined ? [] : createLocalEntryConfigs(
         model, baseline, coarseLateWinner, 'late-120',
-    ).map(config => replayConfigRow(frames, model, executionConfig, config));
+    ).map(config => replayConfigRow(frames, model, executionConfig, config, tradeValue));
     const earlyRows = [...coarseEarlyRows, ...localEarlyRows];
     const lateRows = [...coarseLateRows, ...localLateRows];
     const earlyFinalists = getTuningFinalists(earlyRows, baselineRow, frameCount);
     const lateFinalists = getTuningFinalists(lateRows, baselineRow, frameCount);
     const combinedRows = earlyFinalists.flatMap(early => lateFinalists.map(late =>
-        replayConfigRow(frames, model, executionConfig, createCombinedEntryConfig(model, baseline, early, late)),
+        replayConfigRow(frames, model, executionConfig, createCombinedEntryConfig(model, baseline, early, late), tradeValue),
     ));
     return [...earlyRows, ...lateRows, ...combinedRows];
 }
@@ -246,6 +249,7 @@ export function researchDogeBaselineConfigMatrix(
     model: Readonly<DogeBaselineModel>,
     executionConfig: ReplayExecutionConfig,
     baselineConfig: Readonly<DogeBaselineStrategyConfig>,
+    tradeValue: number = DOGE_BASELINE_DEFAULT_TRADE_VALUE,
 ): DogeBaselineConfigMatrix {
     if (frames.length === 0) throw new Error('doge_baseline_empty_config_research_set');
     const baseline = replayConfigRow(frames, model, executionConfig, createDogeBaselineStrategyConfig(model, {
@@ -253,11 +257,11 @@ export function researchDogeBaselineConfigMatrix(
         regime: baselineConfig.regime,
         entry: baselineConfig.entry,
         exit: baselineConfig.exit,
-    }));
-    const entryRows = createEntryRows(frames, model, executionConfig, baselineConfig, baseline);
+    }), tradeValue);
+    const entryRows = createEntryRows(frames, model, executionConfig, baselineConfig, baseline, tradeValue);
     const finalists = getTuningFinalists(entryRows, baseline, frames.length);
     const exitRows = finalists.flatMap(finalist => createExitConfigs(model, finalist)
-        .map(config => replayConfigRow(frames, model, executionConfig, config)));
+        .map(config => replayConfigRow(frames, model, executionConfig, config, tradeValue)));
     const rows = [...entryRows, ...exitRows];
     const selected = [...rows.filter(row => isEligibleForTuning(row, baseline, frames.length)), baseline]
         .sort(compareRows)[0]!;

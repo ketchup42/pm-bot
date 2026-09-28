@@ -58,6 +58,7 @@ function createEvaluation(selectedNetPnl, netPnls = [selectedNetPnl, 1, 2, 3], r
     return {
         replayFrames,
         replayConfig: { initial_balance: 100, latency_ms: 250 },
+        tradeValue: 10,
         selected: { replayMetrics: { net_pnl: selectedNetPnl } },
         combinations: netPnls.map(net_pnl => ({ replayMetrics: { net_pnl } })),
     };
@@ -65,8 +66,8 @@ function createEvaluation(selectedNetPnl, netPnls = [selectedNetPnl, 1, 2, 3], r
 
 const regime = { minimumNetPnlPerReplayFrame: 0.5, trendStepPerReplayFrame: 0.1, minimumConsecutiveRises: 2 };
 
-function createPrevious(netPnl, replayFrames = 100, initialBalance = 100, latencyMs = 250) {
-    return { point: { replayFrames, initialBalance, latencyMs, netPnl }, state: { consecutiveRises: 0, regime } };
+function createPrevious(netPnl, replayFrames = 100, initialBalance = 100, latencyMs = 250, tradeValue = 10) {
+    return { point: { replayFrames, initialBalance, latencyMs, tradeValue, netPnl }, state: { consecutiveRises: 0, regime } };
 }
 
 test('refresh enables trading only after two significant selected-PnL rises', () => {
@@ -74,13 +75,29 @@ test('refresh enables trading only after two significant selected-PnL rises', ()
     assert.equal(first.tradingEnabled, false);
     assert.equal(first.reason, 'selected_net_pnl_recovery_pending');
     const decision = getDogeBaselineTradingRegimeDecision(false, createEvaluation(74), {
-        point: { replayFrames: 100, initialBalance: 100, latencyMs: 250, netPnl: 60 },
+        point: { replayFrames: 100, initialBalance: 100, latencyMs: 250, tradeValue: 10, netPnl: 60 },
         state: { consecutiveRises: first.consecutiveRises, regime },
     }, regime);
     assert.equal(decision.tradingEnabled, true);
     assert.equal(decision.reason, 'selected_net_pnl_recovery_confirmed');
     assert.equal(decision.minimumNetPnl, 50);
     assert.equal(decision.trendStep, 10);
+});
+
+test('refresh treats a changed trade value as an incomparable PnL point', () => {
+    const current = createEvaluation(74);
+    current.tradeValue = 20;
+    const decision = getDogeBaselineTradingRegimeDecision(false, current, createPrevious(60), regime);
+    assert.equal(decision.tradingEnabled, false);
+    assert.equal(decision.reason, 'no_comparable_previous_evaluation');
+});
+
+test('refresh treats a legacy evaluation without trade value as incomparable', () => {
+    const legacy = createEvaluation(74);
+    delete legacy.tradeValue;
+    const decision = getDogeBaselineTradingRegimeDecision(false, legacy, createPrevious(60), regime);
+    assert.equal(decision.tradingEnabled, false);
+    assert.equal(decision.reason, 'no_comparable_previous_evaluation');
 });
 
 test('refresh pauses trading after a significant selected-PnL fall', () => {
