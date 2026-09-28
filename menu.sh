@@ -140,7 +140,7 @@ render_value() {
     render_line "$color" "$(printf '%-18s %s' "$label" "$value")"
 }
 
-setup_status_width() {
+setup_detail_width() {
     local columns available status_width=96
     columns="$(tput cols 2>/dev/null || true)"
     if [[ "$columns" =~ ^[1-9][0-9]*$ ]]; then
@@ -195,9 +195,12 @@ render_status_value() {
     local label="$1" value="$2" color="$3" line
     local -a lines
     local text_width=$((menu_inner_width - 2))
-    local value_width=$((text_width - 19))
-    local label_prefix
-    label_prefix="$(printf '%-18s ' "$label")"
+    local label_width=${#label}
+    ((label_width < 18)) && label_width=18
+    local value_width=$((text_width - label_width - 1))
+    local label_prefix continuation_prefix
+    label_prefix="$(printf '%-*s ' "$label_width" "$label")"
+    continuation_prefix="$(printf '%*s' "$((label_width + 1))" '')"
 
     if ((value_width < 1)); then
         render_status_line "$color" "$label"
@@ -211,7 +214,7 @@ render_status_value() {
     mapfile -t lines < <(status_wrap_text "$value" "$value_width")
     render_line "$color" "${label_prefix}${lines[0]}"
     for ((line = 1; line < ${#lines[@]}; line += 1)); do
-        render_line "$color" "$(printf '%19s%s' '' "${lines[line]}")"
+        render_line "$color" "${continuation_prefix}${lines[line]}"
     done
 }
 
@@ -234,7 +237,7 @@ menu_action_failure_reason() {
     elif grep -Eqi 'must be set in compose\.env|compose file.*invalid|invalid compose' "$output"; then
         printf 'Compose settings are missing or invalid. Open DOGE Settings, Service settings.'
     elif grep -Eqi 'no such image|image.*not found|pull access denied' "$output"; then
-        printf 'The Docker image is unavailable. Use Settings, Update image.'
+        printf 'The Docker image is unavailable. Use System, Update image.'
     elif grep -Eqi 'failed to connect to bus|failed to connect to user scope' "$output"; then
         printf 'User systemd is unavailable. Log in with a user session and try again.'
     elif grep -Eqi 'research is active' "$output"; then
@@ -442,6 +445,7 @@ edit_doge_service_settings() {
 
 environment_value() {
     local file="$1" name="$2"
+    [[ -f "$file" ]] || return
     awk -F= -v name="$name" '$1 == name { print substr($0, length(name) + 2); exit }' "$file"
 }
 
@@ -485,6 +489,14 @@ run_account_status() {
     run_console_command status:account --text
 }
 
+run_connection_status() {
+    run_console_command status:connection --json
+}
+
+run_trading_config_validation() {
+    run_console_command validate:trading-config --json
+}
+
 status_value() {
     local key="$1" json="$2"
     awk -F: -v key="$key" 'index($0, "\"" key "\"") { value=$2; gsub(/[, "]/, "", value); print value; exit }' <<< "$json"
@@ -495,6 +507,16 @@ status_text_value() {
     awk -F: -v key="$key" 'index($0, "\"" key "\"") {
         value=$0; sub(/^[^:]*:[[:space:]]*"?/, "", value); sub(/"?,?[[:space:]]*$/, "", value); print value; exit
     }' <<< "$json"
+}
+
+nested_status_value() {
+    local section="$1" key="$2" json="$3"
+    awk -F: -v section="$section" -v key="$key" '
+        index($0, "\"" section "\"") { inside = 1; next }
+        inside && index($0, "\"" key "\"") {
+            value = $2; gsub(/[, "]/, "", value); print value; exit
+        }
+    ' <<< "$json"
 }
 
 or_not_available() {
@@ -538,7 +560,8 @@ wireguard_handshake_status() {
     printf '%ss ago' "$((now - handshake))"
 }
 
-preflight_clean_start() {
+preflight_doge_contour() {
+    local action="$1" validation=''
     local -a missing=()
     [[ -f "$APPLICATION_ENV_FILE" ]] || missing+=("$APPLICATION_ENV_FILE")
     [[ -f "$COMPOSE_ENV_FILE" ]] || missing+=("$COMPOSE_ENV_FILE")
@@ -548,13 +571,22 @@ preflight_clean_start() {
         missing+=('WireGuard wg0.conf')
     fi
     if ((${#missing[@]} > 0)); then
-        show_message "Start blocked. Missing: ${missing[*]}"
+        show_message "$action blocked. Missing: ${missing[*]}"
         return 1
     fi
     if ! "${compose[@]}" config -q; then
-        show_message 'Start blocked. Compose configuration is invalid.'
+        show_message "$action blocked. Compose configuration is invalid."
         return 1
     fi
+    if ! validation="$(run_trading_config_validation)"; then
+        show_message "$action blocked. Trading configuration could not be validated. Check Docker access and System settings."
+        return 1
+    fi
+    if [[ "$(status_value valid "$validation")" != true ]]; then
+        show_message "$action blocked. Replace API credential placeholders in System settings."
+        return 1
+    fi
+    return 0
 }
 
 start_doge_contour() {
@@ -606,6 +638,157 @@ restart_service() {
     "${compose[@]}" up -d --no-deps --force-recreate "$service"
 }
 
+refresh_now() {
+    printf '\nType REFRESH to start an immediate DOGE refresh: '
+    local confirmation=''
+    read -r confirmation
+    if [[ "$confirmation" != 'REFRESH' ]]; then
+        show_message 'Immediate refresh cancelled.'
+        return
+    fi
+    run_menu_action 'Immediate refresh' restart_service "$REFRESH_SERVICE"
+}
+
+service_status_rows() {
+    [[ -f "$COMPOSE_ENV_FILE" ]] || return
+    "${compose[@]}" ps --format '{{.Service}}|{{.Status}}' 2>/dev/null || true
+}
+
+history_file_count() {
+    local directory="$1" count
+    [[ -d "$directory" ]] || {
+        printf '0'
+        return
+    }
+    if ! count="$(find "$directory" -maxdepth 1 -type f -name '*.json*' -print 2>/dev/null | wc -l | tr -d ' ')"; then
+        return
+    fi
+    printf '%s' "$count"
+}
+
+show_health_check() {
+    local status_json='' docker_status='not available' compose_status='not available' trading='not available' trading_display
+    local latest_frame last_refresh
+    docker info >/dev/null 2>&1 && docker_status='ready'
+    if [[ -f "$COMPOSE_ENV_FILE" ]] && "${compose[@]}" config -q >/dev/null 2>&1; then
+        compose_status='valid'
+    fi
+    render_top
+    render_section 'DOGE HEALTH CHECK'
+    render_value 'DOCKER' "$docker_status" "$color_gray"
+    render_value 'COMPOSE' "$compose_status" "$color_gray"
+    if [[ -f "$COMPOSE_ENV_FILE" ]]; then
+        status_json="$(run_doge_status || true)"
+    fi
+    trading="$(status_value tradingEnabled "$status_json" || true)"
+    case "$trading" in
+        true) trading_display='enabled' ;;
+        false) trading_display='paused' ;;
+        *) trading_display='not available' ;;
+    esac
+    latest_frame="$(format_epoch_seconds "$(status_value latestFrameStart "$status_json")")"
+    last_refresh="$(format_epoch_ms "$(status_value lastSuccessfulRefreshAt "$status_json")")"
+    render_value 'TRADING' "$trading_display" "$color_gray"
+    render_value 'LAST FRAME' "$latest_frame" "$color_gray"
+    render_value 'LAST REFRESH' "$last_refresh" "$color_gray"
+    render_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
+    render_rule
+    render_line "$color_cyan" 'SERVICES'
+    local -a rows=()
+    mapfile -t rows < <(service_status_rows)
+    if ((${#rows[@]} == 0)); then
+        render_line "$color_yellow" 'not available'
+    else
+        local row service status
+        local found=false
+        for row in "${rows[@]}"; do
+            IFS='|' read -r service status <<< "$row"
+            [[ "$service" == "$CONSOLE_SERVICE" || -z "$service" ]] && continue
+            render_value "$service" "$status" "$color_gray"
+            found=true
+        done
+        [[ "$found" == true ]] || render_line "$color_yellow" 'not available'
+    fi
+    render_rule
+    render_line "$color_gray" 'Press Enter to continue'
+    render_bottom
+    pause
+}
+
+show_history() {
+    local status_json='' complete_frames diagnostic_frames eligible_frames first_frame latest_frame
+    local history_frames_directory history_directory diagnostic_directory
+    render_top
+    render_section 'DOGE HISTORY'
+    render_line "$color_gray" 'Loading cached history status...'
+    render_bottom
+    if [[ -f "$COMPOSE_ENV_FILE" ]]; then
+        status_json="$(run_doge_status || true)"
+    fi
+    complete_frames="$(status_value completeFrames "$status_json" || true)"
+    eligible_frames="$(status_value eligibleFrames "$status_json" || true)"
+    first_frame="$(format_epoch_seconds "$(status_value firstFrameStart "$status_json")")"
+    latest_frame="$(format_epoch_seconds "$(status_value latestFrameStart "$status_json")")"
+    history_frames_directory="$RUNTIME_DIRECTORY/$(environment_value "$APPLICATION_ENV_FILE" HISTORY_DIR || true)"
+    [[ "$history_frames_directory" == "$RUNTIME_DIRECTORY/" ]] && history_frames_directory="$RUNTIME_DIRECTORY/history/frames"
+    history_directory="$(dirname "$history_frames_directory")"
+    diagnostic_directory="$history_directory/diagnostics"
+    diagnostic_frames="$(history_file_count "$diagnostic_directory")"
+    render_top
+    render_section 'DOGE HISTORY'
+    render_value 'COMPLETE FRAMES' "$(or_not_available "$complete_frames")" "$color_gray"
+    render_value 'ELIGIBLE FRAMES' "$(or_not_available "$eligible_frames")" "$color_gray"
+    render_value 'DIAGNOSTIC' "$(or_not_available "$diagnostic_frames")" "$color_gray"
+    render_value 'FIRST ELIGIBLE' "$first_frame" "$color_gray"
+    render_value 'LAST ELIGIBLE' "$latest_frame" "$color_gray"
+    render_value 'FRAMES SIZE' "$(or_not_available "$(du -sh "$history_frames_directory" 2>/dev/null | awk '{ print $1 }')")" "$color_gray"
+    render_value 'DIAGNOSTICS SIZE' "$(or_not_available "$(du -sh "$diagnostic_directory" 2>/dev/null | awk '{ print $1 }')")" "$color_gray"
+    render_value 'COMPLETE LIMIT' "$(or_not_available "$(environment_value "$COMPOSE_ENV_FILE" DOGE_BASELINE_COLLECT_COUNT || true)")" "$color_gray"
+    render_value 'DIAGNOSTIC LIMIT' "$(or_not_available "$(environment_value "$APPLICATION_ENV_FILE" HISTORY_DIAGNOSTIC_FRAMES || true)")" "$color_gray"
+    render_rule
+    render_line "$color_gray" 'Press Enter to continue'
+    render_bottom
+    pause
+}
+
+show_resource_usage() {
+    local original_menu_inner_width="$menu_inner_width"
+    setup_detail_width
+    render_top
+    render_section 'DOGE RESOURCE USAGE'
+    local service container_id usage found=false
+    for service in "${DOGE_SERVICES[@]}" "$WIREGUARD_SERVICE"; do
+        [[ "$service" == "$WIREGUARD_SERVICE" && ! -f "$WIREGUARD_OVERRIDE" ]] && continue
+        service_is_running "$service" || continue
+        container_id="$("${compose[@]}" ps -q "$service" 2>/dev/null || true)"
+        usage="$(docker stats --no-stream --format '{{.CPUPerc}} | {{.MemUsage}} | {{.BlockIO}}' "$container_id" 2>/dev/null || true)"
+        render_status_value "$service" "$(or_not_available "$usage")" "$color_gray"
+        found=true
+    done
+    if [[ "$found" == false ]]; then
+        render_status_line "$color_yellow" 'No active DOGE services.'
+    fi
+    render_rule
+    render_status_line "$color_gray" 'CPU | memory / limit | block I/O'
+    render_status_line "$color_gray" 'Press Enter to continue'
+    render_bottom
+    pause
+    menu_inner_width="$original_menu_inner_width"
+}
+
+show_doge_monitor() {
+    while true; do
+        choose_menu 'DOGE Monitor' 'Health check' 'History' 'Refresh now' 'Resource usage' 'Back'
+        case "$menu_choice" in
+            0) show_health_check ;;
+            1) show_history ;;
+            2) refresh_now ;;
+            3) show_resource_usage ;;
+            4) return ;;
+        esac
+    done
+}
+
 show_account() {
     local account_text='' line
     render_top
@@ -634,7 +817,7 @@ show_account() {
 show_status() {
     local strategy_mode='not available'
     local original_menu_inner_width="$menu_inner_width"
-    setup_status_width
+    setup_detail_width
     if [[ -f "$COMPOSE_ENV_FILE" ]]; then
         strategy_mode="$(environment_value "$COMPOSE_ENV_FILE" DOGE_BASELINE_STRATEGY_MODE || true)"
     fi
@@ -716,19 +899,133 @@ show_status() {
     menu_inner_width="$original_menu_inner_width"
 }
 
-global_settings_menu() {
+show_connection() {
+    local status_json='' external_ipv4 polymarket_dns route
+    local original_menu_inner_width="$menu_inner_width"
+    setup_detail_width
+    render_top
+    render_section 'CONNECTION'
+    render_line "$color_gray" 'Checking external IPv4 and DNS...'
+    render_bottom
+    if [[ -f "$COMPOSE_ENV_FILE" && -f "$APPLICATION_ENV_FILE" ]]; then
+        status_json="$(run_connection_status || true)"
+    fi
+    external_ipv4="$(nested_status_value externalIpv4 value "$status_json" || true)"
+    polymarket_dns="$(nested_status_value polymarketDns value "$status_json" || true)"
+    route='not enabled'
+    if [[ -f "$WIREGUARD_OVERRIDE" ]]; then
+        route="$("${compose[@]}" exec -T "$WIREGUARD_SERVICE" sh -c 'ip route get 1.1.1.1 2>/dev/null | head -n 1' 2>/dev/null || true)"
+        route="$(or_not_available "$route")"
+    fi
+    render_top
+    render_section 'CONNECTION'
+    render_status_value 'EXTERNAL IPV4' "$(or_not_available "$external_ipv4")" "$color_gray"
+    render_status_value 'POLYMARKET DNS' "$(or_not_available "$polymarket_dns")" "$color_gray"
+    render_status_value 'VPN ROUTE' "$route" "$color_gray"
+    render_status_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
+    render_rule
+    render_status_line "$color_gray" 'Press Enter to continue'
+    render_bottom
+    pause
+    menu_inner_width="$original_menu_inner_width"
+}
+
+stopped_compose_containers() {
+    [[ -f "$COMPOSE_ENV_FILE" ]] || return
+    local container_id service running
+    while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        service="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id" 2>/dev/null || true)"
+        running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
+        [[ "$running" == false && -n "$service" ]] && printf '%s\n' "$service"
+    done < <("${compose[@]}" ps -aq 2>/dev/null || true)
+}
+
+show_stopped_containers() {
+    local original_menu_inner_width="$menu_inner_width"
+    local -a services=()
+    mapfile -t services < <(stopped_compose_containers)
+    setup_detail_width
+    render_top
+    render_section 'STOPPED CONTAINERS'
+    if ((${#services[@]} == 0)); then
+        render_status_line "$color_gray" 'No stopped containers in this project.'
+    else
+        local service
+        for service in "${services[@]}"; do
+            render_status_line "$color_gray" "$service"
+        done
+    fi
+    render_rule
+    render_status_line "$color_gray" 'Press Enter to continue'
+    render_bottom
+    pause
+    menu_inner_width="$original_menu_inner_width"
+}
+
+show_image_usage() {
+    local original_menu_inner_width="$menu_inner_width"
+    local image details
+    setup_detail_width
+    render_top
+    render_section 'IMAGE USAGE'
+    for image in "$CONSOLE_IMAGE" 'lscr.io/linuxserver/wireguard:latest'; do
+        details="$(docker image inspect --format '{{.Size}} bytes | {{.Id}}' "$image" 2>/dev/null || true)"
+        render_status_value "$image" "$(or_not_available "$details")" "$color_gray"
+    done
+    render_rule
+    render_status_line "$color_gray" 'Press Enter to continue'
+    render_bottom
+    pause
+    menu_inner_width="$original_menu_inner_width"
+}
+
+remove_stopped_containers() {
+    local -a services=()
+    mapfile -t services < <(stopped_compose_containers)
+    if ((${#services[@]} == 0)); then
+        show_message 'No stopped containers are available to remove.'
+        return
+    fi
+    printf '\nStopped containers: %s\n' "${services[*]}"
+    printf 'Type REMOVE to delete only these stopped project containers: '
+    local confirmation=''
+    read -r confirmation
+    if [[ "$confirmation" != 'REMOVE' ]]; then
+        show_message 'Stopped-container removal cancelled.'
+        return
+    fi
+    run_menu_action 'Stopped-container removal' "${compose[@]}" rm -f
+}
+
+docker_menu() {
     while true; do
-        choose_menu 'Settings' 'Update image' 'System settings' 'Back'
+        choose_menu 'Docker tools' 'Show stopped containers' 'Show image usage' 'Remove stopped containers' 'Back'
         case "$menu_choice" in
-            0)
-                run_menu_action 'Image update' bash "$INSTALL_SCRIPT" --update-image --no-menu
-                ;;
-            1)
+            0) show_stopped_containers ;;
+            1) show_image_usage ;;
+            2) remove_stopped_containers ;;
+            3) return ;;
+        esac
+    done
+}
+
+system_menu() {
+    while true; do
+        choose_menu 'System' 'Connection' 'VPN' 'System settings' 'Docker tools' 'Update image' 'Back'
+        case "$menu_choice" in
+            0) show_connection ;;
+            1) vpn_menu ;;
+            2)
                 if ensure_application_settings; then
                     open_editor "$APPLICATION_ENV_FILE" || true
                 fi
                 ;;
-            2)
+            3) docker_menu ;;
+            4)
+                run_menu_action 'Image update' bash "$INSTALL_SCRIPT" --update-image --no-menu
+                ;;
+            5)
                 return
                 ;;
         esac
@@ -980,8 +1277,12 @@ view_service_logs() {
 }
 
 service_menu() {
-    local -a services
-    mapfile -t services < <("${compose[@]}" config --services)
+    local -a services=() configured_services=()
+    mapfile -t configured_services < <("${compose[@]}" config --services)
+    local service
+    for service in "${configured_services[@]}"; do
+        [[ "$service" == "$CONSOLE_SERVICE" ]] || services+=("$service")
+    done
     ((${#services[@]} > 0)) || { show_message 'No Compose services are available.'; return; }
     services+=('Back')
     while true; do
@@ -990,13 +1291,21 @@ service_menu() {
         if ((selected == ${#services[@]} - 1)); then
             return
         fi
-        local service="${services[selected]}"
+        service="${services[selected]}"
         while true; do
         choose_menu "Service: $service" 'Start' 'Stop' 'Restart' 'View logs' 'Back'
             case "$menu_choice" in
-                0) run_menu_action "Start $service" "${compose[@]}" up -d "$service" ;;
+                0)
+                    if [[ "$service" != "$STRATEGY_SERVICE" ]] || preflight_doge_contour "Start $service"; then
+                        run_menu_action "Start $service" "${compose[@]}" up -d "$service"
+                    fi
+                    ;;
                 1) run_menu_action "Stop $service" "${compose[@]}" stop "$service" ;;
-                2) run_menu_action "Restart $service" restart_service "$service" ;;
+                2)
+                    if [[ "$service" != "$STRATEGY_SERVICE" ]] || preflight_doge_contour "Restart $service"; then
+                        run_menu_action "Restart $service" restart_service "$service"
+                    fi
+                    ;;
                 3) view_service_logs "$service" ;;
                 4) break ;;
             esac
@@ -1006,13 +1315,13 @@ service_menu() {
 
 doge_baseline_menu() {
     while true; do
-        choose_menu 'DOGE Baseline' 'Status' 'Start' 'Stop' 'Restart' 'VPN' 'Settings' 'Services' 'Back'
+        choose_menu 'DOGE Baseline' 'Status' 'Start' 'Stop' 'Restart' 'Monitor' 'Settings' 'Services' 'Back'
         case "$menu_choice" in
             0) show_status ;;
-            1) if preflight_clean_start; then run_menu_action 'Start' start_doge_contour; fi ;;
+            1) if preflight_doge_contour 'Start'; then run_menu_action 'Start' start_doge_contour; fi ;;
             2) run_menu_action 'Stop' stop_doge_contour ;;
-            3) run_menu_action 'Restart' restart_doge_contour ;;
-            4) vpn_menu ;;
+            3) if preflight_doge_contour 'Restart'; then run_menu_action 'Restart' restart_doge_contour; fi ;;
+            4) show_doge_monitor ;;
             5) doge_settings_menu ;;
             6) service_menu ;;
             7) return ;;
@@ -1025,11 +1334,11 @@ if [[ -f "$COMPOSE_ENV_FILE" && -f "$APPLICATION_ENV_FILE" ]]; then
 fi
 
 while true; do
-    choose_menu 'PM Bot' 'Account' 'DOGE Baseline' 'Settings' 'Exit'
+    choose_menu 'PM Bot' 'Account' 'DOGE Baseline' 'System' 'Exit'
     case "$menu_choice" in
         0) show_account ;;
         1) doge_baseline_menu ;;
-        2) global_settings_menu ;;
+        2) system_menu ;;
         3) exit 0 ;;
     esac
 done

@@ -29,6 +29,16 @@ interface TradingEnvConfig {
     funderAddress: string;
 }
 
+type TradingEnvironment = Readonly<Record<string, string | undefined>>;
+
+const REQUIRED_TRADING_ENVIRONMENT_VARIABLES = [
+    'PRIVATE_KEY',
+    'API_KEY',
+    'API_SECRET',
+    'API_PASSPHRASE',
+    'FUNDER_ADDRESS',
+] as const;
+
 /** Safe account identity for read-only status views. It never includes credentials. */
 export interface TradingAccountIdentity {
     funderAddress: string;
@@ -66,12 +76,12 @@ function isValidEthereumAddress(address: string): boolean {
  * @returns Validated trading configuration object.
  * @throws Error if any required variable is missing or invalid.
  */
-function getTradingEnvConfig(): TradingEnvConfig {
-    const rawPrivateKey = process.env.PRIVATE_KEY;
-    const apiKey = process.env.API_KEY;
-    const apiSecret = process.env.API_SECRET;
-    const apiPassphrase = process.env.API_PASSPHRASE;
-    const rawFunderAddress = process.env.FUNDER_ADDRESS;
+function getTradingEnvConfig(environment: TradingEnvironment = process.env): TradingEnvConfig {
+    const rawPrivateKey = environment.PRIVATE_KEY;
+    const apiKey = environment.API_KEY;
+    const apiSecret = environment.API_SECRET;
+    const apiPassphrase = environment.API_PASSPHRASE;
+    const rawFunderAddress = environment.FUNDER_ADDRESS;
 
     const errors: string[] = [];
     if (!rawPrivateKey) errors.push('PRIVATE_KEY is not set');
@@ -96,7 +106,7 @@ function getTradingEnvConfig(): TradingEnvConfig {
         throw new Error('FUNDER_ADDRESS must be a valid ERC-20 address (0x followed by 40 hex chars)');
     }
 
-    const signatureTypeRaw = safeToNum(process.env.SIGNATURE_TYPE, 2);
+    const signatureTypeRaw = safeToNum(environment.SIGNATURE_TYPE, 2);
     let signatureType = 2;
     if (signatureTypeRaw >= 0) {
         signatureType = signatureTypeRaw;
@@ -119,6 +129,22 @@ function getTradingEnvConfig(): TradingEnvConfig {
         signatureType,
         funderAddress,
     };
+}
+
+/** Validates local authenticated-trading settings without constructing a client or making network calls. */
+export function isTradingEnvironmentConfigured(environment: TradingEnvironment = process.env): boolean {
+    if (REQUIRED_TRADING_ENVIRONMENT_VARIABLES.some(name => {
+        const value = environment[name]?.trim();
+        return value === undefined || value === '' || value.startsWith('REPLACE_WITH_');
+    })) {
+        return false;
+    }
+    try {
+        getTradingEnvConfig(environment);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**

@@ -43,18 +43,21 @@ The main menu begins with `Account`, then lists available trading contours.
 open-position value, and the number of read-only CLOB open orders. It never
 submits, cancels, or synchronizes orders.
 
-`DOGE Baseline` currently provides the following actions:
+`DOGE Baseline` provides the following actions:
 
 | Menu item | Purpose |
 | --- | --- |
 | Status | Show validated artifacts, trading permission, recent refresh, history, disk, VPN, and package version. |
-| Start / Stop / Restart | Manage the complete DOGE contour. Start checks required artifacts first. Restart recreates containers on the loaded image. |
-| VPN | Configure a supported VPN profile. |
+| Start / Stop / Restart | Manage the complete DOGE contour. Start and Restart check required artifacts and local trading settings first. Restart recreates containers on the loaded image. |
+| Monitor | Run health, history, immediate refresh, and resource-usage checks. Immediate refresh requires typing `REFRESH`. |
 | Settings | Edit DOGE service settings and manage weekly research. |
 | Services | Start, stop, restart, follow, filter, or inspect one service log. |
 
-The global `Settings` menu edits system settings and force-loads a new Docker
-image. DOGE `Settings`, `Service settings` opens only the marked
+The global `System` menu force-loads a new Docker image, edits system settings,
+manages VPN, checks connections, and provides Docker tools. Its Docker tools
+actions are limited to the current Compose project. `Remove stopped containers`
+requires typing `REMOVE` and does not remove images, volumes, or runtime data.
+DOGE `Settings`, `Service settings` opens only the marked
 `DOGE_BASELINE_*` block in `compose.env`. Other Compose settings remain untouched.
 After `Update image`, select `DOGE Baseline`, then `Restart` to recreate the
 trading services on that image.
@@ -69,7 +72,7 @@ warnings and errors, or show its final N lines. WireGuard has no application fil
 log, therefore its entry follows its Docker log stream instead. Leave every log
 viewer with `q`.
 
-The `status:account --json` and `status:doge-baseline --json` application
+The `status:account --json`, `status:connection --json`, and `status:doge-baseline --json` application
 commands are the sources of account and DOGE status. The menu runs them through
 an internal `console` container. It starts only from `menu.sh`, is recreated when
 the loaded application image changes, and is not part of Start, Stop, or Restart
@@ -79,12 +82,14 @@ for a trading contour.
 
 The continuous collector retains the newest 2,400 complete frames for each coin in
 `runtime/history/frames`. It moves incomplete frames to `runtime/history/diagnostics`
-and retains the newest 1,000 there. Rotation runs only after a new complete frame
-has been safely written. Configure both limits in `runtime/.env`.
+and retains the newest 100 there. Rotation runs only after a new complete frame
+has been safely written. Configure the complete-frame limit through
+`DOGE_BASELINE_COLLECT_COUNT` in DOGE Service settings. Configure the diagnostic
+limit through `HISTORY_DIAGNOSTIC_FRAMES` in System settings.
 
 ## WireGuard
 
-Choose `DOGE Baseline`, `VPN`, then `WireGuard`. The menu enables
+Choose `System`, `VPN`, then `WireGuard`. The menu enables
 the Compose override and creates an editable connection template with the
 tunnel address, endpoint, routing, DNS, and MTU. It opens the template in your
 editor, where you enter the client private key and server public key directly.

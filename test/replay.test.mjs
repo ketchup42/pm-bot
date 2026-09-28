@@ -195,8 +195,12 @@ test('DOGE status excludes complete frames that cannot produce a DOGE observatio
     process.env.STRATEGY_MODELS_DIR = path.join(root, 'models');
     process.env.HISTORY_DIR = historyDirectory;
     try {
-        await new HistoryFrameWriter({ directory: historyDirectory, gzip: true, maxFrames: 0 }).write(makeFrame());
+        const frame = makeFrame();
+        frame.coin = 'doge';
+        frame.slug = 'doge-updown-5m-1000';
+        await new HistoryFrameWriter({ directory: historyDirectory, gzip: true, maxFrames: 0 }).write(frame);
         const status = await getDogeBaselineStatus();
+        assert.equal(status.history.completeFrames, 1);
         assert.equal(status.history.eligibleFrames, 0);
         assert.equal(status.history.firstFrameStart, undefined);
         assert.equal(status.history.latestFrameStart, undefined);
@@ -204,6 +208,7 @@ test('DOGE status excludes complete frames that cannot produce a DOGE observatio
         assert.ok((await fs.stat(cachePath)).isFile());
         await fs.writeFile(cachePath, '{broken');
         const rebuilt = await getDogeBaselineStatus(historyDirectory);
+        assert.equal(rebuilt.history.completeFrames, 1);
         assert.equal(rebuilt.history.eligibleFrames, 0);
         const rebuiltCachePayload = await fs.readFile(cachePath, 'utf8');
         assert.doesNotThrow(() => JSON.parse(rebuiltCachePayload));

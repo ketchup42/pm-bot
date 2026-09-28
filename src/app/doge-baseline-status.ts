@@ -28,6 +28,7 @@ export interface DogeBaselineStatus {
     };
     history: {
         directory: string;
+        completeFrames: number;
         eligibleFrames: number;
         firstFrameStart?: number;
         latestFrameStart?: number;
@@ -46,9 +47,10 @@ function getStatusError(error: unknown): string {
 }
 
 async function getHistoryStatus(directory: string): Promise<DogeBaselineStatus['history']> {
-    const history: DogeBaselineStatus['history'] = { directory, eligibleFrames: 0 };
+    const history: DogeBaselineStatus['history'] = { directory, completeFrames: 0, eligibleFrames: 0 };
     try {
         const cached = await readCurrentDogeBaselineHistoryStatus(directory);
+        history.completeFrames = Object.keys(cached.frames).length;
         history.eligibleFrames = cached.eligibleFrames;
         if (cached.firstEligibleFrameStart !== undefined) history.firstFrameStart = cached.firstEligibleFrameStart;
         if (cached.latestEligibleFrameStart !== undefined) history.latestFrameStart = cached.latestEligibleFrameStart;

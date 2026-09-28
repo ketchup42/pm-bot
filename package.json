@@ -20,6 +20,8 @@
     "replay:doge-baseline": "npm run build && npm run app -- replay:doge-baseline",
     "strategy:doge-baseline": "npm run build && npm run app -- strategy:doge-baseline",
     "status:account": "npm run build && npm run app -- status:account --json",
+    "status:connection": "npm run build && npm run app -- status:connection --json",
+    "validate:trading-config": "npm run build && npm run app -- validate:trading-config --json",
     "status:doge-baseline": "npm run build && npm run app -- status:doge-baseline --json",
     "refresh:doge-baseline": "npm run build && npm run app -- refresh:doge-baseline",
     "deploy": "node scripts/deploy.mjs",

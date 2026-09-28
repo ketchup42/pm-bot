@@ -11,6 +11,8 @@ import { runDogeBaselineRefresh } from './doge-baseline-refresh.js';
 import { runDogeBaselineStrategy } from './doge-baseline.js';
 import { runDogeBaselineStatus } from './doge-baseline-status.js';
 import { runAccountStatus } from './account-status.js';
+import { runConnectionStatus } from './connection-status.js';
+import { runTradingConfigValidation } from './trading-config-validation.js';
 import { runHistorySettlement } from './settle-history.js';
 
 type CommandRunner = () => Promise<void>;
@@ -32,6 +34,8 @@ const commands: readonly PmBotCommand[] = [
     { name: 'replay:doge-baseline', description: 'Replay the published DOGE model.', run: runDogeBaselineReplayCommand },
     { name: 'strategy:doge-baseline', description: 'Run the DOGE strategy.', run: runDogeBaselineStrategy },
     { name: 'status:account', description: 'Return read-only account balance, positions and orders.', run: runAccountStatus },
+    { name: 'status:connection', description: 'Return read-only external IPv4 and Polymarket DNS status.', run: runConnectionStatus },
+    { name: 'validate:trading-config', description: 'Validate local trading settings without network access.', run: runTradingConfigValidation },
     { name: 'status:doge-baseline', description: 'Return validated DOGE operating status as JSON.', run: runDogeBaselineStatus },
     { name: 'refresh:doge-baseline', description: 'Continuously settle, train and compare DOGE artifacts.', run: runDogeBaselineRefresh },
 ];
