@@ -645,6 +645,18 @@ restart_service() {
     "${compose[@]}" up -d --no-deps --force-recreate "$service"
 }
 
+confirm_doge_action() {
+    local action="$1" confirmation=''
+    local expected="${action^^}"
+    printf '\nType %s to continue: ' "$expected"
+    read -r confirmation
+    if [[ "$confirmation" == "$expected" ]]; then
+        return 0
+    fi
+    show_message 'Action cancelled.'
+    return 1
+}
+
 refresh_now() {
     printf '\nType REFRESH to start an immediate DOGE refresh: '
     local confirmation=''
@@ -1349,12 +1361,17 @@ service_menu() {
         choose_menu "Service: $service" 'Start' 'Stop' 'Restart' 'View logs' 'Back'
             case "$menu_choice" in
                 0)
+                    confirm_doge_action 'Start' || continue
                     if [[ "$service" != "$STRATEGY_SERVICE" ]] || preflight_doge_contour "Start $service"; then
                         run_menu_action "Start $service" "${compose[@]}" up -d "$service"
                     fi
                     ;;
-                1) run_menu_action "Stop $service" "${compose[@]}" stop "$service" ;;
+                1)
+                    confirm_doge_action 'Stop' || continue
+                    run_menu_action "Stop $service" "${compose[@]}" stop "$service"
+                    ;;
                 2)
+                    confirm_doge_action 'Restart' || continue
                     if [[ "$service" != "$STRATEGY_SERVICE" ]] || preflight_doge_contour "Restart $service"; then
                         run_menu_action "Restart $service" restart_service "$service"
                     fi
@@ -1371,9 +1388,18 @@ doge_baseline_menu() {
         choose_menu 'DOGE Baseline' 'Status' 'Start' 'Stop' 'Restart' 'Monitor' 'Settings' 'Services' 'Back'
         case "$menu_choice" in
             0) show_status ;;
-            1) if preflight_doge_contour 'Start'; then run_menu_action 'Start' start_doge_contour; fi ;;
-            2) run_menu_action 'Stop' stop_doge_contour ;;
-            3) if preflight_doge_contour 'Restart'; then run_menu_action 'Restart' restart_doge_contour; fi ;;
+            1)
+                confirm_doge_action 'Start' || continue
+                if preflight_doge_contour 'Start'; then run_menu_action 'Start' start_doge_contour; fi
+                ;;
+            2)
+                confirm_doge_action 'Stop' || continue
+                run_menu_action 'Stop' stop_doge_contour
+                ;;
+            3)
+                confirm_doge_action 'Restart' || continue
+                if preflight_doge_contour 'Restart'; then run_menu_action 'Restart' restart_doge_contour; fi
+                ;;
             4) show_doge_monitor ;;
             5) doge_settings_menu ;;
             6) service_menu ;;
