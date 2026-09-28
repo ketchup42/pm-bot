@@ -1065,7 +1065,7 @@ docker_menu() {
 
 system_menu() {
     while true; do
-        choose_menu 'System' 'Connection' 'VPN' 'System settings' 'Docker tools' 'Update image' 'Back'
+        choose_menu 'System' 'Connection' 'VPN settings' 'System settings' 'Docker tools' 'Update image' 'Back'
         case "$menu_choice" in
             0) show_connection ;;
             1) vpn_menu ;;
