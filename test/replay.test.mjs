@@ -22,7 +22,7 @@ import { VirtualTakerLiveOrderWallet } from '../dist/market/orders/VirtualTakerL
 import { TakerLiveOrderWallet } from '../dist/market/orders/TakerLiveOrderWallet.js';
 import { calculateTakerExecution } from '../dist/market/orders/TakerExecution.js';
 import { HistoryFrameWriter } from '../dist/app/core/history/HistoryFrameWriter.js';
-import { getDogeBaselineStatus } from '../dist/app/doge-baseline-status.js';
+import { getDogeBaselineHealthStatus, getDogeBaselineStatus } from '../dist/app/doge-baseline-status.js';
 import { calculateTakerFee } from '../dist/rest/fees.js';
 import { placeMakerOrder } from '../dist/rest/orders.js';
 import { createDogeBaselineSettlementReport } from '../dist/app/core/events/strategy/doge-baseline/settlement_report.js';
@@ -215,6 +215,27 @@ test('DOGE status excludes complete frames that cannot produce a DOGE observatio
     } finally {
         if (previousModelsDirectory === undefined) delete process.env.STRATEGY_MODELS_DIR;
         else process.env.STRATEGY_MODELS_DIR = previousModelsDirectory;
+        if (previousHistoryDirectory === undefined) delete process.env.HISTORY_DIR;
+        else process.env.HISTORY_DIR = previousHistoryDirectory;
+        await fs.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('DOGE health status reads the latest frame name without rebuilding the history profile', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-bot-doge-health-'));
+    const historyDirectory = path.join(root, 'history', 'frames');
+    const previousHistoryDirectory = process.env.HISTORY_DIR;
+    process.env.HISTORY_DIR = historyDirectory;
+    try {
+        const frame = makeFrame();
+        frame.coin = 'doge';
+        frame.slug = 'doge-updown-5m-1000';
+        await new HistoryFrameWriter({ directory: historyDirectory, gzip: true, maxFrames: 0 }).write(frame);
+
+        const status = await getDogeBaselineHealthStatus();
+        assert.equal(status.history.latestFrameStart, frame.start_time);
+        await assert.rejects(fs.stat(path.join(root, 'history', 'status', 'doge-5m-chainlink-twap-60.json')));
+    } finally {
         if (previousHistoryDirectory === undefined) delete process.env.HISTORY_DIR;
         else process.env.HISTORY_DIR = previousHistoryDirectory;
         await fs.rm(root, { recursive: true, force: true });

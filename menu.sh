@@ -192,11 +192,14 @@ render_status_line() {
 }
 
 render_status_value() {
-    local label="$1" value="$2" color="$3" line
+    local label="$1" value="$2" color="$3" requested_label_width="${4:-}" line
     local -a lines
     local text_width=$((menu_inner_width - 2))
     local label_width=${#label}
     ((label_width < 18)) && label_width=18
+    if [[ "$requested_label_width" =~ ^[0-9]+$ ]] && ((requested_label_width > label_width)); then
+        label_width=$requested_label_width
+    fi
     local value_width=$((text_width - label_width - 1))
     local label_prefix continuation_prefix
     label_prefix="$(printf '%-*s ' "$label_width" "$label")"
@@ -485,6 +488,10 @@ run_doge_status() {
     run_console_command status:doge-baseline --json
 }
 
+run_doge_health_status() {
+    run_console_command status:doge-baseline --health --json
+}
+
 run_account_status() {
     run_console_command status:account --text
 }
@@ -654,6 +661,26 @@ service_status_rows() {
     "${compose[@]}" ps --format '{{.Service}}|{{.Status}}' 2>/dev/null || true
 }
 
+render_service_statuses() {
+    local -a rows=() names=() statuses=()
+    local row service status service_width=0 index
+    mapfile -t rows < <(service_status_rows)
+    for row in "${rows[@]}"; do
+        IFS='|' read -r service status <<< "$row"
+        [[ "$service" == "$CONSOLE_SERVICE" || -z "$service" ]] && continue
+        names+=("$service")
+        statuses+=("$status")
+        ((${#service} > service_width)) && service_width=${#service}
+    done
+    if ((${#names[@]} == 0)); then
+        render_status_line "$color_yellow" 'not available'
+        return
+    fi
+    for ((index = 0; index < ${#names[@]}; index += 1)); do
+        render_status_value "${names[index]}" "${statuses[index]}" "$color_gray" "$service_width"
+    done
+}
+
 history_file_count() {
     local directory="$1" count
     [[ -d "$directory" ]] || {
@@ -677,8 +704,10 @@ show_health_check() {
     render_section 'DOGE HEALTH CHECK'
     render_value 'DOCKER' "$docker_status" "$color_gray"
     render_value 'COMPOSE' "$compose_status" "$color_gray"
+    render_line "$color_gray" 'Checking operating status...'
+    render_bottom
     if [[ -f "$COMPOSE_ENV_FILE" ]]; then
-        status_json="$(run_doge_status || true)"
+        status_json="$(run_doge_health_status || true)"
     fi
     trading="$(status_value tradingEnabled "$status_json" || true)"
     case "$trading" in
@@ -694,21 +723,7 @@ show_health_check() {
     render_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
     render_rule
     render_line "$color_cyan" 'SERVICES'
-    local -a rows=()
-    mapfile -t rows < <(service_status_rows)
-    if ((${#rows[@]} == 0)); then
-        render_line "$color_yellow" 'not available'
-    else
-        local row service status
-        local found=false
-        for row in "${rows[@]}"; do
-            IFS='|' read -r service status <<< "$row"
-            [[ "$service" == "$CONSOLE_SERVICE" || -z "$service" ]] && continue
-            render_value "$service" "$status" "$color_gray"
-            found=true
-        done
-        [[ "$found" == true ]] || render_line "$color_yellow" 'not available'
-    fi
+    render_service_statuses
     render_rule
     render_line "$color_gray" 'Press Enter to continue'
     render_bottom
@@ -733,6 +748,9 @@ show_history() {
     [[ "$history_frames_directory" == "$RUNTIME_DIRECTORY/" ]] && history_frames_directory="$RUNTIME_DIRECTORY/history/frames"
     history_directory="$(dirname "$history_frames_directory")"
     diagnostic_directory="$history_directory/diagnostics"
+    if [[ -z "$complete_frames" ]]; then
+        complete_frames="$(history_file_count "$history_frames_directory")"
+    fi
     diagnostic_frames="$(history_file_count "$diagnostic_directory")"
     render_top
     render_section 'DOGE HISTORY'
@@ -756,20 +774,63 @@ show_resource_usage() {
     setup_detail_width
     render_top
     render_section 'DOGE RESOURCE USAGE'
-    local service container_id usage found=false
+    render_line "$color_gray" 'Collecting current container statistics...'
+    render_bottom
+    local -a services=() container_ids=() rows=()
+    local service container_id stats row container cpu memory block_io index
     for service in "${DOGE_SERVICES[@]}" "$WIREGUARD_SERVICE"; do
         [[ "$service" == "$WIREGUARD_SERVICE" && ! -f "$WIREGUARD_OVERRIDE" ]] && continue
         service_is_running "$service" || continue
         container_id="$("${compose[@]}" ps -q "$service" 2>/dev/null || true)"
-        usage="$(docker stats --no-stream --format '{{.CPUPerc}} | {{.MemUsage}} | {{.BlockIO}}' "$container_id" 2>/dev/null || true)"
-        render_status_value "$service" "$(or_not_available "$usage")" "$color_gray"
-        found=true
+        [[ -n "$container_id" ]] || continue
+        services+=("$service")
+        container_ids+=("$container_id")
     done
-    if [[ "$found" == false ]]; then
+    if ((${#container_ids[@]} > 0)); then
+        stats="$(docker stats --no-stream --format '{{.Container}}|{{.CPUPerc}}|{{.MemUsage}}|{{.BlockIO}}' "${container_ids[@]}" 2>/dev/null || true)"
+        while IFS='|' read -r container cpu memory block_io; do
+            [[ -n "$container" ]] || continue
+            for ((index = 0; index < ${#container_ids[@]}; index += 1)); do
+                if [[ "${container_ids[index]}" == "$container"* ]]; then
+                    rows+=("${services[index]}|$cpu|$memory|$block_io")
+                    break
+                fi
+            done
+        done <<< "$stats"
+    fi
+
+    render_top
+    render_section 'DOGE RESOURCE USAGE'
+    if ((${#rows[@]} == 0)); then
         render_status_line "$color_yellow" 'No active DOGE services.'
+    else
+        local service_width=7 cpu_width=3 memory_width=14 block_width=8
+        for row in "${rows[@]}"; do
+            IFS='|' read -r service cpu memory block_io <<< "$row"
+            ((${#service} > service_width)) && service_width=${#service}
+            ((${#cpu} > cpu_width)) && cpu_width=${#cpu}
+            ((${#memory} > memory_width)) && memory_width=${#memory}
+            ((${#block_io} > block_width)) && block_width=${#block_io}
+        done
+        local table_width=$((service_width + cpu_width + memory_width + block_width + 9))
+        local available_width=$((menu_inner_width - 2))
+        if ((table_width <= available_width)); then
+            render_line "$color_cyan" "$(printf "%-*s | %-*s | %-*s | %-*s" "$service_width" SERVICE "$cpu_width" CPU "$memory_width" 'MEMORY / LIMIT' "$block_width" 'BLOCK I/O')"
+            for row in "${rows[@]}"; do
+                IFS='|' read -r service cpu memory block_io <<< "$row"
+                render_line "$color_gray" "$(printf "%-*s | %-*s | %-*s | %-*s" "$service_width" "$service" "$cpu_width" "$cpu" "$memory_width" "$memory" "$block_width" "$block_io")"
+            done
+        else
+            for row in "${rows[@]}"; do
+                IFS='|' read -r service cpu memory block_io <<< "$row"
+                render_status_line "$color_cyan" "$service"
+                render_status_value 'CPU' "$cpu" "$color_gray"
+                render_status_value 'MEMORY / LIMIT' "$memory" "$color_gray"
+                render_status_value 'BLOCK I/O' "$block_io" "$color_gray"
+            done
+        fi
     fi
     render_rule
-    render_status_line "$color_gray" 'CPU | memory / limit | block I/O'
     render_status_line "$color_gray" 'Press Enter to continue'
     render_bottom
     pause
@@ -869,26 +930,7 @@ show_status() {
     render_rule
     render_status_line "$color_cyan" 'SERVICES'
     if [[ -f "$COMPOSE_ENV_FILE" ]]; then
-        local -a service_rows service_names=() service_statuses=()
-        local service_row service_name service_status service_width=0
-        mapfile -t service_rows < <("${compose[@]}" ps --format '{{.Service}}|{{.Status}}' 2>/dev/null || true)
-        for service_row in "${service_rows[@]}"; do
-            IFS='|' read -r service_name service_status <<< "$service_row"
-            [[ "$service_name" == "$CONSOLE_SERVICE" || -z "$service_name" ]] && continue
-            service_names+=("$service_name")
-            service_statuses+=("$service_status")
-            if ((${#service_name} > service_width)); then
-                service_width=${#service_name}
-            fi
-        done
-        if ((${#service_names[@]} == 0)); then
-            render_status_line "$color_yellow" 'not available'
-        else
-            local index
-            for ((index = 0; index < ${#service_names[@]}; index += 1)); do
-                render_status_line "$color_gray" "$(printf '%-*s  %s' "$service_width" "${service_names[index]}" "${service_statuses[index]}")"
-            done
-        fi
+        render_service_statuses
     else
         render_status_line "$color_yellow" "not available: $COMPOSE_ENV_FILE is missing"
     fi
@@ -900,18 +942,20 @@ show_status() {
 }
 
 show_connection() {
-    local status_json='' external_ipv4 polymarket_dns route
+    local status_json='' ipv4 dns_available route ipv4_reason
     local original_menu_inner_width="$menu_inner_width"
     setup_detail_width
     render_top
     render_section 'CONNECTION'
-    render_line "$color_gray" 'Checking external IPv4 and DNS...'
+    render_line "$color_gray" 'Checking IPv4 and DNS...'
     render_bottom
     if [[ -f "$COMPOSE_ENV_FILE" && -f "$APPLICATION_ENV_FILE" ]]; then
         status_json="$(run_connection_status || true)"
     fi
-    external_ipv4="$(nested_status_value externalIpv4 value "$status_json" || true)"
-    polymarket_dns="$(nested_status_value polymarketDns value "$status_json" || true)"
+    ipv4="$(nested_status_value ipv4 value "$status_json" || true)"
+    dns_available="$(nested_status_value dns available "$status_json" || true)"
+    ipv4_reason="$(nested_status_value ipv4 reason "$status_json" || true)"
+    [[ -n "$ipv4" ]] || ipv4="not available${ipv4_reason:+ ($ipv4_reason)}"
     route='not enabled'
     if [[ -f "$WIREGUARD_OVERRIDE" ]]; then
         route="$("${compose[@]}" exec -T "$WIREGUARD_SERVICE" sh -c 'ip route get 1.1.1.1 2>/dev/null | head -n 1' 2>/dev/null || true)"
@@ -919,8 +963,12 @@ show_connection() {
     fi
     render_top
     render_section 'CONNECTION'
-    render_status_value 'EXTERNAL IPV4' "$(or_not_available "$external_ipv4")" "$color_gray"
-    render_status_value 'POLYMARKET DNS' "$(or_not_available "$polymarket_dns")" "$color_gray"
+    render_status_value 'IPV4' "$ipv4" "$color_gray"
+    if [[ "$dns_available" == true ]]; then
+        render_status_value 'DNS' 'available' "$color_gray"
+    else
+        render_status_value 'DNS' 'not available' "$color_gray"
+    fi
     render_status_value 'VPN ROUTE' "$route" "$color_gray"
     render_status_value 'VPN' "$(wireguard_handshake_status)" "$color_gray"
     render_rule
@@ -965,13 +1013,18 @@ show_stopped_containers() {
 
 show_image_usage() {
     local original_menu_inner_width="$menu_inner_width"
-    local image details
+    local image details image_width=0
+    local -a images=("$CONSOLE_IMAGE" 'lscr.io/linuxserver/wireguard:latest') details=()
     setup_detail_width
+    for image in "${images[@]}"; do
+        details+=("$(docker image inspect --format '{{.Size}} bytes | {{.Id}}' "$image" 2>/dev/null || true)")
+        ((${#image} > image_width)) && image_width=${#image}
+    done
     render_top
     render_section 'IMAGE USAGE'
-    for image in "$CONSOLE_IMAGE" 'lscr.io/linuxserver/wireguard:latest'; do
-        details="$(docker image inspect --format '{{.Size}} bytes | {{.Id}}' "$image" 2>/dev/null || true)"
-        render_status_value "$image" "$(or_not_available "$details")" "$color_gray"
+    local index
+    for ((index = 0; index < ${#images[@]}; index += 1)); do
+        render_status_value "${images[index]}" "$(or_not_available "${details[index]}")" "$color_gray" "$image_width"
     done
     render_rule
     render_status_line "$color_gray" 'Press Enter to continue'

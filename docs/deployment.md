@@ -73,7 +73,9 @@ log, therefore its entry follows its Docker log stream instead. Leave every log
 viewer with `q`.
 
 The `status:account --json`, `status:connection --json`, and `status:doge-baseline --json` application
-commands are the sources of account and DOGE status. The menu runs them through
+commands are the sources of account and DOGE status. `status:doge-baseline --health --json`
+reads only operating artifacts and the latest history filename, so Health check stays fast.
+The menu runs these commands through
 an internal `console` container. It starts only from `menu.sh`, is recreated when
 the loaded application image changes, and is not part of Start, Stop, or Restart
 for a trading contour.

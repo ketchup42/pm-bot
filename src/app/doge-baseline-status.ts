@@ -6,6 +6,7 @@ import { getDogeBaselineEntrySummary } from './core/events/strategy/doge-baselin
 import { getDogeBaselineEvaluationPath, readDogeBaselineEvaluationTradingState } from './core/events/strategy/doge-baseline/DogeBaselineEvaluation.js';
 import { readDogeBaselineArtifacts } from './core/events/strategy/doge-baseline/artifacts.js';
 import { readCurrentDogeBaselineHistoryStatus } from './core/events/strategy/doge-baseline/DogeBaselineHistoryStatus.js';
+import { getHistoryFramePaths } from './core/history/HistoryFrameReader.js';
 
 export interface DogeBaselineStatus {
     artifacts: {
@@ -38,6 +39,16 @@ export interface DogeBaselineStatus {
     };
 }
 
+export interface DogeBaselineHealthStatus {
+    artifacts: DogeBaselineStatus['artifacts'];
+    evaluation: DogeBaselineStatus['evaluation'];
+    history: {
+        directory: string;
+        latestFrameStart?: number;
+        error?: string;
+    };
+}
+
 function formatExit(enabled: boolean, windowMs: number, deviationFactor: number): string {
     return enabled ? `${windowMs / 1_000}s/${(deviationFactor * 100).toFixed(2)}%` : 'natural';
 }
@@ -66,16 +77,23 @@ async function getHistoryStatus(directory: string): Promise<DogeBaselineStatus['
     return history;
 }
 
-export async function getDogeBaselineStatus(historyDirectory: string = process.env.HISTORY_DIR || DEFAULT_HISTORY_DIRECTORY): Promise<DogeBaselineStatus> {
-    const status: DogeBaselineStatus = {
-        artifacts: { available: false },
-        evaluation: { available: false },
-        history: await getHistoryStatus(historyDirectory),
-    };
+async function getLatestHistoryStatus(directory: string): Promise<DogeBaselineHealthStatus['history']> {
+    const history: DogeBaselineHealthStatus['history'] = { directory };
+    try {
+        const latest = (await getHistoryFramePaths(directory)).at(-1);
+        const match = latest === undefined ? undefined : /(?:^|\/)(\d+)-[^/]+\.json(?:\.gz)?$/.exec(latest);
+        if (match !== null && match !== undefined) history.latestFrameStart = Number(match[1]);
+    } catch (error) {
+        history.error = getStatusError(error);
+    }
+    return history;
+}
+
+async function getArtifactsStatus(): Promise<DogeBaselineStatus['artifacts']> {
     try {
         const artifacts = await readDogeBaselineArtifacts();
         const exit = artifacts.config.exit;
-        status.artifacts = {
+        return {
             available: true,
             model: {
                 version: artifacts.model.version,
@@ -90,35 +108,60 @@ export async function getDogeBaselineStatus(historyDirectory: string = process.e
             exitProfile: formatExit(exit.enabled, exit.windowMs, exit.deviationFactor),
         };
     } catch (error) {
-        status.artifacts.error = getStatusError(error);
+        return { available: false, error: getStatusError(error) };
     }
+}
+
+async function getEvaluationStatus(artifacts: DogeBaselineStatus['artifacts']): Promise<DogeBaselineStatus['evaluation']> {
     try {
         const [state, metadata] = await Promise.all([
             readDogeBaselineEvaluationTradingState(),
             fs.stat(getDogeBaselineEvaluationPath()),
         ]);
-        if (state !== undefined) {
-            status.evaluation = {
-                available: true,
-                lastSuccessfulRefreshAt: metadata.mtimeMs,
-                selectedNetPnl: state.point.netPnl,
-                replayFrames: state.point.replayFrames,
-                consecutiveRises: state.state.consecutiveRises,
-            };
-            if (status.artifacts.available && !status.artifacts.tradingEnabled) {
-                status.artifacts.pauseReason = state.state.reason ?? 'trading_disabled_by_config';
-            }
+        if (state === undefined) return { available: false };
+        const evaluation: DogeBaselineStatus['evaluation'] = {
+            available: true,
+            lastSuccessfulRefreshAt: metadata.mtimeMs,
+            selectedNetPnl: state.point.netPnl,
+            replayFrames: state.point.replayFrames,
+            consecutiveRises: state.state.consecutiveRises,
+        };
+        if (artifacts.available && !artifacts.tradingEnabled) {
+            artifacts.pauseReason = state.state.reason ?? 'trading_disabled_by_config';
         }
+        return evaluation;
     } catch (error) {
-        status.evaluation.error = getStatusError(error);
+        return { available: false, error: getStatusError(error) };
     }
+}
+
+export async function getDogeBaselineStatus(historyDirectory: string = process.env.HISTORY_DIR || DEFAULT_HISTORY_DIRECTORY): Promise<DogeBaselineStatus> {
+    const artifacts = await getArtifactsStatus();
+    const status: DogeBaselineStatus = {
+        artifacts,
+        evaluation: await getEvaluationStatus(artifacts),
+        history: await getHistoryStatus(historyDirectory),
+    };
     return status;
 }
 
+export async function getDogeBaselineHealthStatus(
+    historyDirectory: string = process.env.HISTORY_DIR || DEFAULT_HISTORY_DIRECTORY,
+): Promise<DogeBaselineHealthStatus> {
+    const artifacts = await getArtifactsStatus();
+    return {
+        artifacts,
+        evaluation: await getEvaluationStatus(artifacts),
+        history: await getLatestHistoryStatus(historyDirectory),
+    };
+}
+
 export async function runDogeBaselineStatus(): Promise<void> {
-    const json = process.argv.includes('--json');
-    if (!json || readArgument('history') !== undefined || process.argv.some(value => value.startsWith('--') && value !== '--json')) {
-        throw new Error('Usage: pm-bot status:doge-baseline --json');
+    const arguments_ = process.argv.slice(3);
+    const health = arguments_.includes('--health');
+    if (readArgument('history') !== undefined || !arguments_.includes('--json') ||
+        arguments_.length !== (health ? 2 : 1) || arguments_.some(value => value !== '--json' && value !== '--health')) {
+        throw new Error('Usage: pm-bot status:doge-baseline [--health] --json');
     }
-    writeOutput(JSON.stringify(await getDogeBaselineStatus(), undefined, 2));
+    writeOutput(JSON.stringify(health ? await getDogeBaselineHealthStatus() : await getDogeBaselineStatus(), undefined, 2));
 }
