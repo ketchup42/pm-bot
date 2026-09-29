@@ -80,3 +80,8 @@ jest.config.js
 
 TODO.txt
 AGENTS.md
+
+# Local AI-agent workspace
+/.agents/
+/.codex/
+/skills-lock.json
