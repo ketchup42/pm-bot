@@ -1,8 +1,18 @@
 # Environment variables
 
-Use a local `.env` only for values that belong on the machine running the bot.
-Never commit it. The history collector and offline replay do not require wallet or
-API credentials. Live trading does.
+Use local environment files only for values that belong on the machine running the
+bot. Never commit them. The history collector and offline replay do not require
+wallet or API credentials; authenticated live trading does.
+
+| File | Owns | Managed through |
+| --- | --- | --- |
+| `runtime/.env` | Credentials, RPC, logging, and collector settings | **System → System settings** in the Docker menu |
+| `compose.env` | DOGE contour command parameters | **DOGE Baseline → Settings → Service settings** |
+| `research.env` | Weekly research polling and wait timeouts | **DOGE Baseline → Settings → Weekly research** |
+
+The installer creates `runtime/.env` only when it is absent, using the tracked
+`runtime.env.example` placeholder template. Do not paste credentials into source
+files, commands shared with others, or Git commits.
 
 ## Which mode needs which settings?
 

@@ -1,8 +1,13 @@
 # Minimal live integration
 
-This example shows how the live scheduler is assembled. It needs valid local
-credentials because `getTradingClient()` can submit orders. For data collection and
-backtesting, use the safer commands in the [README](../README.md) instead.
+This reference shows how the live scheduler is assembled in TypeScript. It needs
+valid local credentials because `getTradingClient()` can submit orders. For
+collection, replay, and normal server operation, begin with the safer workflows in
+the [README](../README.md) and [Deployment](deployment.md) instead.
+
+> Treat this as an integration example, not a recommended first live strategy.
+> Validate a strategy on settled history and run it in debug mode before allowing
+> it to submit orders.
 
 ```ts
 import { getTradingClient } from '../rest/client-env.js';

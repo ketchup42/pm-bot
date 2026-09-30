@@ -1,10 +1,82 @@
 # PM-BOT
 
-PM-BOT collects Polymarket up/down market data, replays strategies with execution
-costs, and runs the DOGE baseline strategy. Start with research and virtual
-trading. `--live` can submit real orders.
+Tools for researching and operating execution-aware Polymarket strategies.
 
-## Quick start
+PM-BOT collects market history, replays strategies on settled data, and runs a
+guarded DOGE baseline contour through Docker.
+
+## Important
+
+PM-BOT is experimental software, not financial advice or a promise of profit.
+Start with collected history, replay, and `--debug`. `--live` can submit real
+orders and can lose funds. Keep credentials only in a local `runtime/.env` file;
+the repository and deployment archives never include them.
+
+## What it does
+
+- Collects versioned, gzip-compressed Polymarket up/down market frames with
+  price, order-book, connection-quality, and settlement data.
+- Replays strategies against settled frames with visible-depth fills, fees,
+  slippage, latency, and wallet constraints.
+- Operates the DOGE baseline: train a model, tune entry/exit settings, refresh
+  artifacts, and pause trading when replay evidence is insufficient.
+- Ships a Docker-based operational console for status, account information,
+  logs, updates, history maintenance, weekly research, and optional WireGuard
+  routing.
+
+```text
+collect → settled history → model/config research → replay → refresh gate → strategy
+                   │                                  │
+                   └──────── weekly regime research ──┘
+```
+
+## Deploy on a server
+
+Docker is the recommended operational path. Build either archive locally, copy it
+to an x86-64 Linux server, extract it, and run the installer:
+
+```bash
+# Tiny: image, scripts, documentation, and empty runtime directories.
+npm run deploy:docker -- --tiny
+
+# Full: additionally includes the current DOGE artifacts and history.
+npm run deploy:docker -- --full
+```
+
+If your local Docker daemon requires sudo, add `--sudo` to the build command.
+On the server, use the extracted archive directory:
+
+```bash
+bash install.sh
+```
+
+The installer validates Docker and Compose, loads the image when needed, creates
+only missing runtime files, and opens the terminal menu. Existing history, models,
+logs, WireGuard profiles, and local settings are preserved. Later, open the same
+console with:
+
+```bash
+bash menu.sh
+```
+
+Use **System → System settings** to complete `runtime/.env`, then use **DOGE
+Baseline** to inspect status and control the contour. See the complete
+[deployment guide](docs/deployment.md).
+
+### Native archive
+
+The standalone executable is retained for advanced local use. It does not include
+the Docker console or service management:
+
+```bash
+npm run deploy -- --tiny
+npm run deploy -- --full
+```
+
+The resulting `release/pm-bot-linux-x64-*.7z` archive contains
+`pm-bot-linux-x64`. Run `./pm-bot-linux-x64 help` after extraction.
+
+## Develop locally
 
 Requirements: Node.js **22.6+** and npm.
 
@@ -12,118 +84,75 @@ Requirements: Node.js **22.6+** and npm.
 npm install
 npm run check
 
-# Show supported coins, frames, and price sources.
+# Inspect supported coins, frames, and price sources.
 npm run collect -- --help
 
-# Record one frame for every registered coin.
+# Collect one DOGE frame without trading credentials.
 env HISTORY_SNAPSHOT_MS=100 \
-  npm run collect -- --coin all --frame 5m --source chainlink-twap-60 --count 1
+  npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 1
 ```
 
-The collector waits for the next frame boundary. Do not interrupt a one-frame run
-before its `Saved ... complete=true` message.
+The collector waits for the next frame boundary. Let a one-frame run finish with
+`complete=true`; interrupted or incomplete frames are retained separately for
+diagnostics.
 
-## DOGE virtual working loop
+## DOGE baseline workflow
 
-Run these three commands in separate terminals. In its cyclic form, the
-collector's `--count 2400` retains the newest 2,400 complete frames, while
-`HISTORY_DIAGNOSTIC_FRAMES=100` retains diagnostic incomplete frames. The strategy
-uses a virtual wallet. Refresh confirms outcomes, re-trains, tunes configuration,
-and compares the working and candidate pairs.
-
-`--no-dumps` is valid with both strategy modes. It disables legacy dumps in
-`--debug`. Dumps are already disabled in `--live`.
+For a local virtual run, use three terminals. In continuous collection,
+`--count 2400` is both the number passed to the command and the retained complete
+history limit per collected coin. `HISTORY_DIAGNOSTIC_FRAMES` independently limits
+incomplete diagnostic frames.
 
 ```bash
+# 1. Collect and retain the newest complete DOGE history frames.
 env LOG_LEVEL=info HISTORY_SNAPSHOT_MS=100 HISTORY_BOOK_DEPTH=10 HISTORY_GZIP=true \
   npm run collect -- --coin doge --frame 5m --source chainlink-twap-60 --count 2400 --cycle
 ```
 
 ```bash
+# 2. Run the strategy with a virtual wallet.
 env LOG_LEVEL=info \
   npm run strategy:doge-baseline -- --debug --no-dumps --balance 100 --trade-value 10
 ```
 
 ```bash
+# 3. Settle, retrain, tune, replay, and publish the selected working artifacts.
 env LOG_LEVEL=info \
-  npm run refresh:doge-baseline -- --frame 5m --count 25 --train-count 500 --replay 100
+  npm run refresh:doge-baseline -- --frame 5m --count 25 --train-count 500 --replay 100 \
+  --balance 100 --trade-value 10
 ```
 
-```text
-collect → history frames → history:settle → model/config refresh → strategy
-                                    │                  │
-                                    └──── replay ──────┘
-```
+The refresh gate may keep trading paused. This is intentional when replay PnL,
+trend, or confirmation conditions do not meet the published policy.
 
-## Commands
+## Command reference
 
-| Command                                                                                 | Purpose                                                                 |
-| -----------------------------------------------------------------------------------------| -------------------------------------------------------------------------|
-| `npm run check`                                                                         | Type-check, lint, and run tests.                                        |
-| `npm run collect -- --coin doge --frame 5m --source chainlink-twap-60`                  | Collect DOGE HistoryFrameV3 data.                                       |
-| `npm run history:settle`                                                                | Confirm outcomes in recorded frames.                                    |
-| `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10`            | Replay the published DOGE pair with the default 250 ms execution delay. |
-| `npm run research:doge-baseline-model -- --count 500`                                   | Train and publish a DOGE model.                                         |
-| `npm run research:doge-baseline-config -- --count 500`                                  | Tune and publish DOGE configuration.                                    |
-| `npm run research:doge-baseline-regime -- --frame 5m --count 25 --train-count 500 --replay 100 --balance 100 --trade-value 10` | Evaluate DOGE PnL-regime filters without publishing artifacts. |
-| `npm run refresh:doge-baseline -- --frame 5m --count 25 --train-count 500 --replay 100 --balance 100 --trade-value 10` | Refresh and compare four model/config pairs using the same delay. |
-| `npm run strategy:doge-baseline -- --debug --no-dumps --balance 100 --trade-value 10`   | Run with a virtual wallet without legacy dumps.                         |
-| `npm run strategy:doge-baseline -- --live --balance 100 --trade-value 10`               | Submit real orders.                                                     |
-| `npm run status:account`                                                                 | Print collateral, open-position value, and open-order count as JSON.  |
-| `npm run status:doge-baseline`                                                           | Print validated DOGE artifact, evaluation, and history status as JSON. |
-
-## Deployment archive
-
-Create a Linux x64 archive after the full project check:
-
-```bash
-# Binary and deployment instructions only.
-npm run deploy -- --tiny
-
-# Binary, current DOGE model artifacts, and history frames.
-npm run deploy -- --full
-```
-
-The archive in `release/` contains `pm-bot-linux-x64`. Node.js and
-`node_modules` are not required on the server. After extraction:
-
-```bash
-cd pm-bot-linux-x64
-chmod +x pm-bot-linux-x64
-./pm-bot-linux-x64 help
-```
-
-The executable and npm application commands use a 6 GiB V8 old-space limit. Copy
-or create `.env` manually beside it for live access. Archives never include secrets.
-
-## Docker deployment
-
-Docker deployment targets Linux x86-64 independently of the server distribution.
-It runs the three DOGE contours as `collector-doge-baseline`,
-`strategy-doge-baseline`, and `refresh-doge-baseline` with shared runtime data
-and separate logs.
-
-```bash
-npm run deploy:docker -- --tiny
-npm run deploy:docker -- --full
-
-# Use this when Docker is available only through sudo.
-npm run deploy:docker -- --tiny --sudo
-npm run deploy:docker -- --full --sudo
-```
-
-See [Deployment](docs/deployment.md) for Docker requirements, server setup, and
-the interactive `install.sh` and `menu.sh`. Runtime system settings remain
-in `runtime/.env`. DOGE Baseline command parameters are configured separately in
-`compose.env`.
+| Command | Use it for |
+| --- | --- |
+| `npm run check` | Type-check, lint, and run the test suite. |
+| `npm run collect -- --help` | Inspect collection options and supported sources. |
+| `npm run history:settle` | Confirm outcomes in recorded history frames. |
+| `npm run replay:doge-baseline -- --count 100 --balance 100 --trade-value 10` | Evaluate published DOGE artifacts with execution costs. |
+| `npm run refresh:doge-baseline -- --help` | Inspect the automated DOGE refresh workflow. |
+| `npm run strategy:doge-baseline -- --debug --balance 100 --trade-value 10` | Run virtual orders against live market data. |
+| `npm run status:account` | Read account collateral, public position value, and open-order count. |
+| `npm run status:doge-baseline` | Inspect artifacts, refresh state, and DOGE history status. |
 
 ## Documentation
 
-| Document | Use it for |
+| Guide | Start here when you need |
 | --- | --- |
-| [Environment](docs/env.md) | Environment variables, logging, collection, and live credentials. |
-| [Architecture](docs/abstractions.md) | Watchers, history, replay, and domain registries. |
-| [Strategy guide](docs/strategies.md) | DOGE behavior and safe strategy changes. |
-| [Virtual wallets](docs/wallets.md) | Balances, orders, and shutdown behavior. |
-| [Deployment](docs/deployment.md) | Native and Docker deployment. |
-| [Live integration example](docs/example.md) | Minimal scheduler, watcher, and strategy wiring. |
+| [Deployment](docs/deployment.md) | A server install, update, menu workflow, VPN, or weekly research. |
+| [Environment](docs/env.md) | A safe explanation of local settings and environment variables. |
+| [Strategy guide](docs/strategies.md) | DOGE lifecycle, replay assumptions, or safe strategy changes. |
+| [Architecture](docs/abstractions.md) | Data flow, history contracts, replay, and application components. |
+| [Wallets](docs/wallets.md) | Virtual and live order-wallet semantics. |
+| [Minimal integration](docs/example.md) | A small TypeScript scheduler composition. |
+
+## Security and data handling
+
+- Never commit wallet keys, API credentials, WireGuard keys, or local `.env` files.
+- Collection and offline replay do not require authenticated trading credentials.
+- The menu masks account identifiers and does not print secrets.
+- WireGuard is optional. When enabled, contour containers share the bridge network
+  namespace so their outbound traffic follows the tunnel policy.

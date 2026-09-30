@@ -1,5 +1,10 @@
 # Wallets
 
+Wallets are execution abstractions, not custody systems. They track a strategy's
+virtual cash, token inventory, and order reservations while the authenticated
+client communicates with Polymarket. For strategy lifecycle and replay context,
+see [Strategy guide](strategies.md).
+
 A wallet gives one strategy an isolated virtual cash balance and token inventory
 while it uses the shared Polymarket account. It validates exchange constraints,
 tracks the associated orders and prevents the strategy from reserving the same
@@ -77,4 +82,4 @@ when the outcome matches the wallet side, and $0 otherwise. Settlement clears th
 position and does not walk the book or charge an exit fee. It must not be
 substituted with a sale at a final bid such as $0.99.
 
-For strategy lifecycle and safe book reads, see [strategies.md](strategies.md).
+For strategy lifecycle and safe book reads, see [Strategy guide](strategies.md).

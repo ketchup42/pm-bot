@@ -1,6 +1,14 @@
 # Deployment
 
-## Docker archive
+Run the DOGE baseline contour from the portable Docker archive. This guide covers
+first installation, everyday menu operations, updates, optional WireGuard routing,
+and weekly research. For local configuration details, see
+[Environment](env.md).
+
+> **Safety:** complete local `runtime/.env` placeholders before starting the full
+> contour. Start in debug mode and review Status before enabling live trading.
+
+## Build and install the Docker archive
 
 Build a Linux x86-64 archive locally:
 
@@ -9,10 +17,11 @@ npm run deploy:docker -- --tiny --sudo
 ```
 
 Use `--full` when the archive must include the current DOGE model and collected
-history. Upload, unpack, and enter the resulting directory on the server.
+history. Upload, unpack, and enter the resulting directory on the server. The
+`tiny` archive is the normal choice for a new or already-running server.
 
 The installer creates `runtime/.env` from `runtime.env.example` when it is
-absent. Replace the live API placeholders in System settings before live
+absent. Replace the live API placeholders in `System → System settings` before live
 trading. The completed file is mounted read-only and is never included in Git or
 deployment archives.
 
@@ -34,9 +43,9 @@ bash menu.sh
 ```
 
 Docker Engine, Docker Compose v2, an x86-64 CPU, and a server user allowed to
-run Docker are required.
+run Docker are required. The installer does not overwrite existing runtime data.
 
-## Menu guide
+## Everyday menu workflow
 
 The main menu begins with `Account`, then lists available trading contours.
 `Account` shows the masked account address, CLOB available collateral, public
@@ -80,16 +89,16 @@ an internal `console` container. It starts only from `menu.sh`, is recreated whe
 the loaded application image changes, and is not part of Start, Stop, or Restart
 for a trading contour.
 
-## History retention
+## History and log retention
 
 The continuous collector retains the newest 2,400 complete frames for each coin in
 `runtime/history/frames`. It moves incomplete frames to `runtime/history/diagnostics`
 and retains the newest 100 there. Rotation runs only after a new complete frame
 has been safely written. Configure the complete-frame limit through
 `DOGE_BASELINE_COLLECT_COUNT` in DOGE Service settings. Configure the diagnostic
-limit through `HISTORY_DIAGNOSTIC_FRAMES` in System settings.
+limit through `HISTORY_DIAGNOSTIC_FRAMES` in `System → System settings`.
 
-## WireGuard
+## VPN: WireGuard
 
 Choose `System`, `VPN`, then `WireGuard`. The menu enables
 the Compose override and creates an editable connection template with the
@@ -107,7 +116,7 @@ current active profile as `wg0.conf.previous`, then atomically replaces
 a new profile. The template already routes IPv4 through the tunnel and contains
 the WireGuard kill switch.
 
-## Weekly research
+## Weekly regime research
 
 Use `DOGE Baseline`, `Settings`, then `Weekly research` to install or update the
 systemd timer. Its settings are available in the same submenu.

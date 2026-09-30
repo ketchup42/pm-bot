@@ -1,8 +1,10 @@
 # Architecture
 
-The project separates live execution from historical research. The separation is
+PM-BOT separates live execution from historical research. This boundary is
 intentional: a public collector must not initialise a trading client, and an offline
-replay must not need any network connection.
+replay must not need any network connection. Start with [Deployment](deployment.md)
+for operation or [Strategy guide](strategies.md) for the DOGE workflow; this page is
+the implementation reference.
 
 ```text
 Live execution: price watcher + CLOB book → event watcher → strategy → wallet → CLOB

@@ -1,5 +1,16 @@
 # Strategy guide
 
+This guide explains the strategy and replay contracts used by PM-BOT. Historical
+replay measures a hypothesis under recorded assumptions; it is not evidence of
+future profitability. Validate every change on settled history and begin live-data
+operation with `--debug`.
+
+| Read this section for | Topic |
+| --- | --- |
+| Runtime composition | Live lifecycle and safe order decisions |
+| DOGE baseline | Model, entry/exit settings, replay, and refresh |
+| New hypotheses | Replay presets and matrix comparison |
+
 Strategies have two separate homes:
 
 | Kind                   | Location                                      | Purpose                                      |
@@ -78,6 +89,17 @@ The maintained comparison set is deliberately small: `no-trade`, basic trend-lin
 presets rather than changing those reference implementations.
 
 ## DOGE baseline
+
+The DOGE contour deliberately separates research from execution:
+
+```text
+complete frames → confirmed settlement → model/config research → replay → refresh gate → strategy
+```
+
+The refresh gate can pause an otherwise valid strategy when the current replay
+window does not satisfy its PnL-regime policy. A pause is a protective state, not
+an application failure. Configure the Docker contour through the menu described in
+[Deployment](deployment.md); use [Environment](env.md) for local settings.
 
 The published model contains two independent logistic regressions. Training reads
 only complete, confirmed DOGE 5m frames from the Chainlink 60-second TWAP source.
